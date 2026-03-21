@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: pentest_postgres
+    environment:
+      POSTGRES_DB: pentestdb
+      POSTGRES_USER: pentest
+      POSTGRES_PASSWORD: pentest
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pentest -d pentestdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    container_name: pentest_backend
+    environment:
+      DATABASE_URL: postgresql+psycopg2://pentest:pentest@postgres:5432/pentestdb
+      ZAP_BASE_URL: http://zap:8080
+      ZAP_API_KEY: changeme
+      DIFY_API_URL: ${DIFY_API_URL}
+      DIFY_API_KEY: ${DIFY_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      zap:
+        condition: service_started
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+
+  zap:
+    image: zaproxy/zap-stable
+    container_name: pentest_zap
+    command: >
+      zap.sh -daemon
+      -host 0.0.0.0
+      -port 8080
+      -config api.key=changeme
+      -config api.addrs.addr.name=.*
+      -config api.addrs.addr.regex=true
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:

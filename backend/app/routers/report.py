@@ -1,0 +1,86 @@
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from ..db import SessionLocal
+from ..models import TestSession, RoleCredential, Finding, JudgeDecision, Observation
+from ..services.report_service import (
+    build_session_report,
+    build_session_summary_text,
+    build_session_executive_summary,
+)
+
+router = APIRouter()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def _load_session_bundle(db: Session, session_id: int):
+    session_obj = db.query(TestSession).filter(TestSession.id == session_id).first()
+    if not session_obj:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    roles = db.query(RoleCredential).filter(
+        RoleCredential.session_id == session_id
+    ).order_by(RoleCredential.id.asc()).all()
+
+    findings = db.query(Finding).filter(
+        Finding.session_id == session_id
+    ).order_by(Finding.id.asc()).all()
+
+    judge_decisions = db.query(JudgeDecision).filter(
+        JudgeDecision.session_id == session_id
+    ).order_by(JudgeDecision.round_no.asc()).all()
+
+    observations = db.query(Observation).filter(
+        Observation.session_id == session_id
+    ).order_by(Observation.id.asc()).all()
+
+    return session_obj, roles, findings, judge_decisions, observations
+
+
+@router.get("/session/{session_id}")
+def get_session_report(session_id: int, db: Session = Depends(get_db)):
+    session_obj, roles, findings, judge_decisions, observations = _load_session_bundle(db, session_id)
+
+    return build_session_report(
+        session_obj=session_obj,
+        roles=roles,
+        findings=findings,
+        judge_decisions=judge_decisions,
+        observations=observations,
+    )
+
+
+@router.get("/session/{session_id}/summary-text")
+def get_session_summary_text(session_id: int, db: Session = Depends(get_db)):
+    session_obj, roles, findings, judge_decisions, observations = _load_session_bundle(db, session_id)
+
+    return {
+        "session_id": session_id,
+        "summary_text": build_session_summary_text(
+            session_obj=session_obj,
+            roles=roles,
+            findings=findings,
+            judge_decisions=judge_decisions,
+            observations=observations,
+        )
+    }
+
+
+@router.get("/session/{session_id}/executive-summary")
+def get_session_executive_summary(session_id: int, db: Session = Depends(get_db)):
+    session_obj, roles, findings, judge_decisions, observations = _load_session_bundle(db, session_id)
+
+    return {
+        "session_id": session_id,
+        "executive_summary": build_session_executive_summary(
+            session_obj=session_obj,
+            findings=findings,
+        )
+    }
