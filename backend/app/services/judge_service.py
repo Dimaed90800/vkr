@@ -1,4 +1,107 @@
+from __future__ import annotations
+
 import json
+
+
+def _payload_json(h):
+    if getattr(h, "payload_json", None):
+        try:
+            return json.loads(h.payload_json)
+        except Exception:
+            return {}
+    return {}
+
+
+def _endpoint_value(h) -> str:
+    return str(getattr(h, "target_endpoint", "") or "").lower()
+
+
+def _is_auth_endpoint(h) -> bool:
+    return "/identity/api/auth/" in _endpoint_value(h)
+
+
+def _is_high_value_endpoint(h) -> bool:
+    endpoint = _endpoint_value(h)
+    if _is_auth_endpoint(h):
+        return False
+    return any(
+        marker in endpoint
+        for marker in [
+            "/community/api/",
+            "/identity/api/v2/user",
+            "/identity/api/v2/vehicle",
+            "/workshop/api/",
+        ]
+    )
+
+
+def _role_name_from_payload(h) -> str | None:
+    payload = _payload_json(h)
+    role_name = payload.get("role_name")
+    return str(role_name) if role_name else None
+
+
+def _has_authenticated_role_gap(h) -> bool:
+    payload = _payload_json(h)
+    roles_state = payload.get("roles_state") or {}
+    if not isinstance(roles_state, dict):
+        return False
+    statuses = [str(value or "") for value in roles_state.values()]
+    if not statuses:
+        return False
+    return any(status != "authenticated" for status in statuses)
+
+
+def calculate_dynamic_priority(h, recent_observations=None) -> float:
+    score = calculate_priority_score(h)
+    recent_observations = recent_observations or []
+    payload = _payload_json(h)
+
+    score += float(payload.get("judge_feedback_adjustment", 0.0) or 0.0)
+
+    if getattr(h, "hypothesis_type", None) in {"register_role", "login_role"} and _has_authenticated_role_gap(h):
+        score += 0.12
+
+    if getattr(h, "hypothesis_type", None) in {"verify_bola", "verify_bopla", "verify_auth_boundary"}:
+        score += 0.12
+
+    if getattr(h, "hypothesis_type", None) == "bopla_probe" and _is_high_value_endpoint(h):
+        score += 0.08
+
+    if getattr(h, "hypothesis_type", None) == "authenticated_probe":
+        role_name = _role_name_from_payload(h)
+        endpoint = getattr(h, "target_endpoint", None)
+        method = getattr(h, "http_method", "GET")
+
+        duplicate_count = 0
+        for obs in recent_observations[-10:]:
+            if (
+                (obs.endpoint or "") == (endpoint or "")
+                and (obs.method or "").upper() == (method or "").upper()
+                and (obs.role_name or None) == (role_name or None)
+            ):
+                duplicate_count += 1
+
+        if duplicate_count >= 1:
+            score -= min(0.08 * duplicate_count, 0.30)
+
+    if getattr(h, "hypothesis_type", None) == "compare_roles" and _is_auth_endpoint(h):
+        score -= 0.20
+
+    if getattr(h, "hypothesis_type", None) == "bola_probe":
+        endpoint = getattr(h, "target_endpoint", None)
+        duplicate_count = 0
+        for obs in recent_observations[-12:]:
+            if (
+                (obs.endpoint or "") == (endpoint or "")
+                and (obs.method or "").upper() == (getattr(h, "http_method", "GET") or "GET").upper()
+            ):
+                duplicate_count += 1
+
+        if duplicate_count >= 2:
+            score -= min(0.10 * (duplicate_count - 1), 0.35)
+
+    return round(score, 4)
 
 
 def calculate_priority_score(h) -> float:
@@ -17,6 +120,42 @@ def calculate_priority_score(h) -> float:
         0.10 * false_positive_risk -
         0.10 * normalized_cost
     )
+
+    if getattr(h, "hypothesis_type", None) in {
+        "authenticated_probe",
+        "anonymous_probe",
+        "tokenless_replay_probe",
+        "auth_boundary_probe",
+    } and _is_high_value_endpoint(h):
+        score += 0.09
+
+    if getattr(h, "hypothesis_type", None) == "compare_roles" and _is_auth_endpoint(h):
+        score -= 0.25
+
+    if getattr(h, "hypothesis_type", None) == "compare_roles" and _is_high_value_endpoint(h):
+        score += 0.04
+
+    if getattr(h, "hypothesis_type", None) == "bopla_probe" and _is_auth_endpoint(h):
+        score -= 0.20
+
+    if getattr(h, "hypothesis_type", None) == "bopla_probe" and _is_high_value_endpoint(h):
+        score += 0.08
+
+    if getattr(h, "hypothesis_type", None) == "bola_probe":
+        score += 0.06
+
+    if getattr(h, "hypothesis_type", None) in {"verify_bola", "verify_bopla", "verify_auth_boundary"}:
+        score += 0.10
+
+    if getattr(h, "hypothesis_type", None) == "verify_bopla" and _is_high_value_endpoint(h):
+        score += 0.06
+
+    payload = _payload_json(h)
+    if getattr(h, "hypothesis_type", None) == "authenticated_probe" and payload.get("role_name"):
+        score += 0.01
+    if getattr(h, "hypothesis_type", None) in {"anonymous_probe", "tokenless_replay_probe", "auth_boundary_probe"}:
+        score += 0.03
+
     return round(score, 4)
 
 
@@ -26,7 +165,11 @@ def classify_decision_type(hypothesis_type: str) -> str:
     if hypothesis_type in {
         "probe",
         "login",
+        "bootstrap_roles",
         "authenticated_probe",
+        "anonymous_probe",
+        "tokenless_replay_probe",
+        "auth_boundary_probe",
         "register_role",
         "login_role",
         "bola",
@@ -35,7 +178,7 @@ def classify_decision_type(hypothesis_type: str) -> str:
         "auth",
     }:
         return "attack"
-    if hypothesis_type in {"compare_roles"}:
+    if hypothesis_type in {"compare_roles", "verify_bola", "verify_bopla", "verify_auth_boundary"}:
         return "verify"
     return "verify"
 
@@ -62,7 +205,19 @@ def build_required_evidence(h) -> list[str]:
             "credential pair stored for role",
             "role status updated",
         ]
-    if h.hypothesis_type in {"probe", "authenticated_probe"}:
+    if h.hypothesis_type == "bootstrap_roles":
+        return [
+            "default role records created",
+            "roles available for subsequent registration",
+            "session can proceed to auth flow",
+        ]
+    if h.hypothesis_type in {
+        "probe",
+        "authenticated_probe",
+        "anonymous_probe",
+        "tokenless_replay_probe",
+        "auth_boundary_probe",
+    }:
         return [
             "valid HTTP response",
             "status code and body shape recorded",
@@ -92,6 +247,25 @@ def build_required_evidence(h) -> list[str]:
             "improved surface coverage",
             "inventory updated with actionable entries",
         ]
+    if h.hypothesis_type == "verify_bola":
+        return [
+            "repeated cross-role access reproduces object-level authorization issue",
+            "non-owner role still receives successful response",
+            "finding can be upgraded from candidate to confirmed",
+        ]
+
+    if h.hypothesis_type == "verify_bopla":
+        return [
+            "repeated request reproduces excessive data exposure",
+            "sensitive fields remain visible in response",
+            "finding can be upgraded from candidate to confirmed",
+        ]
+    if h.hypothesis_type == "verify_auth_boundary":
+        return [
+            "repeated auth-boundary probe reproduces the observed route behavior",
+            "status code remains consistent with the original signal",
+            "finding can be retained as a confirmed auth-boundary signal or rejected",
+        ]
     return [
         "response recorded",
         "observation stored",
@@ -112,7 +286,20 @@ def build_stop_condition(h) -> dict:
                 "registration repeatedly fails for generated credentials",
             ]
         }
-    if h.hypothesis_type in {"probe", "authenticated_probe"}:
+    if h.hypothesis_type == "bootstrap_roles":
+        return {
+            "stop_if": [
+                "roles already exist in session",
+                "role bootstrap does not create any usable accounts",
+            ]
+        }
+    if h.hypothesis_type in {
+        "probe",
+        "authenticated_probe",
+        "anonymous_probe",
+        "tokenless_replay_probe",
+        "auth_boundary_probe",
+    }:
         return {
             "stop_if": [
                 "endpoint repeatedly returns identical non-informative response",
@@ -148,6 +335,31 @@ def build_stop_condition(h) -> dict:
                 "no new endpoints discovered after additional discovery round",
             ]
         }
+    if h.hypothesis_type == "verify_bola":
+        return {
+            "stop_if": [
+                "repeated request no longer reproduces the issue",
+                "roles or tokens are unavailable",
+                "evidence is insufficient to confirm BOLA",
+            ]
+        }
+
+    if h.hypothesis_type == "verify_bopla":
+        return {
+            "stop_if": [
+                "response no longer contains exposed sensitive fields",
+                "endpoint behavior changed",
+                "evidence is insufficient to confirm BOPLA",
+            ]
+        }
+    if h.hypothesis_type == "verify_auth_boundary":
+        return {
+            "stop_if": [
+                "route behavior no longer reproduces the auth-boundary signal",
+                "endpoint no longer returns the observed status code",
+                "evidence is insufficient to keep the auth-boundary signal",
+            ]
+        }
     return {"stop_if": ["no useful evidence obtained"]}
 
 
@@ -165,6 +377,7 @@ def serialize_hypothesis(h):
 
     return {
         "id": h.id,
+        "agent_name": h.agent_name,
         "candidate_key": candidate_key,
         "type": h.hypothesis_type,
         "endpoint": h.target_endpoint,
@@ -175,4 +388,8 @@ def serialize_hypothesis(h):
         "evidence_readiness": h.evidence_readiness,
         "false_positive_risk": h.false_positive_risk,
         "estimated_cost": h.estimated_cost,
+        "judge_feedback_adjustment": payload.get("judge_feedback_adjustment", 0.0),
+        "judge_feedback_stats": payload.get("judge_feedback_stats"),
+        "agent_role_class": payload.get("agent_role_class"),
+        "agent_provider": payload.get("agent_provider"),
     }

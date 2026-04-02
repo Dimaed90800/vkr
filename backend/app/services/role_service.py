@@ -1,13 +1,14 @@
 import json
-import time
 import uuid
+from hashlib import sha256
 
 
 def generate_unique_identity(role_name: str) -> dict:
-    suffix = f"{int(time.time())}-{uuid.uuid4().hex[:6]}"
+    seed = uuid.uuid4().hex
+    suffix = f"{seed[:8]}-{seed[8:14]}"
     email = f"{role_name}-{suffix}@example.com"
-    phone = f"555{str(int(time.time()))[-6:]}{uuid.uuid4().hex[:2]}"
-    phone = "".join(ch for ch in phone if ch.isdigit())[:10]
+    digits = "".join(ch for ch in str(int(sha256(f"{role_name}:{seed}".encode()).hexdigest(), 16)) if ch.isdigit())
+    phone = "9" + digits[:9]
     if len(phone) < 10:
         phone = phone.ljust(10, "7")
 

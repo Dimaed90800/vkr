@@ -14,7 +14,9 @@ from .routers import (
     findings,
     report,
     metrics,
-    experiments
+    experiments,
+    agents,
+    tools
     # pdf_report
 )
 
@@ -37,3 +39,5 @@ app.include_router(report.router, prefix="/report", tags=["report"])
 app.include_router(metrics.router)
 # app.include_router(pdf_report.router)
 app.include_router(experiments.router)
+app.include_router(agents.router)
+app.include_router(tools.router)

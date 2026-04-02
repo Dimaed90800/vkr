@@ -25,6 +25,14 @@ services:
       ZAP_API_KEY: changeme
       DIFY_API_URL: ${DIFY_API_URL}
       DIFY_API_KEY: ${DIFY_API_KEY}
+      BOLA_AGENT_DIFY_API_URL: ${BOLA_AGENT_DIFY_API_URL}
+      BOLA_AGENT_DIFY_API_KEY: ${BOLA_AGENT_DIFY_API_KEY}
+      BOPLA_AGENT_DIFY_API_URL: ${BOPLA_AGENT_DIFY_API_URL}
+      BOPLA_AGENT_DIFY_API_KEY: ${BOPLA_AGENT_DIFY_API_KEY}
+      AUTH_AGENT_DIFY_API_URL: ${AUTH_AGENT_DIFY_API_URL}
+      AUTH_AGENT_DIFY_API_KEY: ${AUTH_AGENT_DIFY_API_KEY}
+      REPORT_AGENT_DIFY_API_URL: ${REPORT_AGENT_DIFY_API_URL}
+      REPORT_AGENT_DIFY_API_KEY: ${REPORT_AGENT_DIFY_API_KEY}
     depends_on:
       postgres:
         condition: service_healthy
@@ -48,5 +56,19 @@ services:
     ports:
       - "8080:8080"
 
+  n8n:
+    image: docker.n8n.io/n8nio/n8n
+    container_name: pentest_n8n
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      TZ: America/Los_Angeles
+    volumes:
+      - n8n_data:/home/node/.n8n
+
 volumes:
   postgres_data:
+  n8n_data:

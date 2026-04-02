@@ -39,6 +39,32 @@ def spider_results():
     resp.raise_for_status()
     return resp.json()
 
+
+def start_ajax_spider(target_url: str):
+    resp = requests.get(
+        f"{ZAP_BASE_URL}/JSON/ajaxSpider/action/scan/",
+        params={
+            "apikey": ZAP_API_KEY,
+            "url": target_url,
+            "inScope": "",
+            "contextName": "",
+            "subtreeOnly": False
+        },
+        timeout=30
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def ajax_spider_status():
+    resp = requests.get(
+        f"{ZAP_BASE_URL}/JSON/ajaxSpider/view/status/",
+        params={"apikey": ZAP_API_KEY},
+        timeout=30
+    )
+    resp.raise_for_status()
+    return resp.json()
+
 def run_spider_and_wait(target_url: str, max_wait_sec: int = 120):
     start_spider(target_url)
 
@@ -47,6 +73,20 @@ def run_spider_and_wait(target_url: str, max_wait_sec: int = 120):
         status = spider_status()
         progress = int(status.get("status", 0))
         if progress >= 100:
+            break
+        time.sleep(2)
+        waited += 2
+
+    return spider_results()
+
+
+def run_ajax_spider_and_wait(target_url: str, max_wait_sec: int = 120):
+    start_ajax_spider(target_url)
+
+    waited = 0
+    while waited < max_wait_sec:
+        status = ajax_spider_status()
+        if str(status.get("status", "")).lower() == "stopped":
             break
         time.sleep(2)
         waited += 2

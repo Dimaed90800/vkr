@@ -11,6 +11,15 @@ class TestSession(Base):
     target_name = Column(String(128), nullable=False)
     target_url = Column(String(512), nullable=False)
     status = Column(String(64), default="created")
+    budget_requests_total = Column(Integer, nullable=True, default=200)
+    budget_requests_used = Column(Integer, nullable=False, default=0)
+    budget_time_total = Column(Integer, nullable=True, default=1800)
+    budget_time_used = Column(Integer, nullable=False, default=0)
+    max_rounds = Column(Integer, nullable=True, default=10)
+    rounds_completed = Column(Integer, nullable=False, default=0)
+    allowed_test_classes_json = Column(Text, nullable=True)
+    last_strategy_json = Column(Text, nullable=True)
+    stop_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -91,6 +100,10 @@ class JudgeDecision(Base):
     selected_hypothesis_id = Column(Integer, nullable=True)
     decision_type = Column(String(64), nullable=False)
     priority_score = Column(Float, nullable=True)
+    raw_selected_key = Column(Text, nullable=True)
+    raw_score = Column(Float, nullable=True)
+    raw_reason = Column(Text, nullable=True)
+    resolution_mode = Column(String(64), nullable=True)
 
     reasoning_summary = Column(Text, nullable=True)
     required_evidence_json = Column(Text, nullable=True)
@@ -146,9 +159,11 @@ class ExperimentRun(Base):
     id = Column(Integer, primary_key=True, index=True)
     target_name = Column(String)
     target_url = Column(String)
-    judge_mode = Column(String)  # rule_based | dify
+    judge_mode = Column(String)  # rule_based | dify | unified
+    profile = Column(String, default="mixed")  # bola | bopla | mixed
     max_rounds = Column(Integer)
     created_at = Column(DateTime, default=datetime.utcnow)
+
 
 class ExperimentResult(Base):
     __tablename__ = "experiment_results"
@@ -159,9 +174,52 @@ class ExperimentResult(Base):
     total_rounds = Column(Integer)
     findings_total = Column(Integer)
     bola_findings = Column(Integer)
+    bopla_findings = Column(Integer)
 
     judge_decisions = Column(Integer)
     fallback_count = Column(Integer)
 
+    confirmed_findings = Column(Integer)
+    confirmed_bola = Column(Integer)
+    confirmed_bopla = Column(Integer)
+
     avg_score = Column(Float)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class AgentStrategyMemory(Base):
+    __tablename__ = "agent_strategy_memory"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, nullable=False, index=True)
+
+    agent_name = Column(String(64), nullable=False, index=True)
+    context_signature = Column(String(128), nullable=False, index=True)
+    pattern_type = Column(String(128), nullable=False, index=True)
+
+    attempts = Column(Integer, nullable=False, default=0)
+    selected_count = Column(Integer, nullable=False, default=0)
+    confirmed_count = Column(Integer, nullable=False, default=0)
+    rejected_count = Column(Integer, nullable=False, default=0)
+
+    avg_cost = Column(Float, nullable=False, default=0.0)
+    last_result = Column(String(32), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AgentJudgeFeedback(Base):
+    __tablename__ = "agent_judge_feedback"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, nullable=False, index=True)
+    round_no = Column(Integer, nullable=False, index=True)
+
+    agent_name = Column(String(64), nullable=False, index=True)
+    hypothesis_id = Column(Integer, nullable=True, index=True)
+    hypothesis_type = Column(String(64), nullable=True)
+
+    was_selected = Column(Integer, nullable=False, default=0)
+    judge_mode = Column(String(32), nullable=True)
+    priority_score = Column(Float, nullable=True)
+    decision_reason = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

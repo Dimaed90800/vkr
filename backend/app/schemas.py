@@ -1,10 +1,15 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 
 class CreateSessionRequest(BaseModel):
     target_name: str
     target_url: str
+    budget_requests_total: Optional[int] = 200
+    budget_time_total: Optional[int] = 1800
+    max_rounds: Optional[int] = 10
+    allowed_test_classes: Optional[List[str]] = ["discovery", "bola", "bopla", "auth"]
+    enabled_agents: Optional[List[str]] = None
 
 
 class SessionResponse(BaseModel):
@@ -12,6 +17,15 @@ class SessionResponse(BaseModel):
     target_name: str
     target_url: str
     status: str
+    budget_requests_total: Optional[int] = None
+    budget_requests_used: int = 0
+    budget_time_total: Optional[int] = None
+    budget_time_used: int = 0
+    max_rounds: Optional[int] = None
+    rounds_completed: int = 0
+    allowed_test_classes_json: Optional[str] = None
+    last_strategy_json: Optional[str] = None
+    stop_reason: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -47,7 +61,18 @@ class JudgeSelectRequest(BaseModel):
 
 class CampaignStepRequest(BaseModel):
     session_id: int
-    judge_mode: str = "rule_based"  # или "dify"
+    judge_mode: str = "rule_based"  # rule_based | dify | unified
+
+
+class CampaignRunRequest(BaseModel):
+    target_name: str
+    target_url: str
+    judge_mode: str = "rule_based"  # rule_based | dify | unified
+    budget_requests_total: Optional[int] = 200
+    budget_time_total: Optional[int] = 1800
+    max_rounds: Optional[int] = 10
+    allowed_test_classes: Optional[List[str]] = ["discovery", "bola", "bopla", "auth"]
+    enabled_agents: Optional[List[str]] = None
 
 
 class CreateRoleRequest(BaseModel):
