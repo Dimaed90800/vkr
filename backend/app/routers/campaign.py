@@ -37,6 +37,7 @@ from ..services.session_state_service import (
     register_round,
     update_strategy_state,
 )
+from ..services.terminal_reverification_service import run_terminal_reverification_pass
 
 router = APIRouter()
 
@@ -573,7 +574,9 @@ def campaign_step(payload: CampaignStepRequest, db: Session = Depends(get_db)):
     )
 
     can_continue_after, stop_reason_after = can_continue_session(session_obj)
+    terminal_reverification = None
     if not can_continue_after:
+        terminal_reverification = run_terminal_reverification_pass(db, session_obj)
         session_obj.status = "stopped"
         session_obj.stop_reason = stop_reason_after
 
@@ -629,6 +632,7 @@ def campaign_step(payload: CampaignStepRequest, db: Session = Depends(get_db)):
             "stop_reason": session_obj.stop_reason,
         },
         "execution_result": execution_result,
+        "terminal_reverification": terminal_reverification,
     }
 
 

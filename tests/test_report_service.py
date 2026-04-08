@@ -219,6 +219,7 @@ class ReportServiceTests(unittest.TestCase):
         self.assertEqual(report["top_findings"][0]["title"], "Confirmed BOLA")
         self.assertEqual(len(report["candidate_findings_for_review"]), 1)
         self.assertEqual(report["candidate_findings_for_review"][0]["title"], "Candidate BOPLA")
+        self.assertIn("evidence_bundle", report["top_findings"][0])
 
     def test_markdown_report_has_separate_candidate_section(self):
         session_obj = SimpleNamespace(
@@ -276,6 +277,86 @@ class ReportServiceTests(unittest.TestCase):
         self.assertIn("Confirmed BOLA", markdown)
         self.assertIn("## Candidate Findings Requiring Manual Review", markdown)
         self.assertIn("Candidate BOPLA", markdown)
+
+    def test_final_report_builds_replayable_evidence_bundle_and_masks_tokens(self):
+        session_obj = SimpleNamespace(
+            id=1,
+            target_name="crapi",
+            target_url="http://target",
+            status="finished",
+            created_at="2026-03-24",
+            rounds_completed=2,
+            max_rounds=10,
+            budget_requests_used=3,
+            budget_requests_total=100,
+            stop_reason=None,
+            last_strategy_json="{}",
+        )
+        confirmed = SimpleNamespace(
+            id=1,
+            finding_type="possible_bola",
+            severity="high",
+            title="Confirmed BOLA",
+            description="confirmed issue",
+            endpoint="http://target/a",
+            verification_status="confirmed",
+            related_hypothesis_id=None,
+            related_observation_ids="[11,12]",
+            evidence_json=(
+                '{"signals":["same_endpoint_targeted","identical_json_response"],'
+                '"owner_role":"user_a","other_role":"user_b","status_owner":200,"status_other":200}'
+            ),
+            created_at="2026-03-24",
+        )
+        observations = [
+            SimpleNamespace(
+                id=11,
+                role_name="user_a",
+                method="GET",
+                endpoint="http://target/a",
+                status_code=200,
+                request_headers='{"Authorization":"Bearer secret-a","Accept":"application/json"}',
+                request_params="{}",
+                request_body="{}",
+                response_headers="{}",
+                body_preview='{"id":"obj-1"}',
+                created_at="2026-03-24",
+            ),
+            SimpleNamespace(
+                id=12,
+                role_name="user_b",
+                method="GET",
+                endpoint="http://target/a",
+                status_code=200,
+                request_headers='{"Authorization":"Bearer secret-b"}',
+                request_params="{}",
+                request_body="{}",
+                response_headers="{}",
+                body_preview='{"id":"obj-1"}',
+                created_at="2026-03-24",
+            ),
+        ]
+
+        report = build_final_session_report(
+            session_obj=session_obj,
+            roles=[],
+            findings=[confirmed],
+            judge_decisions=[],
+            observations=observations,
+            hypotheses=[],
+            agent_memory_rows=[],
+            agent_judge_feedback_rows=[],
+        )
+
+        evidence_bundle = report["top_findings"][0]["evidence_bundle"]
+        self.assertEqual(evidence_bundle["observation_ids"], [11, 12])
+        self.assertEqual(len(evidence_bundle["replay_requests"]), 2)
+        self.assertEqual(
+            evidence_bundle["replay_requests"][0]["request_headers"]["Authorization"],
+            "Bearer <USER_A_TOKEN>",
+        )
+        self.assertTrue(evidence_bundle["reproducibility"]["has_replay_requests"])
+        self.assertTrue(evidence_bundle["reproducibility"]["has_comparison_roles"])
 
 
 if __name__ == "__main__":

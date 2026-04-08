@@ -1,6 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
+
+
+UUID_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{12}\b"
+)
 
 
 def _payload_json(h):
@@ -52,12 +62,123 @@ def _has_authenticated_role_gap(h) -> bool:
     return any(status != "authenticated" for status in statuses)
 
 
+def _is_object_style_endpoint_value(endpoint: str) -> bool:
+    endpoint = str(endpoint or "").lower()
+    return any(
+        marker in endpoint
+        for marker in [
+            "/vehicle/",
+            "/order/",
+            "/video/",
+            "/merchant/",
+            "/mechanic/",
+            "/location",
+            "/report",
+        ]
+    ) or bool(UUID_RE.search(endpoint))
+
+
+def _infer_coverage_buckets_for_hypothesis(h) -> set[str]:
+    hypothesis_type = str(getattr(h, "hypothesis_type", "") or "")
+    endpoint = _endpoint_value(h)
+    buckets = set()
+
+    if hypothesis_type == "discovery":
+        buckets.add("discovery")
+
+    if hypothesis_type in {
+        "anonymous_probe",
+        "tokenless_replay_probe",
+        "auth_boundary_probe",
+        "verify_auth_boundary",
+        "register_role",
+        "login_role",
+    }:
+        buckets.add("auth_boundary")
+
+    if hypothesis_type in {"bola_probe", "verify_bola", "compare_roles"} or _is_object_style_endpoint_value(endpoint):
+        buckets.add("object_access")
+
+    if hypothesis_type in {"bopla_probe", "verify_bopla"} or "/community/api/" in endpoint:
+        buckets.add("data_exposure")
+
+    if _is_high_value_endpoint(h):
+        buckets.add("high_value_api")
+
+    return buckets
+
+
+def _infer_coverage_buckets_for_observation(obs) -> set[str]:
+    endpoint = str(getattr(obs, "endpoint", "") or "").lower()
+    buckets = set()
+
+    if _is_object_style_endpoint_value(endpoint):
+        buckets.add("object_access")
+
+    if "/community/api/" in endpoint:
+        buckets.add("data_exposure")
+
+    if any(
+        marker in endpoint
+        for marker in [
+            "/identity/api/v2/user",
+            "/dashboard",
+            "/identity/api/auth/",
+        ]
+    ):
+        buckets.add("auth_boundary")
+
+    if any(
+        marker in endpoint
+        for marker in [
+            "/community/api/",
+            "/identity/api/v2/user",
+            "/identity/api/v2/vehicle",
+            "/workshop/api/",
+        ]
+    ):
+        buckets.add("high_value_api")
+
+    return buckets
+
+
+def _compute_coverage_bonus(h, recent_observations) -> float:
+    candidate_buckets = _infer_coverage_buckets_for_hypothesis(h)
+    if not candidate_buckets:
+        return 0.0
+
+    observation_window = list(recent_observations or [])[-25:]
+    coverage_counts = {bucket: 0 for bucket in candidate_buckets}
+    for obs in observation_window:
+        observed_buckets = _infer_coverage_buckets_for_observation(obs)
+        for bucket in candidate_buckets:
+            if bucket in observed_buckets:
+                coverage_counts[bucket] += 1
+
+    bonus = 0.0
+    for bucket, count in coverage_counts.items():
+        if bucket == "discovery":
+            continue
+        if count == 0:
+            bonus += 0.08
+        elif count == 1:
+            bonus += 0.04
+        elif count == 2:
+            bonus += 0.02
+
+    if "high_value_api" in candidate_buckets and coverage_counts.get("high_value_api", 0) == 0:
+        bonus += 0.02
+
+    return round(min(bonus, 0.12), 4)
+
+
 def calculate_dynamic_priority(h, recent_observations=None) -> float:
     score = calculate_priority_score(h)
     recent_observations = recent_observations or []
     payload = _payload_json(h)
 
     score += float(payload.get("judge_feedback_adjustment", 0.0) or 0.0)
+    score += _compute_coverage_bonus(h, recent_observations)
 
     if getattr(h, "hypothesis_type", None) in {"register_role", "login_role"} and _has_authenticated_role_gap(h):
         score += 0.12

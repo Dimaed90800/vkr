@@ -20,6 +20,133 @@ def _safe_load_json(value):
         return value
 
 
+def _safe_list(value):
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _sanitize_headers(headers, role_name: str | None = None):
+    if not isinstance(headers, dict):
+        return {}
+
+    sanitized = {}
+    for key, value in headers.items():
+        key_str = str(key)
+        if key_str.lower() == "authorization" and value:
+            token_label = (role_name or "ROLE").upper()
+            sanitized[key_str] = f"Bearer <{token_label}_TOKEN>"
+        else:
+            sanitized[key_str] = value
+    return sanitized
+
+
+def _load_observation_ids(finding, evidence: dict):
+    observation_ids = []
+    related_ids = _safe_load_json(getattr(finding, "related_observation_ids", None))
+    if isinstance(related_ids, list):
+        observation_ids.extend(related_ids)
+
+    for key in [
+        "observation_id",
+        "source_observation_id",
+        "observation_owner_id",
+        "observation_other_id",
+        "observation_a_id",
+        "observation_b_id",
+    ]:
+        value = evidence.get(key)
+        if value not in (None, ""):
+            observation_ids.append(value)
+
+    normalized = []
+    seen = set()
+    for item in observation_ids:
+        try:
+            item_int = int(item)
+        except Exception:
+            continue
+        if item_int in seen:
+            continue
+        seen.add(item_int)
+        normalized.append(item_int)
+    return normalized
+
+
+def _build_replay_requests(observations_by_id, observation_ids):
+    replay_requests = []
+    for observation_id in observation_ids:
+        obs = observations_by_id.get(observation_id)
+        if not obs:
+            continue
+
+        request_headers = _safe_load_json(getattr(obs, "request_headers", None)) or {}
+        request_params = _safe_load_json(getattr(obs, "request_params", None)) or {}
+        request_body = _safe_load_json(getattr(obs, "request_body", None)) or {}
+
+        replay_requests.append(
+            {
+                "observation_id": getattr(obs, "id", None),
+                "role_name": getattr(obs, "role_name", None),
+                "method": getattr(obs, "method", None),
+                "endpoint": getattr(obs, "endpoint", None),
+                "status_code": getattr(obs, "status_code", None),
+                "request_headers": _sanitize_headers(request_headers, getattr(obs, "role_name", None)),
+                "request_params": request_params if isinstance(request_params, dict) else {},
+                "request_body": request_body if isinstance(request_body, (dict, list)) else request_body,
+                "curl_template": (
+                    f"curl -X {(getattr(obs, 'method', None) or 'GET').upper()} "
+                    f"'{getattr(obs, 'endpoint', '')}'"
+                ),
+            }
+        )
+    return replay_requests
+
+
+def _build_evidence_bundle(finding, observations):
+    evidence = _safe_load_json(getattr(finding, "evidence_json", None)) or {}
+    observations_by_id = {
+        getattr(obs, "id", None): obs
+        for obs in (observations or [])
+        if getattr(obs, "id", None) is not None
+    }
+    observation_ids = _load_observation_ids(finding, evidence)
+    replay_requests = _build_replay_requests(observations_by_id, observation_ids)
+
+    compact_evidence = {
+        "signals": _safe_list(evidence.get("signals"))[:8],
+        "exposed_fields": _safe_list(evidence.get("exposed_fields"))[:8],
+        "owner_role": evidence.get("owner_role"),
+        "other_role": evidence.get("other_role"),
+        "status_owner": evidence.get("status_owner"),
+        "status_other": evidence.get("status_other"),
+        "owner_object_id": evidence.get("owner_object_id"),
+        "other_object_id": evidence.get("other_object_id"),
+        "suspected_fields": _safe_list(evidence.get("suspected_fields"))[:8],
+        "status_code": evidence.get("status_code"),
+        "action_executed": evidence.get("action_executed"),
+        "inference": evidence.get("inference"),
+    }
+
+    return {
+        "finding_id": getattr(finding, "id", None),
+        "finding_type": getattr(finding, "finding_type", None),
+        "verification_status": getattr(finding, "verification_status", None),
+        "endpoint": getattr(finding, "endpoint", None),
+        "observation_ids": observation_ids,
+        "replay_requests": replay_requests,
+        "evidence": compact_evidence,
+        "reproducibility": {
+            "has_replay_requests": bool(replay_requests),
+            "replay_request_count": len(replay_requests),
+            "has_comparison_roles": bool(
+                compact_evidence.get("owner_role") or compact_evidence.get("other_role")
+            ),
+            "has_sensitive_fields": bool(compact_evidence.get("exposed_fields")),
+        },
+    }
+
+
 def build_agent_activity_summary(hypotheses, judge_decisions):
     generated_by_agent = {}
     selected_by_agent = {}
@@ -860,6 +987,7 @@ def build_final_session_report(
     top_findings = []
     for finding in prioritized_main_findings:
         evidence = _safe_load_json(finding.evidence_json) or {}
+        evidence_bundle = _build_evidence_bundle(finding, observations)
         top_findings.append({
             "id": finding.id,
             "type": finding.finding_type,
@@ -876,11 +1004,13 @@ def build_final_session_report(
                 "status_owner": evidence.get("status_owner"),
                 "status_other": evidence.get("status_other"),
             },
+            "evidence_bundle": evidence_bundle,
         })
 
     candidate_finding_details = []
     for finding in diagnostic_candidate_findings:
         evidence = _safe_load_json(finding.evidence_json) or {}
+        evidence_bundle = _build_evidence_bundle(finding, observations)
         candidate_finding_details.append({
             "id": finding.id,
             "type": finding.finding_type,
@@ -897,6 +1027,7 @@ def build_final_session_report(
                 "status_owner": evidence.get("status_owner"),
                 "status_other": evidence.get("status_other"),
             },
+            "evidence_bundle": evidence_bundle,
         })
 
     return {
@@ -1022,6 +1153,18 @@ def build_session_markdown_report(
                     f"- Response status pair: {finding['evidence_preview'].get('status_owner')} / "
                     f"{finding['evidence_preview'].get('status_other')}"
                 )
+            evidence_bundle = finding.get("evidence_bundle") or {}
+            reproducibility = evidence_bundle.get("reproducibility") or {}
+            replay_requests = evidence_bundle.get("replay_requests") or []
+            if reproducibility.get("has_replay_requests"):
+                lines.append(
+                    f"- Evidence bundle: {reproducibility.get('replay_request_count', 0)} replay request(s) captured"
+                )
+                for replay in replay_requests[:2]:
+                    lines.append(
+                        f"  - Replay: `{replay.get('method')}` `{replay.get('endpoint')}` as "
+                        f"`{replay.get('role_name') or 'anonymous'}` -> HTTP `{replay.get('status_code')}`"
+                    )
             lines.append("")
 
     lines.extend([
@@ -1064,6 +1207,18 @@ def build_session_markdown_report(
                     f"- Response status pair: {finding['evidence_preview'].get('status_owner')} / "
                     f"{finding['evidence_preview'].get('status_other')}"
                 )
+            evidence_bundle = finding.get("evidence_bundle") or {}
+            reproducibility = evidence_bundle.get("reproducibility") or {}
+            replay_requests = evidence_bundle.get("replay_requests") or []
+            if reproducibility.get("has_replay_requests"):
+                lines.append(
+                    f"- Evidence bundle: {reproducibility.get('replay_request_count', 0)} replay request(s) captured"
+                )
+                for replay in replay_requests[:2]:
+                    lines.append(
+                        f"  - Replay: `{replay.get('method')}` `{replay.get('endpoint')}` as "
+                        f"`{replay.get('role_name') or 'anonymous'}` -> HTTP `{replay.get('status_code')}`"
+                    )
             lines.append("")
 
     lines.extend([
