@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from ..services.bopla_service import build_bopla_hypothesis_from_observation
 from ..services.discovery_service import build_crapi_seed_urls
-from ..services.extraction_service import extract_vehicle_ids_from_text
+from ..services.extraction_service import UUID_RE, extract_vehicle_ids_from_text
 
 
 def safe_load_json(value):
@@ -35,6 +35,18 @@ def is_high_value_api_endpoint(endpoint: str | None) -> bool:
             "/workshop/api/",
         ]
     )
+
+
+def to_absolute_endpoint(endpoint: str | None, target_url: str | None = None) -> str | None:
+    if not endpoint:
+        return endpoint
+    endpoint = str(endpoint).strip()
+    parsed = urlparse(endpoint)
+    if parsed.scheme and parsed.netloc:
+        return endpoint
+    if target_url:
+        return f"{str(target_url).rstrip('/')}/{endpoint.lstrip('/')}"
+    return endpoint
 
 
 def find_cross_role_pairs(observations):
@@ -214,7 +226,7 @@ def _collect_auth_boundary_targets(observations, api_items=None, target_url: str
         )
 
     for item in api_items or []:
-        endpoint = getattr(item, "path", None)
+        endpoint = to_absolute_endpoint(getattr(item, "path", None), target_url=target_url)
         method = (getattr(item, "method", None) or "GET").upper()
         if (
             not endpoint
@@ -277,6 +289,86 @@ def _auth_target_priority(endpoint: str | None) -> int:
     if "/community/api/" in value:
         return 1
     return 0
+
+
+def _safe_inventory_json(value):
+    if isinstance(value, dict):
+        return value
+    return safe_load_json(value) or {}
+
+
+def _api_item_sensitive_field_count(item) -> int:
+    metadata = _safe_inventory_json(getattr(item, "raw_json", None))
+    sensitive_fields = metadata.get("sensitive_response_fields", [])
+    if isinstance(sensitive_fields, list):
+        return len(sensitive_fields)
+    return 0
+
+
+def _api_item_has_path_params(item) -> bool:
+    metadata = _safe_inventory_json(getattr(item, "raw_json", None))
+    if metadata.get("has_path_params"):
+        return True
+    path_parameters = metadata.get("path_parameters", [])
+    return bool(path_parameters)
+
+
+def _collect_known_object_ids(observations) -> list[str]:
+    found = []
+    seen = set()
+
+    for obs in observations:
+        body_preview = str(getattr(obs, "body_preview", "") or "")
+        endpoint = str(getattr(obs, "endpoint", "") or "")
+        vehicle_ids = extract_vehicle_ids_from_text(body_preview)
+        regex_hits = UUID_RE.findall(body_preview + "\n" + endpoint)
+
+        for object_id in [*vehicle_ids, *regex_hits]:
+            if object_id in seen:
+                continue
+            seen.add(object_id)
+            found.append(object_id)
+
+    return found
+
+
+def _inventory_bola_candidates(api_items, known_object_ids, target_url: str | None = None) -> list[str]:
+    candidates = []
+    seen = set()
+
+    for item in api_items or []:
+        path = getattr(item, "path", None)
+        method = (getattr(item, "method", None) or "GET").upper()
+        if method != "GET" or not path:
+            continue
+        if not _api_item_has_path_params(item):
+            continue
+
+        path_lower = str(path).lower()
+        if not any(marker in path_lower for marker in ("/vehicle/", "/report", "/location", "/details")):
+            continue
+
+        path_parameters = _safe_inventory_json(getattr(item, "raw_json", None)).get("path_parameters", [])
+        if not path_parameters:
+            continue
+
+        template = str(path)
+        for object_id in known_object_ids[:12]:
+            candidate_path = template
+            replaced = False
+            for param_name in path_parameters:
+                placeholder = "{" + str(param_name) + "}"
+                if placeholder in candidate_path:
+                    candidate_path = candidate_path.replace(placeholder, object_id)
+                    replaced = True
+            if not replaced:
+                continue
+            endpoint = to_absolute_endpoint(candidate_path, target_url=target_url)
+            if endpoint and endpoint not in seen:
+                seen.add(endpoint)
+                candidates.append(endpoint)
+
+    return candidates
 
 
 def _rank_auth_boundary_targets(targets, observations) -> list[dict]:
@@ -589,15 +681,35 @@ def generate_discovery_agent_hypotheses(api_items):
     }]
 
 
-def generate_probe_agent_hypotheses(api_items, observations, authenticated_roles):
+def generate_probe_agent_hypotheses(api_items, observations, authenticated_roles, target_url: str | None = None):
     hypotheses = []
     for role in authenticated_roles[:2]:
-        high_value_items = [item for item in api_items if is_high_value_api_endpoint(item.path)]
+        normalized_items = []
+        for item in api_items:
+            endpoint = to_absolute_endpoint(getattr(item, "path", None), target_url=target_url)
+            if not endpoint:
+                continue
+            normalized_items.append((item, endpoint))
+
+        normalized_items.sort(
+            key=lambda pair: (
+                -1 if is_high_value_api_endpoint(pair[1]) else 0,
+                -_api_item_sensitive_field_count(pair[0]),
+                -1 if _api_item_has_path_params(pair[0]) else 0,
+                pair[1],
+            )
+        )
+        high_value_items = [pair for pair in normalized_items if is_high_value_api_endpoint(pair[1])]
         candidate_items = high_value_items[:6] if high_value_items else api_items[:5]
 
-        for item in candidate_items:
+        for item_data in candidate_items:
+            if isinstance(item_data, tuple):
+                item, endpoint = item_data
+            else:
+                item = item_data
+                endpoint = to_absolute_endpoint(getattr(item, "path", None), target_url=target_url) or ""
+
             method = item.method or "GET"
-            endpoint = item.path or ""
             if recent_observation_exists(observations, endpoint, method, role.role_name, limit=8):
                 continue
 
@@ -670,7 +782,7 @@ def generate_bopla_agent_hypotheses(observations, findings):
     return hypotheses
 
 
-def generate_bola_agent_hypotheses(observations, findings, authenticated_roles):
+def generate_bola_agent_hypotheses(observations, findings, authenticated_roles, api_items=None, target_url: str | None = None):
     hypotheses = []
     if len(authenticated_roles) < 2:
         return hypotheses
@@ -705,6 +817,33 @@ def generate_bola_agent_hypotheses(observations, findings, authenticated_roles):
                 "coverage_gain": 0.95,
                 "evidence_readiness": 0.97,
             })
+
+    known_object_ids = _collect_known_object_ids(observations)
+    for endpoint in _inventory_bola_candidates(api_items, known_object_ids, target_url=target_url):
+        if candidate_finding_exists(findings, "possible_bola", endpoint):
+            continue
+        if recent_observation_exists(observations, endpoint, "GET", role_a, limit=12):
+            continue
+        hypotheses.append({
+            "candidate_key": f"bola_probe::inventory::{endpoint}::{role_a}::{role_b}",
+            "agent_name": "rule_based_bola_agent",
+            "hypothesis_type": "bola_probe",
+            "target_endpoint": endpoint,
+            "http_method": "GET",
+            "description": f"Probe object endpoint discovered from OpenAPI/inventory across roles {role_a} and {role_b}",
+            "payload": {
+                "owner_role": role_a,
+                "other_role": role_b,
+                "object_type": "inventory_object",
+                "object_id": endpoint.rstrip('/').split('/')[-2] if '/' in endpoint else endpoint,
+                "source": "inventory_openapi",
+            },
+            "confidence": 0.91,
+            "estimated_cost": 1.0,
+            "false_positive_risk": 0.10,
+            "coverage_gain": 0.90,
+            "evidence_readiness": 0.92,
+        })
     return hypotheses
 
 

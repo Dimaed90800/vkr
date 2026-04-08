@@ -1,5 +1,6 @@
 import unittest
 
+from backend.app.services.agent_registry_service import resolve_experiment_enabled_agents
 from backend.app.services.experiment_run_service import (
     extract_logical_agent_summary,
     normalize_judge_modes,
@@ -35,6 +36,17 @@ class ExperimentRunServiceTests(unittest.TestCase):
         self.assertEqual(summary["logical_agent_judge_feedback_summary"]["logical_agents_total"], 1)
         self.assertEqual(summary["logical_agent_effectiveness_summary"]["logical_agents_total"], 3)
         self.assertNotIn("agent_activity_summary", summary)
+
+    def test_resolve_experiment_enabled_agents_supports_logical_ablation(self):
+        enabled = resolve_experiment_enabled_agents(
+            enabled_logical_agents=["authorization_agent", "exposure_agent"],
+            disabled_logical_agents=["exposure_agent"],
+        )
+
+        self.assertIn("rule_based_bola_agent", enabled)
+        self.assertIn("dify_bola_agent", enabled)
+        self.assertNotIn("rule_based_bopla_agent", enabled)
+        self.assertNotIn("rule_based_verifier_agent", enabled)
 
 
 if __name__ == "__main__":

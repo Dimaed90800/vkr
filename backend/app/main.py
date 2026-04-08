@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from .db import Base, engine
 from .routers import (
+    automation,
     session,
     discovery,
     observations,
@@ -41,3 +42,4 @@ app.include_router(metrics.router)
 app.include_router(experiments.router)
 app.include_router(agents.router)
 app.include_router(tools.router)
+app.include_router(automation.router)

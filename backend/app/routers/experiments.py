@@ -8,24 +8,14 @@ from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from ..db import SessionLocal
-from ..models import (
-    AgentJudgeFeedback,
-    AgentStrategyMemory,
-    ExperimentRun,
-    ExperimentResult,
-    Finding,
-    Hypothesis,
-    JudgeDecision,
-    Observation,
-    RoleCredential,
-    TestSession,
+from ..models import ExperimentRun, ExperimentResult
+from ..services.experiment_batch_service import (
+    build_run_batch_response,
+    build_run_batch_with_reports_response,
 )
-from ..services.llm_report_service import build_session_llm_report
 from ..services.experiment_report_service import (
     build_experiment_comparison_markdown,
     build_experiment_comparison_report,
-    build_run_batch_logical_agent_rows,
-    build_run_batch_logical_agent_summary,
 )
 from ..services.experiment_run_service import run_experiment_scenario, normalize_judge_modes
 
@@ -84,51 +74,6 @@ def _build_filtered_experiment_dataset(
     return runs, by_experiment_id
 
 
-def _load_session_bundle(db: Session, session_id: int):
-    session_obj = db.query(TestSession).filter(TestSession.id == session_id).first()
-    if not session_obj:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-
-    roles = db.query(RoleCredential).filter(
-        RoleCredential.session_id == session_id
-    ).order_by(RoleCredential.id.asc()).all()
-
-    findings = db.query(Finding).filter(
-        Finding.session_id == session_id
-    ).order_by(Finding.id.asc()).all()
-
-    judge_decisions = db.query(JudgeDecision).filter(
-        JudgeDecision.session_id == session_id
-    ).order_by(JudgeDecision.round_no.asc()).all()
-
-    observations = db.query(Observation).filter(
-        Observation.session_id == session_id
-    ).order_by(Observation.id.asc()).all()
-
-    hypotheses = db.query(Hypothesis).filter(
-        Hypothesis.session_id == session_id
-    ).order_by(Hypothesis.id.asc()).all()
-
-    agent_memory_rows = db.query(AgentStrategyMemory).filter(
-        AgentStrategyMemory.session_id == session_id
-    ).order_by(AgentStrategyMemory.agent_name.asc(), AgentStrategyMemory.id.asc()).all()
-
-    agent_judge_feedback_rows = db.query(AgentJudgeFeedback).filter(
-        AgentJudgeFeedback.session_id == session_id
-    ).order_by(AgentJudgeFeedback.round_no.asc(), AgentJudgeFeedback.id.asc()).all()
-
-    return (
-        session_obj,
-        roles,
-        findings,
-        judge_decisions,
-        observations,
-        hypotheses,
-        agent_memory_rows,
-        agent_judge_feedback_rows,
-    )
-
-
 @router.post("/run")
 def run_experiment(payload: dict, db: Session = Depends(get_db)):
     target_name = payload.get("target_name")
@@ -171,115 +116,12 @@ def run_experiment_summary(payload: dict, db: Session = Depends(get_db)):
 
 @router.post("/run-batch")
 def run_experiment_batch(payload: dict, db: Session = Depends(get_db)):
-    target_name = payload.get("target_name")
-    target_url = payload.get("target_url")
-    max_rounds = payload.get("max_rounds", 5)
-    profile = payload.get("profile", "mixed")
-    judge_modes = normalize_judge_modes(payload.get("judge_modes"))
-
-    if not target_name or not target_url:
-        raise HTTPException(status_code=400, detail="target_name and target_url are required")
-
-    runs = []
-    experiment_ids = []
-    for judge_mode in judge_modes:
-        result = run_experiment_scenario(
-            db=db,
-            target_name=target_name,
-            target_url=target_url,
-            judge_mode=judge_mode,
-            max_rounds=max_rounds,
-            profile=profile,
-        )
-        runs.append(result)
-        experiment_ids.append(result["experiment_id"])
-
-    experiment_rows = db.query(ExperimentRun).filter(
-        ExperimentRun.id.in_(experiment_ids)
-    ).all()
-    result_rows = db.query(ExperimentResult).filter(
-        ExperimentResult.experiment_id.in_(experiment_ids)
-    ).all()
-    by_experiment_id = {row.experiment_id: row for row in result_rows}
-
-    comparison_report = build_experiment_comparison_report(
-        runs=experiment_rows,
-        by_experiment_id=by_experiment_id,
-        filters={
-            "target_name": target_name,
-            "target_url": target_url,
-            "profile": profile,
-            "judge_modes": judge_modes,
-            "max_rounds": max_rounds,
-            "batch_experiment_ids": sorted(experiment_ids),
-        },
-    )
-
-    return {
-        "batch": {
-            "target_name": target_name,
-            "target_url": target_url,
-            "profile": profile,
-            "judge_modes": judge_modes,
-            "max_rounds": max_rounds,
-            "experiment_ids": sorted(experiment_ids),
-            "runs_total": len(runs),
-        },
-        "runs": runs,
-        "batch_logical_agent_summary": build_run_batch_logical_agent_summary(runs),
-        "batch_logical_agent_rows": build_run_batch_logical_agent_rows(runs),
-        "comparison_report": comparison_report,
-    }
+    return build_run_batch_response(db, payload)
 
 
 @router.post("/run-batch-with-reports")
 def run_experiment_batch_with_reports(payload: dict, db: Session = Depends(get_db)):
-    batch_response = run_experiment_batch(payload, db=db)
-
-    session_reports = []
-    for run in batch_response["runs"]:
-        session_id = run.get("session_id")
-        if not session_id:
-            continue
-
-        (
-            session_obj,
-            roles,
-            findings,
-            judge_decisions,
-            observations,
-            hypotheses,
-            agent_memory_rows,
-            agent_judge_feedback_rows,
-        ) = _load_session_bundle(db, session_id)
-
-        llm_report = build_session_llm_report(
-            session_obj=session_obj,
-            roles=roles,
-            findings=findings,
-            judge_decisions=judge_decisions,
-            observations=observations,
-            hypotheses=hypotheses,
-            agent_memory_rows=agent_memory_rows,
-            agent_judge_feedback_rows=agent_judge_feedback_rows,
-        )
-
-        session_reports.append(
-            {
-                "session_id": session_id,
-                "judge_mode": run.get("judge_mode"),
-                "profile": run.get("profile"),
-                "provider": llm_report.get("provider"),
-                "used_fallback": llm_report.get("used_fallback"),
-                "saved_report_path": llm_report.get("saved_report_path"),
-                "report_preview": str(llm_report.get("report_text", ""))[:1200],
-            }
-        )
-
-    return {
-        **batch_response,
-        "session_reports": session_reports,
-    }
+    return build_run_batch_with_reports_response(db, payload)
 
 
 @router.get("/comparison")

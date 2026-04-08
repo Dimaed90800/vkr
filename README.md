@@ -229,17 +229,39 @@ The following orchestration workflows are currently supported:
 - `Rule-Based Experiment Runner`
 - `Dify Experiment Runner`
 - `Batch Experiments With Reports`
+- `Batch Job Runner (Polling)`
 
 The repository also includes an importable workflow template:
 
 - [`n8n/workflows/run_batch_with_reports.json`](/Users/vanya/PycharmProjects/vkr/n8n/workflows/run_batch_with_reports.json)
+- [`n8n/workflows/run_batch_job_polling.json`](/Users/vanya/PycharmProjects/vkr/n8n/workflows/run_batch_job_polling.json)
 
-This workflow is designed as an outer orchestration layer above the backend:
+Two orchestration styles are supported:
+
+### Direct batch execution
+
+This flow is useful for direct backend calls and short local runs:
 
 1. prepares a batch configuration
 2. calls `POST /experiments/run-batch-with-reports`
 3. receives experiment results together with generated LLM Markdown reports
 4. exposes saved report paths for quick review in `n8n`
+
+### Recommended job-based orchestration
+
+For `n8n`, the preferred production-like flow is job-based polling:
+
+1. call `POST /automation/run-batch-job`
+2. receive `job_id` with status `queued`
+3. wait for a short interval
+4. poll `GET /automation/jobs/{job_id}`
+5. continue polling while status is `queued` or `running`
+6. when status becomes `finished`, display artifact paths and report summary
+
+This avoids long-running blocking HTTP requests in `n8n` and makes the workflow more stable.
+The polling workflow is available as an importable template in:
+
+- [`n8n/workflows/run_batch_job_polling.json`](/Users/vanya/PycharmProjects/vkr/n8n/workflows/run_batch_job_polling.json)
 
 ## Project Structure
 
@@ -302,6 +324,100 @@ The response includes:
 Generated Markdown reports are saved to:
 
 - [`backend/exports/reports`](/Users/vanya/PycharmProjects/vkr/backend/exports/reports)
+
+Start a background automation job:
+
+```bash
+curl -X POST http://localhost:8000/automation/run-batch-job \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target_name": "crapi",
+    "target_url": "http://host.docker.internal:8888",
+    "profile": "mixed",
+    "max_rounds": 5,
+    "judge_modes": ["rule_based"]
+  }'
+```
+
+Then poll job status:
+
+```bash
+curl http://localhost:8000/automation/jobs/<job_id>
+```
+
+When the job finishes, the response includes:
+
+- `job_id`
+- `status`
+- `artifact_dir`
+- `result`
+- `result.artifact_paths.summary_markdown`
+- `result.session_reports`
+
+Automation job artifacts are saved to:
+
+- [`backend/exports/jobs`](/Users/vanya/PycharmProjects/vkr/backend/exports/jobs)
+
+Advanced experiment-design options are also supported in batch and automation payloads:
+
+- `enabled_logical_agents`
+  - enable only selected logical agents such as `authentication_agent`, `authorization_agent`, `exposure_agent`
+- `disabled_logical_agents`
+  - run agent ablations without editing backend code
+- `strategy_config.unified_weights`
+  - override unified arbitration blend weights for ablation experiments
+- `bootstrap_probes`
+  - attach target-specific seed requests for API portability experiments
+- `targets`
+  - run the same judge-mode matrix across multiple API targets in one batch
+- `external_baselines`
+  - attach normalized results from external tools such as Schemathesis, RESTler, EvoMaster or RESTSpecIT for side-by-side comparison in the generated comparison report
+
+Example payload for an ablation and portability-oriented automation run:
+
+```bash
+curl -X POST http://localhost:8000/automation/run-batch-job \
+  -H "Content-Type: application/json" \
+  -d '{
+    "judge_modes": ["rule_based", "dify", "unified"],
+    "max_rounds": 12,
+    "enabled_logical_agents": ["authorization_agent", "exposure_agent"],
+    "strategy_config": {
+      "unified_weights": {
+        "rule_weight": 0.55,
+        "dify_weight": 0.45
+      }
+    },
+    "targets": [
+      {
+        "target_name": "crapi",
+        "target_url": "http://host.docker.internal:8888",
+        "profile": "mixed"
+      }
+    ],
+    "external_baselines": [
+      {
+        "tool": "schemathesis",
+        "profile": "mixed",
+        "target_name": "crapi",
+        "findings_total": 3,
+        "confirmed_findings": 2,
+        "requests_used": 60,
+        "time_used": 120
+      }
+    ]
+  }'
+```
+
+Each job directory contains:
+
+- `batch_result.json`
+- `comparison_report.json`
+- `session_reports.json`
+- `summary.md`
+- `reports/` with generated session Markdown reports
+
+Generated exports under [`backend/exports/jobs`](/Users/vanya/PycharmProjects/vkr/backend/exports/jobs) and runtime Markdown reports under [`backend/exports/reports`](/Users/vanya/PycharmProjects/vkr/backend/exports/reports) are treated as runtime artifacts and should not be committed to git.
 
 Run basic tests:
 

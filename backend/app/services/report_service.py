@@ -852,10 +852,36 @@ def build_final_session_report(
         "low": len([f for f in findings if (f.severity or "").lower() == "low"]),
     }
 
+    confirmed_findings = [f for f in findings if getattr(f, "verification_status", "candidate") == "confirmed"]
+    candidate_findings = [f for f in findings if getattr(f, "verification_status", "candidate") == "candidate"]
+    prioritized_main_findings = confirmed_findings[:5]
+    diagnostic_candidate_findings = candidate_findings[:5]
+
     top_findings = []
-    for finding in findings[:5]:
+    for finding in prioritized_main_findings:
         evidence = _safe_load_json(finding.evidence_json) or {}
         top_findings.append({
+            "id": finding.id,
+            "type": finding.finding_type,
+            "severity": finding.severity,
+            "endpoint": finding.endpoint,
+            "verification_status": finding.verification_status,
+            "title": finding.title,
+            "description": finding.description,
+            "evidence_preview": {
+                "signals": evidence.get("signals", [])[:5],
+                "exposed_fields": evidence.get("exposed_fields", [])[:5],
+                "owner_role": evidence.get("owner_role"),
+                "other_role": evidence.get("other_role"),
+                "status_owner": evidence.get("status_owner"),
+                "status_other": evidence.get("status_other"),
+            },
+        })
+
+    candidate_finding_details = []
+    for finding in diagnostic_candidate_findings:
+        evidence = _safe_load_json(finding.evidence_json) or {}
+        candidate_finding_details.append({
             "id": finding.id,
             "type": finding.finding_type,
             "severity": finding.severity,
@@ -904,6 +930,7 @@ def build_final_session_report(
         "internal_agent_effectiveness_summary": report["agent_effectiveness_summary"],
         "key_conclusion": report["key_conclusion"],
         "top_findings": top_findings,
+        "candidate_findings_for_review": candidate_finding_details,
     }
 
 
@@ -962,11 +989,53 @@ def build_session_markdown_report(
 
     if not final_report["top_findings"]:
         lines.extend([
-            "No findings were recorded.",
+            "No confirmed findings were recorded.",
             "",
         ])
     else:
         for finding in final_report["top_findings"]:
+            lines.extend([
+                f"### {finding['title']}",
+                "",
+                f"- Type: `{finding['type']}`",
+                f"- Severity: `{finding['severity']}`",
+                f"- Endpoint: `{finding['endpoint']}`",
+                f"- Verification: `{finding['verification_status']}`",
+                f"- Description: {finding['description']}",
+                "",
+            ])
+
+            signals = finding["evidence_preview"].get("signals") or []
+            exposed_fields = finding["evidence_preview"].get("exposed_fields") or []
+            if signals:
+                lines.append(f"- Evidence signals: {', '.join(signals)}")
+            if exposed_fields:
+                lines.append(f"- Exposed fields: {', '.join(exposed_fields)}")
+
+            if finding["evidence_preview"].get("owner_role") or finding["evidence_preview"].get("other_role"):
+                lines.append(
+                    f"- Roles compared: {finding['evidence_preview'].get('owner_role')} vs "
+                    f"{finding['evidence_preview'].get('other_role')}"
+                )
+            if finding["evidence_preview"].get("status_owner") or finding["evidence_preview"].get("status_other"):
+                lines.append(
+                    f"- Response status pair: {finding['evidence_preview'].get('status_owner')} / "
+                    f"{finding['evidence_preview'].get('status_other')}"
+                )
+            lines.append("")
+
+    lines.extend([
+        "## Candidate Findings Requiring Manual Review",
+        "",
+    ])
+
+    if not final_report["candidate_findings_for_review"]:
+        lines.extend([
+            "No candidate findings require additional manual review.",
+            "",
+        ])
+    else:
+        for finding in final_report["candidate_findings_for_review"]:
             lines.extend([
                 f"### {finding['title']}",
                 "",

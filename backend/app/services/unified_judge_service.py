@@ -6,6 +6,16 @@ from .judge_service import calculate_dynamic_priority
 ATTACK_HYPOTHESIS_TYPES = {"bola_probe", "verify_bola", "bopla_probe", "verify_bopla"}
 SUPPORT_HYPOTHESIS_TYPES = {"compare_roles", "authenticated_probe", "discovery"}
 
+DEFAULT_UNIFIED_WEIGHTS = {
+    "rule_weight": 0.65,
+    "dify_weight": 0.35,
+    "repeat_penalty_per_repeat": 0.04,
+    "repeat_penalty_cap": 0.18,
+    "late_round_bonus": 0.18,
+    "support_chain_penalty": 0.12,
+    "support_chain_bonus": 0.18,
+}
+
 
 def safe_dify_score(value) -> float:
     try:
@@ -211,8 +221,10 @@ def choose_unified_candidate(
     recent_observations=None,
     recent_selected_keys=None,
     recent_selected_hypothesis_types=None,
+    weight_config=None,
 ):
     recent_observations = recent_observations or []
+    config = {**DEFAULT_UNIFIED_WEIGHTS, **(weight_config or {})}
     scored = [(h, calculate_dynamic_priority(h, recent_observations=recent_observations)) for h in saved_candidates]
     scored.sort(key=lambda x: x[1], reverse=True)
     top_rule, top_rule_score = scored[0]
@@ -243,9 +255,16 @@ def choose_unified_candidate(
 
     dify_score = safe_dify_score(dify_response.get("score"))
     selected_rule_score = calculate_dynamic_priority(selected, recent_observations=recent_observations)
-    blended_score = round((0.65 * selected_rule_score) + (0.35 * dify_score), 4)
+    blended_score = round(
+        (float(config["rule_weight"]) * selected_rule_score)
+        + (float(config["dify_weight"]) * dify_score),
+        4,
+    )
     repeated_nomination_count = _count_recent_key_repeats(recent_selected_keys, dify_response.get("selected_key"))
-    repeated_nomination_penalty = round(min(0.18, repeated_nomination_count * 0.04), 4)
+    repeated_nomination_penalty = round(
+        min(float(config["repeat_penalty_cap"]), repeated_nomination_count * float(config["repeat_penalty_per_repeat"])),
+        4,
+    )
     adjusted_blended_score = round(blended_score - repeated_nomination_penalty, 4)
     repeated_top_rule_type_count = _count_recent_type_repeats(
         recent_selected_hypothesis_types,
@@ -266,11 +285,11 @@ def choose_unified_candidate(
         and dify_score >= 0.95
         and repeated_top_rule_type_count >= 2
     ):
-        late_round_bonus = 0.18
+        late_round_bonus = float(config["late_round_bonus"])
         adjusted_blended_score = round(adjusted_blended_score + late_round_bonus, 4)
     support_chain_penalty = 0.0
     if current_round >= 14 and _is_support_hypothesis(top_rule) and recent_support_count >= 3:
-        support_chain_penalty = 0.12
+        support_chain_penalty = float(config["support_chain_penalty"])
         adjusted_top_rule_score = round(adjusted_top_rule_score - support_chain_penalty, 4)
     support_chain_bonus = 0.0
     if (
@@ -280,7 +299,7 @@ def choose_unified_candidate(
         and _is_support_hypothesis(top_rule)
         and dify_score >= 0.95
     ):
-        support_chain_bonus = 0.18
+        support_chain_bonus = float(config["support_chain_bonus"])
         adjusted_blended_score = round(adjusted_blended_score + support_chain_bonus, 4)
 
     if _should_accept_dify_nomination(
@@ -304,6 +323,7 @@ def choose_unified_candidate(
                 f"top_rule_penalty={repeated_top_rule_penalty}, adjusted_rule_top={adjusted_top_rule_score}, "
                 f"late_round_bonus={late_round_bonus}, support_chain_penalty={support_chain_penalty}, "
                 f"support_chain_bonus={support_chain_bonus}, recent_support_count={recent_support_count}, "
+                f"weight_config={config}, "
                 f"current_round={current_round}."
             ),
         )
@@ -319,6 +339,7 @@ def choose_unified_candidate(
             f"adjusted_blended={adjusted_blended_score}, top_rule_penalty={repeated_top_rule_penalty}, "
             f"adjusted_rule_top={adjusted_top_rule_score}, late_round_bonus={late_round_bonus}, "
             f"support_chain_penalty={support_chain_penalty}, support_chain_bonus={support_chain_bonus}, "
+            f"weight_config={config}, "
             f"recent_support_count={recent_support_count}, "
             f"current_round={current_round}."
         ),

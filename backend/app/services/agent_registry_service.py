@@ -268,6 +268,46 @@ def normalize_enabled_agents(agent_names: list[str] | None) -> list[str]:
     return normalized or DEFAULT_ENABLED_AGENTS.copy()
 
 
+def expand_logical_agent_names(logical_agent_names: list[str] | None) -> list[str]:
+    if not logical_agent_names:
+        return []
+
+    logical_catalog_map = get_logical_agent_catalog_map()
+    expanded = []
+    seen = set()
+    for name in logical_agent_names:
+        logical_name = str(name or "").strip()
+        if not logical_name or logical_name not in logical_catalog_map:
+            continue
+        for internal_agent in logical_catalog_map[logical_name].get("internal_agents", []):
+            if not internal_agent or internal_agent in seen:
+                continue
+            seen.add(internal_agent)
+            expanded.append(internal_agent)
+    return expanded
+
+
+def resolve_experiment_enabled_agents(
+    *,
+    enabled_agents: list[str] | None = None,
+    enabled_logical_agents: list[str] | None = None,
+    disabled_logical_agents: list[str] | None = None,
+) -> list[str]:
+    if enabled_agents:
+        base_agents = normalize_enabled_agents(enabled_agents)
+    elif enabled_logical_agents:
+        base_agents = normalize_enabled_agents(expand_logical_agent_names(enabled_logical_agents))
+    else:
+        base_agents = DEFAULT_ENABLED_AGENTS.copy()
+
+    if not disabled_logical_agents:
+        return base_agents
+
+    disabled_internal_agents = set(expand_logical_agent_names(disabled_logical_agents))
+    remaining = [agent_name for agent_name in base_agents if agent_name not in disabled_internal_agents]
+    return normalize_enabled_agents(remaining)
+
+
 def load_enabled_agents_from_strategy_json(strategy_json: str | None) -> list[str]:
     if not strategy_json:
         return DEFAULT_ENABLED_AGENTS.copy()

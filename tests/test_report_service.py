@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from backend.app.services.report_service import build_session_report
+from backend.app.services.report_service import build_final_session_report, build_session_markdown_report, build_session_report
 
 
 class ReportServiceTests(unittest.TestCase):
@@ -162,6 +162,120 @@ class ReportServiceTests(unittest.TestCase):
 
         self.assertEqual(report["judge_trace_summary"]["rule_based_overrides"], 1)
         self.assertEqual(report["judge_trace_summary"]["fallbacks"], 1)
+
+    def test_final_report_keeps_main_findings_confirmed_only(self):
+        session_obj = SimpleNamespace(
+            id=1,
+            target_name="crapi",
+            target_url="http://target",
+            status="finished",
+            created_at="2026-03-24",
+            rounds_completed=2,
+            max_rounds=10,
+            budget_requests_used=3,
+            budget_requests_total=100,
+            stop_reason=None,
+            last_strategy_json="{}",
+        )
+        confirmed = SimpleNamespace(
+            id=1,
+            finding_type="possible_bola",
+            severity="high",
+            title="Confirmed BOLA",
+            description="confirmed issue",
+            endpoint="http://target/a",
+            verification_status="confirmed",
+            related_hypothesis_id=None,
+            related_observation_ids="[]",
+            evidence_json='{"signals":["matched"]}',
+            created_at="2026-03-24",
+        )
+        candidate = SimpleNamespace(
+            id=2,
+            finding_type="possible_bopla",
+            severity="medium",
+            title="Candidate BOPLA",
+            description="candidate issue",
+            endpoint="http://target/b",
+            verification_status="candidate",
+            related_hypothesis_id=None,
+            related_observation_ids="[]",
+            evidence_json='{"exposed_fields":["email"]}',
+            created_at="2026-03-24",
+        )
+
+        report = build_final_session_report(
+            session_obj=session_obj,
+            roles=[],
+            findings=[candidate, confirmed],
+            judge_decisions=[],
+            observations=[],
+            hypotheses=[],
+            agent_memory_rows=[],
+            agent_judge_feedback_rows=[],
+        )
+
+        self.assertEqual(len(report["top_findings"]), 1)
+        self.assertEqual(report["top_findings"][0]["title"], "Confirmed BOLA")
+        self.assertEqual(len(report["candidate_findings_for_review"]), 1)
+        self.assertEqual(report["candidate_findings_for_review"][0]["title"], "Candidate BOPLA")
+
+    def test_markdown_report_has_separate_candidate_section(self):
+        session_obj = SimpleNamespace(
+            id=1,
+            target_name="crapi",
+            target_url="http://target",
+            status="finished",
+            created_at="2026-03-24",
+            rounds_completed=2,
+            max_rounds=10,
+            budget_requests_used=3,
+            budget_requests_total=100,
+            stop_reason=None,
+            last_strategy_json="{}",
+        )
+        confirmed = SimpleNamespace(
+            id=1,
+            finding_type="possible_bola",
+            severity="high",
+            title="Confirmed BOLA",
+            description="confirmed issue",
+            endpoint="http://target/a",
+            verification_status="confirmed",
+            related_hypothesis_id=None,
+            related_observation_ids="[]",
+            evidence_json='{"signals":["matched"]}',
+            created_at="2026-03-24",
+        )
+        candidate = SimpleNamespace(
+            id=2,
+            finding_type="possible_bopla",
+            severity="medium",
+            title="Candidate BOPLA",
+            description="candidate issue",
+            endpoint="http://target/b",
+            verification_status="candidate",
+            related_hypothesis_id=None,
+            related_observation_ids="[]",
+            evidence_json='{"exposed_fields":["email"]}',
+            created_at="2026-03-24",
+        )
+
+        markdown = build_session_markdown_report(
+            session_obj=session_obj,
+            roles=[],
+            findings=[candidate, confirmed],
+            judge_decisions=[],
+            observations=[],
+            hypotheses=[],
+            agent_memory_rows=[],
+            agent_judge_feedback_rows=[],
+        )
+
+        self.assertIn("## Top Findings", markdown)
+        self.assertIn("Confirmed BOLA", markdown)
+        self.assertIn("## Candidate Findings Requiring Manual Review", markdown)
+        self.assertIn("Candidate BOPLA", markdown)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,8 @@ def get_db():
 @router.post("/create")
 def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db)):
     enabled_agents = normalize_enabled_agents(payload.enabled_agents)
+    strategy_payload = dict(payload.strategy_config or {})
+    strategy_payload["enabled_agents"] = enabled_agents
     session = TestSession(
         target_name=payload.target_name,
         target_url=payload.target_url,
@@ -30,7 +32,7 @@ def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db))
         max_rounds=payload.max_rounds,
         rounds_completed=0,
         allowed_test_classes_json=json.dumps(payload.allowed_test_classes or [], ensure_ascii=False),
-        last_strategy_json=json.dumps({"enabled_agents": enabled_agents}, ensure_ascii=False),
+        last_strategy_json=json.dumps(strategy_payload, ensure_ascii=False),
     )
     db.add(session)
     db.commit()

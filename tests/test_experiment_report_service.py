@@ -241,6 +241,104 @@ class ExperimentReportServiceTests(unittest.TestCase):
         self.assertEqual(rows[0]["judge_mode"], "unified")
         self.assertEqual(rows[0]["confirmed_findings"], 4)
 
+    def test_report_includes_external_baseline_comparisons(self):
+        runs = [
+            {
+                "judge_mode": "dify",
+                "profile": "mixed",
+                "target_name": "crapi",
+                "target_url": "http://target",
+                "result": {
+                    "findings_total": 8,
+                    "bola_findings": 7,
+                    "bopla_findings": 1,
+                    "confirmed_findings": 7,
+                    "confirmed_bola": 6,
+                    "confirmed_bopla": 1,
+                    "confirmed_auth_findings": 0,
+                    "fallback_count": 0,
+                    "avg_score": 0.95,
+                    "budget_requests_used": 42,
+                    "budget_time_used": 90,
+                    "selected_estimated_cost_total": 10.5,
+                },
+            }
+        ]
+
+        report = build_experiment_comparison_report(
+            runs=runs,
+            by_experiment_id={},
+            filters={
+                "target_name": "crapi",
+                "external_baselines": [
+                    {
+                        "tool": "schemathesis",
+                        "profile": "mixed",
+                        "target_name": "crapi",
+                        "findings_total": 3,
+                        "confirmed_findings": 2,
+                        "confirmed_bola": 1,
+                        "confirmed_bopla": 1,
+                        "confirmed_auth_findings": 0,
+                        "requests_used": 60,
+                        "time_used": 120,
+                    }
+                ],
+            },
+        )
+
+        self.assertEqual(report["totals"]["external_baseline_comparisons"], 1)
+        self.assertEqual(report["external_baseline_comparisons"][0]["tool"], "schemathesis")
+        self.assertEqual(
+            report["external_baseline_comparisons"][0]["delta_vs_baseline"]["confirmed_findings"],
+            5,
+        )
+
+    def test_report_includes_portability_summary_for_multiple_targets(self):
+        runs = [
+            {
+                "judge_mode": "rule_based",
+                "profile": "mixed",
+                "target_name": "crapi",
+                "target_url": "http://crapi",
+                "result": {
+                    "findings_total": 2,
+                    "bola_findings": 1,
+                    "bopla_findings": 1,
+                    "confirmed_findings": 2,
+                    "confirmed_bola": 1,
+                    "confirmed_bopla": 1,
+                    "fallback_count": 0,
+                    "avg_score": 0.8,
+                },
+            },
+            {
+                "judge_mode": "rule_based",
+                "profile": "mixed",
+                "target_name": "juice_shop",
+                "target_url": "http://juice",
+                "result": {
+                    "findings_total": 1,
+                    "bola_findings": 0,
+                    "bopla_findings": 1,
+                    "confirmed_findings": 1,
+                    "confirmed_bola": 0,
+                    "confirmed_bopla": 1,
+                    "fallback_count": 0,
+                    "avg_score": 0.7,
+                },
+            },
+        ]
+
+        report = build_experiment_comparison_report(
+            runs=runs,
+            by_experiment_id={},
+            filters={},
+        )
+
+        self.assertEqual(report["portability_summary"]["targets_total"], 2)
+        self.assertTrue(report["portability_summary"]["supports_cross_target_comparison"])
+
 
 if __name__ == "__main__":
     unittest.main()

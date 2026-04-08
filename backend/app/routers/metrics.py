@@ -112,6 +112,45 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
         Finding.session_id == session_id,
         Finding.verification_status == "rejected"
     ).count()
+    rate_limit_responses = db.query(Observation).filter(
+        Observation.session_id == session_id,
+        Observation.status_code == 429,
+    ).count()
+
+    hypotheses_by_id = {item.id: item for item in hypothesis_rows}
+    selected_hypotheses = [
+        hypotheses_by_id.get(getattr(decision, "selected_hypothesis_id", None))
+        for decision in judge_decision_rows
+    ]
+    selected_hypotheses = [item for item in selected_hypotheses if item is not None]
+    selected_estimated_cost_total = round(
+        sum(float(getattr(item, "estimated_cost", 0) or 0) for item in selected_hypotheses),
+        4,
+    )
+    avg_selected_estimated_cost = round(
+        selected_estimated_cost_total / len(selected_hypotheses),
+        4,
+    ) if selected_hypotheses else 0.0
+    budget_requests_used = int(getattr(session_obj, "budget_requests_used", 0) or 0)
+    budget_requests_total = getattr(session_obj, "budget_requests_total", None)
+    budget_time_used = int(getattr(session_obj, "budget_time_used", 0) or 0)
+    budget_time_total = getattr(session_obj, "budget_time_total", None)
+    request_budget_utilization = (
+        round(budget_requests_used / budget_requests_total, 4)
+        if budget_requests_total else 0.0
+    )
+    time_budget_utilization = (
+        round(budget_time_used / budget_time_total, 4)
+        if budget_time_total else 0.0
+    )
+    requests_per_confirmed_finding = (
+        round(budget_requests_used / confirmed_findings, 4)
+        if confirmed_findings else 0.0
+    )
+    time_per_confirmed_finding = (
+        round(budget_time_used / confirmed_findings, 4)
+        if confirmed_findings else 0.0
+    )
 
     dify_issue_counts = {
         "provider_credit_limit": 0,
@@ -175,8 +214,17 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
             "dify_issue_breakdown": dify_issue_counts,
             "rounds_completed": getattr(session_obj, "rounds_completed", 0),
             "max_rounds": getattr(session_obj, "max_rounds", None),
-            "budget_requests_used": getattr(session_obj, "budget_requests_used", 0),
-            "budget_requests_total": getattr(session_obj, "budget_requests_total", None),
+            "budget_requests_used": budget_requests_used,
+            "budget_requests_total": budget_requests_total,
+            "request_budget_utilization": request_budget_utilization,
+            "budget_time_used": budget_time_used,
+            "budget_time_total": budget_time_total,
+            "time_budget_utilization": time_budget_utilization,
+            "rate_limit_responses": rate_limit_responses,
+            "selected_estimated_cost_total": selected_estimated_cost_total,
+            "avg_selected_estimated_cost": avg_selected_estimated_cost,
+            "requests_per_confirmed_finding": requests_per_confirmed_finding,
+            "time_per_confirmed_finding": time_per_confirmed_finding,
             "session_status": getattr(session_obj, "status", None),
             "stop_reason": getattr(session_obj, "stop_reason", None),
             "agent_activity_summary": build_agent_activity_summary(hypothesis_rows, judge_decision_rows),

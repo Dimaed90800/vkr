@@ -61,6 +61,7 @@ def _generate_probe(context: dict) -> list[dict]:
         context["api_items"],
         context["observations"],
         context["authenticated_roles"],
+        getattr(context["session"], "target_url", None),
     )
 
 
@@ -73,6 +74,8 @@ def _generate_bola(context: dict) -> list[dict]:
         context["observations"],
         context["findings"],
         context["authenticated_roles"],
+        context["api_items"],
+        getattr(context["session"], "target_url", None),
     )
 
 

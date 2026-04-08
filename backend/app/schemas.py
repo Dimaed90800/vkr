@@ -10,6 +10,7 @@ class CreateSessionRequest(BaseModel):
     max_rounds: Optional[int] = 10
     allowed_test_classes: Optional[List[str]] = ["discovery", "bola", "bopla", "auth"]
     enabled_agents: Optional[List[str]] = None
+    strategy_config: Optional[Dict[str, Any]] = None
 
 
 class SessionResponse(BaseModel):
@@ -73,6 +74,7 @@ class CampaignRunRequest(BaseModel):
     max_rounds: Optional[int] = 10
     allowed_test_classes: Optional[List[str]] = ["discovery", "bola", "bopla", "auth"]
     enabled_agents: Optional[List[str]] = None
+    strategy_config: Optional[Dict[str, Any]] = None
 
 
 class CreateRoleRequest(BaseModel):

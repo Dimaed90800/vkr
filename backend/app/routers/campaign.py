@@ -32,6 +32,7 @@ from ..services.judge_service import (
 from ..services.unified_judge_service import choose_unified_candidate
 from ..services.session_state_service import (
     can_continue_session,
+    deserialize_strategy_state,
     register_requests,
     register_round,
     update_strategy_state,
@@ -93,6 +94,9 @@ def _select_hypothesis(payload: CampaignStepRequest, saved_candidates, db: Sessi
     recent_observations = db.query(Observation).filter(
         Observation.session_id == payload.session_id
     ).order_by(Observation.id.asc()).all()
+    session_obj = db.query(TestSession).filter(TestSession.id == payload.session_id).first()
+    strategy_config = deserialize_strategy_state(getattr(session_obj, "last_strategy_json", None))
+    unified_weights = strategy_config.get("unified_weights") if isinstance(strategy_config, dict) else None
 
     roles = db.query(RoleCredential).filter(
         RoleCredential.session_id == payload.session_id
@@ -154,6 +158,7 @@ def _select_hypothesis(payload: CampaignStepRequest, saved_candidates, db: Sessi
             recent_observations=recent_observations,
             recent_selected_keys=recent_selected_keys,
             recent_selected_hypothesis_types=recent_selected_hypothesis_types,
+            weight_config=unified_weights,
         )
         reasoning_summary = (
             f"{resolution_note} "
@@ -218,7 +223,7 @@ def _select_hypothesis(payload: CampaignStepRequest, saved_candidates, db: Sessi
                 return 0.5
             return raw_score
 
-        def _match_by_type_or_prefix(raw_key: str | None):
+        def _match_by_type_or_prefix(raw_key):
             key_norm = _normalized(raw_key)
             if not key_norm:
                 return None

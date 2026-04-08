@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.log
+backend/exports/jobs/
+backend/exports/reports/*.md
+!backend/exports/jobs/.gitkeep
+!backend/exports/reports/.gitkeep

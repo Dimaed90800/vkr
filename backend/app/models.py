@@ -223,3 +223,21 @@ class AgentJudgeFeedback(Base):
     priority_score = Column(Float, nullable=True)
     decision_reason = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class AutomationJob(Base):
+    __tablename__ = "automation_jobs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(String(64), nullable=False, unique=True, index=True)
+    job_type = Column(String(64), nullable=False, default="batch_experiments")
+    status = Column(String(32), nullable=False, default="queued")  # queued / running / finished / failed
+
+    payload_json = Column(Text, nullable=True)
+    result_json = Column(Text, nullable=True)
+    artifact_dir = Column(String(512), nullable=True)
+    error_text = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    finished_at = Column(DateTime(timezone=True), nullable=True)
