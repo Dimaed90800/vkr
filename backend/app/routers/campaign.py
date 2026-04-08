@@ -605,6 +605,7 @@ def campaign_step(payload: CampaignStepRequest, db: Session = Depends(get_db)):
         "agent_orchestration": {
             "enabled_agents": runtime["enabled_agents"],
             "enabled_logical_agents": runtime.get("enabled_logical_agents", []),
+            "exploitation_queue_summary": runtime.get("exploitation_queue_summary", {}),
             "agents_invoked": [item["agent_name"] for item in agent_invocations],
             "active_agents": [
                 item["agent_name"]

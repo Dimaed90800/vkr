@@ -2,11 +2,69 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from backend.app.services.agent_hypothesis_service import generate_auth_agent_hypotheses
+from backend.app.services.agent_hypothesis_service import (
+    generate_analysis_agent_hypotheses,
+    generate_auth_agent_hypotheses,
+    generate_bola_agent_hypotheses,
+)
 from backend.app.services.campaign_execution_service import execute_hypothesis
 
 
 class AuthenticationAgentServiceTests(unittest.TestCase):
+    def test_generate_bola_agent_adds_invariant_probe_from_observed_object_endpoint(self):
+        observations = [
+            SimpleNamespace(
+                id=101,
+                endpoint="http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+                method="GET",
+                role_name="user_a",
+                status_code=200,
+                body_preview='{"vehicleId":"123","lat":1,"lng":2}',
+            )
+        ]
+        roles = [
+            SimpleNamespace(role_name="user_a"),
+            SimpleNamespace(role_name="user_b"),
+        ]
+
+        hypotheses = generate_bola_agent_hypotheses(observations, [], roles)
+
+        invariant_probe = next(
+            item
+            for item in hypotheses
+            if item["candidate_key"].startswith("bola_probe::invariant::")
+        )
+        self.assertEqual(invariant_probe["payload"]["owner_role"], "user_a")
+        self.assertEqual(invariant_probe["payload"]["other_role"], "user_b")
+        self.assertEqual(invariant_probe["payload"]["invariant_name"], "cross_role_object_isolation")
+
+    def test_generate_analysis_agent_boosts_cross_role_response_parity_invariant(self):
+        observations = [
+            SimpleNamespace(
+                id=201,
+                endpoint="http://host.docker.internal:8888/community/api/v2/community/posts/recent",
+                method="GET",
+                role_name="user_a",
+                status_code=200,
+                body_preview='{"posts":[{"author":{"email":"a@example.com","name":"A"}}]}',
+            ),
+            SimpleNamespace(
+                id=202,
+                endpoint="http://host.docker.internal:8888/community/api/v2/community/posts/recent",
+                method="GET",
+                role_name="user_b",
+                status_code=200,
+                body_preview='{"posts":[{"author":{"name":"B"}}]}',
+            ),
+        ]
+
+        hypotheses = generate_analysis_agent_hypotheses(observations)
+
+        compare_roles = next(item for item in hypotheses if item["hypothesis_type"] == "compare_roles")
+        self.assertEqual(compare_roles["payload"]["invariant_name"], "cross_role_response_parity")
+        self.assertTrue(compare_roles["payload"]["sensitive_field_asymmetry"])
+        self.assertGreater(compare_roles["confidence"], 0.92)
+
     def test_generate_auth_agent_adds_boundary_and_tokenless_probes(self):
         observations = [
             SimpleNamespace(

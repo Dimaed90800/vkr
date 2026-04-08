@@ -9,6 +9,7 @@ from ..services.report_service import (
     build_agent_activity_summary,
     build_agent_effectiveness_summary,
     build_agent_learning_summary,
+    extract_runtime_summaries,
     build_logical_agent_activity_summary,
     build_logical_agent_effectiveness_summary,
     build_logical_agent_judge_feedback_summary,
@@ -44,6 +45,9 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
     judge_decision_rows = db.query(JudgeDecision).filter(
         JudgeDecision.session_id == session_id
     ).all()
+    observation_rows = db.query(Observation).filter(
+        Observation.session_id == session_id
+    ).all()
     hypothesis_rows = db.query(Hypothesis).filter(
         Hypothesis.session_id == session_id
     ).all()
@@ -52,6 +56,9 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
     ).all()
     agent_judge_feedback_rows = db.query(AgentJudgeFeedback).filter(
         AgentJudgeFeedback.session_id == session_id
+    ).all()
+    finding_rows = db.query(Finding).filter(
+        Finding.session_id == session_id
     ).all()
 
     findings = db.query(Finding).filter(
@@ -168,6 +175,13 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
         )
         if issue_type in dify_issue_counts:
             dify_issue_counts[issue_type] += 1
+    runtime_summaries = extract_runtime_summaries(
+        session_obj,
+        observations=observation_rows,
+        findings=finding_rows,
+    )
+    exploitation_queue_summary = runtime_summaries["exploitation_queue_summary"]
+    terminal_reverification_summary = runtime_summaries["terminal_reverification_summary"]
 
     return {
         "session_id": session_id,
@@ -212,6 +226,18 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
             "candidate_findings": candidate_findings,
             "rejected_findings": rejected_findings,
             "dify_issue_breakdown": dify_issue_counts,
+            "coverage_summary": runtime_summaries["coverage_summary"],
+            "exploitation_queue_summary": exploitation_queue_summary,
+            "exploitation_queue_promoted_total": int(
+                exploitation_queue_summary.get("promoted_total", 0) or 0
+            ),
+            "terminal_reverification_summary": terminal_reverification_summary,
+            "terminal_reverification_attempted": int(
+                terminal_reverification_summary.get("attempted", 0) or 0
+            ),
+            "terminal_reverification_completed": int(
+                terminal_reverification_summary.get("completed", 0) or 0
+            ),
             "rounds_completed": getattr(session_obj, "rounds_completed", 0),
             "max_rounds": getattr(session_obj, "max_rounds", None),
             "budget_requests_used": budget_requests_used,
@@ -241,13 +267,13 @@ def get_session_metrics(session_id: int, db: Session = Depends(get_db)):
             "agent_effectiveness_summary": build_agent_effectiveness_summary(
                 hypothesis_rows,
                 judge_decision_rows,
-                db.query(Finding).filter(Finding.session_id == session_id).all(),
+                finding_rows,
                 memory_rows=agent_memory_rows,
             ),
             "logical_agent_effectiveness_summary": build_logical_agent_effectiveness_summary(
                 hypothesis_rows,
                 judge_decision_rows,
-                db.query(Finding).filter(Finding.session_id == session_id).all(),
+                finding_rows,
                 memory_rows=agent_memory_rows,
             ),
         }

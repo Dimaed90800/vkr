@@ -163,6 +163,68 @@ class ReportServiceTests(unittest.TestCase):
         self.assertEqual(report["judge_trace_summary"]["rule_based_overrides"], 1)
         self.assertEqual(report["judge_trace_summary"]["fallbacks"], 1)
 
+    def test_build_session_report_exposes_runtime_summaries(self):
+        session_obj = SimpleNamespace(
+            id=1,
+            target_name="crapi",
+            target_url="http://target",
+            status="finished",
+            created_at="2026-03-24",
+            rounds_completed=15,
+            max_rounds=15,
+            budget_requests_used=24,
+            budget_requests_total=200,
+            stop_reason="max_rounds_reached",
+            last_strategy_json=(
+                '{"enabled_agents":["rule_based_auth_agent","rule_based_bola_agent"],'
+                '"exploitation_queue_summary":{"enabled":true,"promoted_total":2,"promoted_candidate_keys":["a","b"]},'
+                '"terminal_reverification_summary":{"executed":true,"attempted":2,"completed":1,"results":[{"hypothesis_id":5}]}}'
+            ),
+        )
+        findings = [
+            SimpleNamespace(
+                id=1,
+                finding_type="possible_bola",
+                severity="high",
+                title="Confirmed BOLA",
+                description="confirmed issue",
+                endpoint="http://target/identity/api/v2/vehicle/123/location",
+                verification_status="confirmed",
+                related_hypothesis_id=None,
+                related_observation_ids="[]",
+                evidence_json="{}",
+                created_at="2026-03-24",
+            )
+        ]
+        observations = [
+            SimpleNamespace(
+                id=11,
+                endpoint="http://target/identity/api/v2/vehicle/123/location",
+                method="GET",
+                role_name="user_a",
+                status_code=200,
+                body_preview='{"ok":true}',
+                created_at="2026-03-24",
+            )
+        ]
+
+        report = build_session_report(
+            session_obj=session_obj,
+            roles=[],
+            findings=findings,
+            judge_decisions=[],
+            observations=observations,
+            hypotheses=[],
+            agent_memory_rows=[],
+            agent_judge_feedback_rows=[],
+        )
+
+        self.assertEqual(report["exploitation_queue_summary"]["promoted_total"], 2)
+        self.assertTrue(report["terminal_reverification_summary"]["executed"])
+        self.assertEqual(report["terminal_reverification_summary"]["completed"], 1)
+        self.assertEqual(report["coverage_summary"]["observation_buckets"]["object_access"], 1)
+        self.assertEqual(report["coverage_summary"]["finding_buckets"]["object_access_findings"], 1)
+
     def test_final_report_keeps_main_findings_confirmed_only(self):
         session_obj = SimpleNamespace(
             id=1,

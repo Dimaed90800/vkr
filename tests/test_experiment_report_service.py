@@ -180,6 +180,62 @@ class ExperimentReportServiceTests(unittest.TestCase):
         self.assertEqual(item["selected_hypotheses"], 6)
         self.assertEqual(item["confirmed_findings"], 3)
 
+    def test_report_includes_stable_and_unique_finding_summary(self):
+        runs = [
+            {
+                "judge_mode": "rule_based",
+                "profile": "mixed",
+                "finding_signatures": [
+                    {
+                        "signature": "possible_bopla|/community/posts/recent|posts.author.email",
+                        "finding_type": "possible_bopla",
+                        "endpoint": "/community/posts/recent",
+                        "verification_status": "confirmed",
+                    },
+                    {
+                        "signature": "possible_authentication_bypass|/dashboard|auth_boundary_probe|200",
+                        "finding_type": "possible_authentication_bypass",
+                        "endpoint": "/dashboard",
+                        "verification_status": "confirmed",
+                    },
+                ],
+            },
+            {
+                "judge_mode": "dify",
+                "profile": "mixed",
+                "finding_signatures": [
+                    {
+                        "signature": "possible_bopla|/community/posts/recent|posts.author.email",
+                        "finding_type": "possible_bopla",
+                        "endpoint": "/community/posts/recent",
+                        "verification_status": "confirmed",
+                    },
+                    {
+                        "signature": "possible_bola|/vehicle/123/location|user_a|user_b|123",
+                        "finding_type": "possible_bola",
+                        "endpoint": "/vehicle/123/location",
+                        "verification_status": "confirmed",
+                    },
+                ],
+            },
+        ]
+        by_experiment_id = {
+            1: SimpleNamespace(findings_total=2, bola_findings=0, bopla_findings=1, confirmed_findings=2, confirmed_bola=0, confirmed_bopla=1, judge_decisions=10, fallback_count=0, avg_score=0.8),
+            2: SimpleNamespace(findings_total=2, bola_findings=1, bopla_findings=1, confirmed_findings=2, confirmed_bola=1, confirmed_bopla=1, judge_decisions=10, fallback_count=0, avg_score=0.9),
+        }
+
+        report = build_experiment_comparison_report(
+            runs=runs,
+            by_experiment_id=by_experiment_id,
+            filters={"target_name": "crapi"},
+        )
+
+        summary = report["finding_stability_summary"]
+        self.assertEqual(summary["stable_findings_count"], 1)
+        self.assertEqual(summary["per_mode"]["rule_based"]["unique_findings_count"], 1)
+        self.assertEqual(summary["per_mode"]["dify"]["unique_findings_count"], 1)
+        self.assertEqual(report["totals"]["stable_findings_count"], 1)
+
     def test_run_batch_logical_agent_summary_uses_live_run_payload(self):
         runs = [
             {

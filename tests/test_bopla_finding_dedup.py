@@ -3,12 +3,71 @@ import unittest
 from types import SimpleNamespace
 
 from backend.app.services.finding_dedup_service import (
+    matching_bola_finding,
     matching_bopla_finding,
     merge_related_observation_ids,
 )
 
 
 class BoplaFindingDedupTests(unittest.TestCase):
+    def test_matching_bola_finding_reuses_same_endpoint_role_pair_and_object(self):
+        finding = SimpleNamespace(
+            finding_type="possible_bola",
+            endpoint="http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+            verification_status="confirmed",
+            evidence_json=json.dumps(
+                {
+                    "owner_role": "user_a",
+                    "other_role": "user_b",
+                    "owner_object_id": "123",
+                    "other_object_id": "123",
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        matched = matching_bola_finding(
+            [finding],
+            "http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+            {
+                "owner_role": "user_a",
+                "other_role": "user_b",
+                "owner_object_id": "123",
+                "other_object_id": "123",
+            },
+        )
+
+        self.assertIs(matched, finding)
+
+    def test_matching_bola_finding_keeps_distinct_object_ids_separate(self):
+        finding = SimpleNamespace(
+            finding_type="possible_bola",
+            endpoint="http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+            verification_status="confirmed",
+            evidence_json=json.dumps(
+                {
+                    "owner_role": "user_a",
+                    "other_role": "user_b",
+                    "owner_object_id": "123",
+                    "other_object_id": "123",
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+        matched = matching_bola_finding(
+            [finding],
+            "http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+            {
+                "owner_role": "user_a",
+                "other_role": "user_b",
+                "owner_object_id": "456",
+                "other_object_id": "456",
+            },
+        )
+
+        self.assertIsNone(matched)
+
     def test_matching_bopla_finding_reuses_confirmed_same_fields(self):
         finding = SimpleNamespace(
             finding_type="possible_bopla",

@@ -11,6 +11,7 @@ from ..services.analysis_service import compare_observations
 from ..services.bola_service import infer_bola_from_observations
 from ..services.bopla_service import analyze_bopla_observation
 from ..services.finding_dedup_service import (
+    matching_bola_finding,
     matching_bopla_finding,
     merge_related_observation_ids,
 )
@@ -462,16 +463,24 @@ def execute_hypothesis(db, session_obj, selected):
         bola_analysis = infer_bola_from_observations(obs_owner, obs_other)
 
         if bola_analysis.get("inference") == "possible_bola":
-            finding = db.query(Finding).filter(
+            existing_findings = db.query(Finding).filter(
                 Finding.session_id == session_obj.id,
                 Finding.finding_type == "possible_bola",
                 Finding.endpoint == selected.target_endpoint,
-                Finding.verification_status == "candidate",
-            ).first()
+                Finding.verification_status.in_(["candidate", "confirmed"]),
+            ).all()
+            finding = matching_bola_finding(
+                existing_findings,
+                selected.target_endpoint,
+                bola_analysis,
+            )
 
             if finding:
                 finding.related_hypothesis_id = selected.id
-                finding.related_observation_ids = json.dumps([obs_owner.id, obs_other.id], ensure_ascii=False)
+                finding.related_observation_ids = merge_related_observation_ids(
+                    finding.related_observation_ids,
+                    [obs_owner.id, obs_other.id],
+                )
                 finding.description = (
                     f"Same object endpoint was accessible for roles {owner.role_name} and {other.role_name} "
                     f"with successful responses and equivalent object evidence."

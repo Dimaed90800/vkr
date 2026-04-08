@@ -16,7 +16,7 @@ from ..models import (
 )
 from .agent_registry_service import normalize_enabled_agents
 from .judge_trace_service import classify_dify_issue
-from .report_service import build_session_report
+from .report_service import build_session_report, extract_runtime_summaries
 
 
 def create_campaign_session(
@@ -52,14 +52,16 @@ def create_campaign_session(
 
 def collect_session_metrics(db: Session, session_id: int):
     session_obj = db.query(TestSession).filter(TestSession.id == session_id).first()
+    observation_rows = db.query(Observation).filter(Observation.session_id == session_id).all()
+    finding_rows = db.query(Finding).filter(Finding.session_id == session_id).all()
 
-    observations = db.query(Observation).filter(Observation.session_id == session_id).count()
+    observations = len(observation_rows)
     hypotheses = db.query(Hypothesis).filter(Hypothesis.session_id == session_id).count()
     judge_decision_rows = db.query(JudgeDecision).filter(
         JudgeDecision.session_id == session_id
     ).all()
 
-    findings_total = db.query(Finding).filter(Finding.session_id == session_id).count()
+    findings_total = len(finding_rows)
     bola_findings = db.query(Finding).filter(
         Finding.session_id == session_id,
         Finding.finding_type == "possible_bola",
@@ -125,6 +127,13 @@ def collect_session_metrics(db: Session, session_id: int):
         )
         if issue_type in dify_issue_counts:
             dify_issue_counts[issue_type] += 1
+    runtime_summaries = extract_runtime_summaries(
+        session_obj,
+        observations=observation_rows,
+        findings=finding_rows,
+    )
+    exploitation_queue_summary = runtime_summaries["exploitation_queue_summary"]
+    terminal_reverification_summary = runtime_summaries["terminal_reverification_summary"]
 
     return {
         "session_id": session_id,
@@ -177,6 +186,18 @@ def collect_session_metrics(db: Session, session_id: int):
             "candidate_findings": candidate_findings,
             "rejected_findings": rejected_findings,
             "dify_issue_breakdown": dify_issue_counts,
+            "coverage_summary": runtime_summaries["coverage_summary"],
+            "exploitation_queue_summary": exploitation_queue_summary,
+            "exploitation_queue_promoted_total": int(
+                exploitation_queue_summary.get("promoted_total", 0) or 0
+            ),
+            "terminal_reverification_summary": terminal_reverification_summary,
+            "terminal_reverification_attempted": int(
+                terminal_reverification_summary.get("attempted", 0) or 0
+            ),
+            "terminal_reverification_completed": int(
+                terminal_reverification_summary.get("completed", 0) or 0
+            ),
             "rounds_completed": getattr(session_obj, "rounds_completed", 0),
             "max_rounds": getattr(session_obj, "max_rounds", None),
             "budget_requests_used": getattr(session_obj, "budget_requests_used", 0),

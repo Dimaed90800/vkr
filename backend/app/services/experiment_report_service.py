@@ -30,6 +30,70 @@ def _extract_run_result(run, by_experiment_id):
     return by_experiment_id.get(run.id)
 
 
+def _run_finding_signatures(run) -> list[dict]:
+    if isinstance(run, dict):
+        items = run.get("finding_signatures") or []
+        return items if isinstance(items, list) else []
+    items = getattr(run, "finding_signatures", None) or []
+    return items if isinstance(items, list) else []
+
+
+def _build_stability_summary(runs) -> dict:
+    by_mode = {}
+    signature_presence = {}
+    signature_meta = {}
+
+    for run in runs:
+        judge_mode = _run_attr(run, "judge_mode")
+        run_signatures = _run_finding_signatures(run)
+        seen_in_run = set()
+        for item in run_signatures:
+            if not isinstance(item, dict):
+                continue
+            signature = str(item.get("signature") or "").strip()
+            if not signature or signature in seen_in_run:
+                continue
+            seen_in_run.add(signature)
+            by_mode.setdefault(judge_mode, set()).add(signature)
+            signature_presence.setdefault(signature, set()).add(judge_mode)
+            signature_meta.setdefault(
+                signature,
+                {
+                    "signature": signature,
+                    "finding_type": item.get("finding_type"),
+                    "endpoint": item.get("endpoint"),
+                },
+            )
+
+    all_modes = sorted({str(_run_attr(run, "judge_mode") or "") for run in runs if _run_attr(run, "judge_mode")})
+    stable_signatures = sorted(
+        [
+            signature
+            for signature, modes in signature_presence.items()
+            if len(modes) >= 2
+        ]
+    )
+    stable_findings = [signature_meta[signature] for signature in stable_signatures]
+
+    per_mode = {}
+    for judge_mode in all_modes:
+        mode_signatures = by_mode.get(judge_mode, set())
+        unique_signatures = sorted(
+            [signature for signature in mode_signatures if len(signature_presence.get(signature, set())) == 1]
+        )
+        per_mode[judge_mode] = {
+            "stable_findings_count": len([signature for signature in mode_signatures if signature in stable_signatures]),
+            "unique_findings_count": len(unique_signatures),
+            "unique_findings": [signature_meta[signature] for signature in unique_signatures],
+        }
+
+    return {
+        "stable_findings_count": len(stable_findings),
+        "stable_findings": stable_findings,
+        "per_mode": per_mode,
+    }
+
+
 def _build_group_key(run, *, include_target=False, include_design=False) -> str:
     judge_mode = _run_attr(run, "judge_mode")
     profile = _run_attr(run, "profile", "mixed")
@@ -500,6 +564,7 @@ def build_experiment_comparison_report(*, runs, by_experiment_id, filters: dict)
     pairwise_profile_comparisons = _build_pairwise_profile_comparisons(by_mode_profile)
     portability_summary = _build_portability_summary(runs, by_mode_profile)
     external_baseline_comparisons = _build_external_baseline_comparisons(by_mode_profile, filters)
+    finding_stability_summary = _build_stability_summary(runs)
     profile_comparisons = [
         {
             "profile": item["profile"],
@@ -558,11 +623,13 @@ def build_experiment_comparison_report(*, runs, by_experiment_id, filters: dict)
             "pairwise_comparisons": len(pairwise_profile_comparisons),
             "targets_total": portability_summary["targets_total"],
             "external_baseline_comparisons": len(external_baseline_comparisons),
+            "stable_findings_count": finding_stability_summary["stable_findings_count"],
         },
         "group_summary": by_mode_profile,
         "logical_agent_group_summary": logical_agent_group_summary,
         "profile_comparisons": profile_comparisons,
         "pairwise_profile_comparisons": pairwise_profile_comparisons,
+        "finding_stability_summary": finding_stability_summary,
         "portability_summary": portability_summary,
         "external_baseline_comparisons": external_baseline_comparisons,
         "executive_summary": {

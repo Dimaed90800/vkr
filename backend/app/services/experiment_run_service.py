@@ -1,11 +1,12 @@
 import os
+import json
 from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from ..models import ExperimentRun, ExperimentResult
+from ..models import ExperimentRun, ExperimentResult, Finding
 from .agent_registry_service import resolve_experiment_enabled_agents
 from .judge_trace_service import classify_dify_issue
 
@@ -35,6 +36,60 @@ DEFAULT_BOOTSTRAP_BY_TARGET = {
 DEFAULT_INTERNAL_HTTP_TIMEOUT = int(os.getenv("EXPERIMENT_INTERNAL_HTTP_TIMEOUT", "60"))
 DEFAULT_INTERNAL_STEP_TIMEOUT = int(os.getenv("EXPERIMENT_INTERNAL_STEP_TIMEOUT", "180"))
 DEFAULT_INTERNAL_METRICS_TIMEOUT = int(os.getenv("EXPERIMENT_INTERNAL_METRICS_TIMEOUT", "120"))
+
+
+def _safe_json_load(value):
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _normalize_string_list(values) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result = []
+    for item in values:
+        normalized = str(item or "").strip()
+        if normalized and normalized not in result:
+            result.append(normalized)
+    return sorted(result)
+
+
+def _build_finding_signature(finding) -> dict:
+    evidence = _safe_json_load(getattr(finding, "evidence_json", None))
+    finding_type = str(getattr(finding, "finding_type", "") or "")
+    endpoint = str(getattr(finding, "endpoint", "") or "")
+    verification_status = str(getattr(finding, "verification_status", "") or "")
+
+    if finding_type == "possible_bola":
+        owner_role = str(evidence.get("owner_role", "") or "")
+        other_role = str(evidence.get("other_role", "") or "")
+        object_id = str(
+            evidence.get("owner_object_id")
+            or evidence.get("other_object_id")
+            or ""
+        ).strip()
+        signature = f"{finding_type}|{endpoint}|{owner_role}|{other_role}|{object_id}"
+    elif finding_type == "possible_bopla":
+        fields = _normalize_string_list(evidence.get("exposed_fields"))
+        signature = f"{finding_type}|{endpoint}|{'|'.join(fields)}"
+    elif finding_type in {"possible_authentication_bypass", "auth_boundary_signal"}:
+        status_code = str(evidence.get("status_code", "") or "")
+        action = str(evidence.get("action_executed", "") or "")
+        signature = f"{finding_type}|{endpoint}|{action}|{status_code}"
+    else:
+        signature = f"{finding_type}|{endpoint}"
+
+    return {
+        "signature": signature,
+        "finding_type": finding_type,
+        "endpoint": endpoint,
+        "verification_status": verification_status,
+    }
 
 
 def extract_logical_agent_summary(agent_metrics: Optional[dict]) -> dict:
@@ -327,6 +382,14 @@ def run_experiment_scenario(
         "requests_per_confirmed_finding": metrics.get("requests_per_confirmed_finding", 0.0),
         "time_per_confirmed_finding": metrics.get("time_per_confirmed_finding", 0.0),
     }
+    finding_rows = db.query(Finding).filter(
+        Finding.session_id == session_id
+    ).order_by(Finding.id.asc()).all()
+    finding_signatures = [
+        _build_finding_signature(item)
+        for item in finding_rows
+        if getattr(item, "verification_status", "candidate") in {"candidate", "confirmed"}
+    ]
 
     result = ExperimentResult(
         experiment_id=experiment.id,
@@ -371,6 +434,7 @@ def run_experiment_scenario(
         },
         "agent_summary": agent_metrics,
         "logical_agent_summary": extract_logical_agent_summary(agent_metrics),
+        "finding_signatures": finding_signatures,
         "experiment_design": {
             "enabled_agents": resolved_enabled_agents,
             "enabled_logical_agents": sorted({item.get("logical_agent_name") for item in (agent_metrics.get("logical_agent_activity_summary", {}) or {}).get("logical_agents", []) if item.get("logical_agent_name")}),

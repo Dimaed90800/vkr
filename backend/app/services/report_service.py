@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 from .agent_registry_service import (
     get_agent_catalog_map,
@@ -9,6 +10,12 @@ from .agent_registry_service import (
 )
 from .agent_judge_feedback_service import build_agent_judge_feedback_summary
 from .judge_trace_service import classify_dify_issue
+
+
+UUID_RE = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
 
 
 def _safe_load_json(value):
@@ -144,6 +151,58 @@ def _build_evidence_bundle(finding, observations):
             ),
             "has_sensitive_fields": bool(compact_evidence.get("exposed_fields")),
         },
+    }
+
+
+def _build_coverage_summary(observations, findings):
+    buckets = {
+        "object_access": 0,
+        "data_exposure": 0,
+        "auth_boundary": 0,
+        "high_value_api": 0,
+    }
+
+    for obs in observations or []:
+        endpoint = str(getattr(obs, "endpoint", "") or "").lower()
+        if any(marker in endpoint for marker in ["/vehicle/", "/order/", "/video/", "/merchant/", "/mechanic/", "/location", "/report"]) or UUID_RE.search(endpoint):
+            buckets["object_access"] += 1
+        if "/community/api/" in endpoint:
+            buckets["data_exposure"] += 1
+        if any(marker in endpoint for marker in ["/identity/api/v2/user", "/dashboard", "/identity/api/auth/"]):
+            buckets["auth_boundary"] += 1
+        if any(marker in endpoint for marker in ["/community/api/", "/identity/api/v2/user", "/identity/api/v2/vehicle", "/workshop/api/"]):
+            buckets["high_value_api"] += 1
+
+    finding_buckets = {
+        "object_access_findings": len([f for f in findings if getattr(f, "finding_type", None) == "possible_bola"]),
+        "data_exposure_findings": len([f for f in findings if getattr(f, "finding_type", None) == "possible_bopla"]),
+        "auth_boundary_findings": len([
+            f for f in findings
+            if getattr(f, "finding_type", None) in {"possible_authentication_bypass", "auth_boundary_signal"}
+        ]),
+    }
+
+    return {
+        "observation_buckets": buckets,
+        "finding_buckets": finding_buckets,
+        "covered_buckets_total": len([name for name, count in buckets.items() if count > 0]),
+        "undercovered_buckets": sorted([name for name, count in buckets.items() if count <= 1]),
+    }
+
+
+def extract_runtime_summaries(session_obj, observations=None, findings=None):
+    strategy_state = _safe_load_json(getattr(session_obj, "last_strategy_json", None)) or {}
+    exploitation_queue_summary = strategy_state.get("exploitation_queue_summary", {})
+    terminal_reverification_summary = strategy_state.get("terminal_reverification_summary", {})
+    return {
+        "coverage_summary": _build_coverage_summary(observations or [], findings or []),
+        "exploitation_queue_summary": (
+            exploitation_queue_summary if isinstance(exploitation_queue_summary, dict) else {}
+        ),
+        "terminal_reverification_summary": (
+            terminal_reverification_summary
+            if isinstance(terminal_reverification_summary, dict) else {}
+        ),
     }
 
 
@@ -570,6 +629,11 @@ def build_session_report(
     dify_issue_summary = _build_dify_issue_summary(judge_decisions)
     hypotheses_by_id = {h.id: h for h in (hypotheses or [])}
     strategy_state = _safe_load_json(getattr(session_obj, "last_strategy_json", None)) or {}
+    runtime_summaries = extract_runtime_summaries(
+        session_obj,
+        observations=observations,
+        findings=findings,
+    )
 
     report = {
         "session": {
@@ -596,6 +660,9 @@ def build_session_report(
         },
         "key_conclusion": _build_key_conclusion(findings),
         "judge_trace_summary": dify_issue_summary,
+        "coverage_summary": runtime_summaries["coverage_summary"],
+        "exploitation_queue_summary": runtime_summaries["exploitation_queue_summary"],
+        "terminal_reverification_summary": runtime_summaries["terminal_reverification_summary"],
         "agent_orchestration": {
             "enabled_agents": strategy_state.get("enabled_agents", []),
             "enabled_logical_agents": sorted(

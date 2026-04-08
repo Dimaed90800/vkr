@@ -12,6 +12,7 @@ from ..services.agent_hypothesis_service import (
 from ..services.agent_adapter_service import generate_hypotheses_for_agent
 from ..services.agent_judge_feedback_service import apply_judge_feedback_to_hypotheses
 from ..services.agent_memory_service import apply_agent_memory_to_hypotheses
+from ..services.exploitation_queue_service import promote_hypotheses
 from ..services.agent_registry_service import (
     get_agent_catalog,
     get_agent_catalog_map,
@@ -140,6 +141,7 @@ def run_agent_cycle_for_session(db, session_id: int) -> dict:
     )
     hypotheses = apply_agent_memory_to_hypotheses(db, session_id, hypotheses)
     hypotheses = apply_judge_feedback_to_hypotheses(db, session_id, hypotheses)
+    hypotheses, exploitation_queue_summary = promote_hypotheses(session_obj, hypotheses)
     hypotheses = _annotate_hypotheses_with_orchestration(
         hypotheses,
         context=context,
@@ -162,6 +164,7 @@ def run_agent_cycle_for_session(db, session_id: int) -> dict:
         "enabled_logical_agents": sorted({get_logical_agent_name(name) for name in enabled_agents}),
         "agent_invocations": agent_invocations,
         "logical_agent_summary": _build_logical_agent_summary(agent_invocations, logical_catalog_map),
+        "exploitation_queue_summary": exploitation_queue_summary,
         "hypotheses": hypotheses,
     }
 

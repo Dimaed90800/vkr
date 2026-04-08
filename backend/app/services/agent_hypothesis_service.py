@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from urllib.parse import urlparse
 
-from ..services.bopla_service import build_bopla_hypothesis_from_observation
+from ..services.bopla_service import (
+    build_bopla_hypothesis_from_observation,
+    extract_sensitive_field_paths,
+)
 from ..services.discovery_service import build_crapi_seed_urls
 from ..services.extraction_service import UUID_RE, extract_vehicle_ids_from_text
 
@@ -76,6 +79,140 @@ def find_recent_posts_observations(observations):
         obs for obs in observations
         if obs.endpoint and "/community/api/v2/community/posts/recent" in obs.endpoint and obs.status_code == 200
     ]
+
+
+def _is_object_style_endpoint(endpoint: str | None) -> bool:
+    value = str(endpoint or "").lower()
+    return bool(UUID_RE.search(value)) or any(
+        marker in value
+        for marker in [
+            "/vehicle/",
+            "/order/",
+            "/video/",
+            "/merchant/",
+            "/mechanic/",
+            "/report/",
+            "/location",
+        ]
+    )
+
+
+def _is_collection_or_profile_endpoint(endpoint: str | None) -> bool:
+    value = str(endpoint or "").lower()
+    return any(
+        marker in value
+        for marker in [
+            "/community/api/",
+            "/posts/recent",
+            "/identity/api/v2/user/dashboard",
+            "/identity/api/v2/user/",
+        ]
+    ) and not _is_object_style_endpoint(endpoint)
+
+
+def _try_parse_json_body(value: str | None):
+    if not value:
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def _extract_object_id_from_endpoint(endpoint: str | None) -> str | None:
+    value = str(endpoint or "").strip().rstrip("/")
+    if not value:
+        return None
+    parts = [item for item in value.split("/") if item]
+    if len(parts) < 2:
+        return None
+    for index in range(len(parts) - 1, -1, -1):
+        part = parts[index]
+        if UUID_RE.fullmatch(part):
+            return part
+    tail = parts[-1]
+    if tail in {"location", "report", "details"} and len(parts) >= 2:
+        return parts[-2]
+    return None
+
+
+def _has_sensitive_field_asymmetry(obs_a, obs_b) -> bool:
+    fields_a = set(extract_sensitive_field_paths(getattr(obs_a, "body_preview", "") or ""))
+    fields_b = set(extract_sensitive_field_paths(getattr(obs_b, "body_preview", "") or ""))
+    return bool(fields_a.symmetric_difference(fields_b))
+
+
+def _build_invariant_bola_hypotheses(observations, findings, authenticated_roles):
+    hypotheses = []
+    if len(authenticated_roles) < 2:
+        return hypotheses
+
+    seen = set()
+    role_names = [role.role_name for role in authenticated_roles if getattr(role, "role_name", None)]
+    recent_observations = observations[-25:] if len(observations) > 25 else observations
+
+    for obs in recent_observations:
+        endpoint = getattr(obs, "endpoint", None)
+        method = (getattr(obs, "method", None) or "GET").upper()
+        owner_role = getattr(obs, "role_name", None)
+        if (
+            not endpoint
+            or not owner_role
+            or method != "GET"
+            or getattr(obs, "status_code", None) != 200
+            or is_auth_endpoint(endpoint)
+            or not _is_object_style_endpoint(endpoint)
+        ):
+            continue
+
+        object_id = _extract_object_id_from_endpoint(endpoint)
+        if not object_id:
+            parsed = _try_parse_json_body(getattr(obs, "body_preview", None))
+            if isinstance(parsed, dict):
+                for key in ("id", "vehicleId", "orderId", "videoId", "video_id"):
+                    if parsed.get(key):
+                        object_id = str(parsed.get(key))
+                        break
+
+        for other_role in role_names:
+            if other_role == owner_role:
+                continue
+            if candidate_finding_exists(findings, "possible_bola", endpoint):
+                continue
+            if recent_observation_exists(observations, endpoint, method, other_role, limit=16):
+                continue
+            key = (endpoint, owner_role, other_role)
+            if key in seen:
+                continue
+            seen.add(key)
+            hypotheses.append(
+                {
+                    "candidate_key": f"bola_probe::invariant::{endpoint}::{owner_role}::{other_role}",
+                    "agent_name": "rule_based_bola_agent",
+                    "hypothesis_type": "bola_probe",
+                    "target_endpoint": endpoint,
+                    "http_method": method,
+                    "description": (
+                        f"Check object-isolation invariant on {endpoint}: "
+                        f"{other_role} should not access object observed by {owner_role}"
+                    ),
+                    "payload": {
+                        "owner_role": owner_role,
+                        "other_role": other_role,
+                        "object_type": "observed_object_endpoint",
+                        "object_id": object_id,
+                        "source": "invariant_object_isolation",
+                        "source_observation_id": getattr(obs, "id", None),
+                        "invariant_name": "cross_role_object_isolation",
+                    },
+                    "confidence": 0.94,
+                    "estimated_cost": 1.0,
+                    "false_positive_risk": 0.07,
+                    "coverage_gain": 0.93,
+                    "evidence_readiness": 0.96,
+                }
+            )
+    return hypotheses
 
 
 def recent_observation_exists(observations, endpoint: str, method: str, role_name: str | None, limit: int = 5) -> bool:
@@ -747,6 +884,34 @@ def generate_analysis_agent_hypotheses(observations):
     for obs_a, obs_b in find_cross_role_pairs(observations)[:5]:
         if is_auth_endpoint(obs_a.endpoint):
             continue
+        same_success = getattr(obs_a, "status_code", None) == 200 and getattr(obs_b, "status_code", None) == 200
+        parsed_a = _try_parse_json_body(getattr(obs_a, "body_preview", None))
+        parsed_b = _try_parse_json_body(getattr(obs_b, "body_preview", None))
+        response_differs = parsed_a is not None and parsed_b is not None and parsed_a != parsed_b
+        sensitive_asymmetry = _has_sensitive_field_asymmetry(obs_a, obs_b)
+        invariant_triggered = (
+            same_success
+            and _is_collection_or_profile_endpoint(obs_a.endpoint)
+            and (response_differs or sensitive_asymmetry)
+        )
+        confidence = 0.92 if is_high_value_api_endpoint(obs_a.endpoint) else 0.80
+        coverage_gain = 0.88 if is_high_value_api_endpoint(obs_a.endpoint) else 0.55
+        evidence_readiness = 0.94 if is_high_value_api_endpoint(obs_a.endpoint) else 0.68
+        false_positive_risk = 0.08 if is_high_value_api_endpoint(obs_a.endpoint) else 0.22
+        payload = {
+            "observation_a_id": obs_a.id,
+            "observation_b_id": obs_b.id,
+            "role_a": obs_a.role_name,
+            "role_b": obs_b.role_name,
+        }
+        if invariant_triggered:
+            confidence = min(0.99, confidence + 0.05)
+            coverage_gain = min(0.99, coverage_gain + 0.06)
+            evidence_readiness = min(0.99, evidence_readiness + 0.04)
+            false_positive_risk = max(0.04, false_positive_risk - 0.03)
+            payload["invariant_name"] = "cross_role_response_parity"
+            payload["sensitive_field_asymmetry"] = sensitive_asymmetry
+            payload["response_differs"] = response_differs
         hypotheses.append({
             "candidate_key": f"compare_roles::{obs_a.method}::{obs_a.endpoint}",
             "agent_name": "rule_based_analysis_agent",
@@ -754,17 +919,12 @@ def generate_analysis_agent_hypotheses(observations):
             "target_endpoint": obs_a.endpoint,
             "http_method": obs_a.method,
             "description": f"Compare cross-role responses for {obs_a.method} {obs_a.endpoint}",
-            "payload": {
-                "observation_a_id": obs_a.id,
-                "observation_b_id": obs_b.id,
-                "role_a": obs_a.role_name,
-                "role_b": obs_b.role_name,
-            },
-            "confidence": 0.92 if is_high_value_api_endpoint(obs_a.endpoint) else 0.80,
+            "payload": payload,
+            "confidence": confidence,
             "estimated_cost": 0.5,
-            "false_positive_risk": 0.08 if is_high_value_api_endpoint(obs_a.endpoint) else 0.22,
-            "coverage_gain": 0.88 if is_high_value_api_endpoint(obs_a.endpoint) else 0.55,
-            "evidence_readiness": 0.94 if is_high_value_api_endpoint(obs_a.endpoint) else 0.68,
+            "false_positive_risk": false_positive_risk,
+            "coverage_gain": coverage_gain,
+            "evidence_readiness": evidence_readiness,
         })
     return hypotheses
 
@@ -844,6 +1004,13 @@ def generate_bola_agent_hypotheses(observations, findings, authenticated_roles, 
             "coverage_gain": 0.90,
             "evidence_readiness": 0.92,
         })
+    hypotheses.extend(
+        _build_invariant_bola_hypotheses(
+            observations,
+            findings,
+            authenticated_roles,
+        )
+    )
     return hypotheses
 
 
