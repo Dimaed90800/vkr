@@ -1,0 +1,8 @@
+[
+  "demo_target_vulnerable:8001",
+  "demo_target_secure:8001",
+  "host.docker.internal:8001",
+  "host.docker.internal:8002",
+  "127.0.0.1:8001",
+  "127.0.0.1:8002"
+]

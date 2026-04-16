@@ -1,0 +1,31 @@
+{
+  "task_id": "task_authz_bola_vehicle_location_001",
+  "worker_type": "authorization",
+  "request_summary": {
+    "method": "GET",
+    "endpoint": "http://127.0.0.1:8001/identity/api/v2/vehicle/veh-123/location?mode=vulnerable",
+    "tested_roles": ["user_a", "user_b"]
+  },
+  "response_summary": {
+    "owner": {
+      "status_code": 200,
+      "body_length": 150,
+      "elapsed_ms": 20.0,
+      "json_keys": ["location", "mode", "owner_role", "requested_by", "vehicle_id", "vin"],
+      "error": null
+    },
+    "other": {
+      "status_code": 200,
+      "body_length": 150,
+      "elapsed_ms": 19.0,
+      "json_keys": ["location", "mode", "owner_role", "requested_by", "vehicle_id", "vin"],
+      "error": null
+    },
+    "similarity": 0.95
+  },
+  "raw_status": "success",
+  "indicators": ["same_status_code", "similar_response", "potential_bola"],
+  "reasoning": "Both roles reached the same object successfully with highly similar responses.",
+  "artifacts": [],
+  "timestamp": "2026-04-14T12:00:00Z"
+}

@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkr.local/schemas/evidence.json",
+  "title": "EvidenceRecord",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "worker_type",
+    "request_summary",
+    "response_summary",
+    "raw_status",
+    "indicators",
+    "reasoning",
+    "artifacts",
+    "timestamp"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "worker_type": {
+      "type": "string",
+      "enum": ["authorization", "injection", "business_logic"]
+    },
+    "request_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "method": { "type": "string" },
+        "endpoint": { "type": "string" },
+        "headers_redacted": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "body_preview": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "response_summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "status_codes": {
+          "type": "array",
+          "items": { "type": "integer" }
+        },
+        "body_similarity": {
+          "type": ["string", "null"]
+        },
+        "body_preview": {
+          "type": ["string", "null"]
+        },
+        "elapsed_ms": {
+          "type": ["number", "null"]
+        }
+      }
+    },
+    "raw_status": {
+      "type": "string",
+      "enum": ["success", "failure", "unknown"]
+    },
+    "indicators": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "value"],
+        "properties": {
+          "type": { "type": "string" },
+          "value": {}
+        }
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

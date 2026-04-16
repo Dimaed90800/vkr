@@ -11,13 +11,13 @@ class ExperimentRunServiceTests(unittest.TestCase):
     def test_normalize_judge_modes_uses_default_matrix(self):
         self.assertEqual(
             normalize_judge_modes(None),
-            ["rule_based", "dify", "unified"],
+            ["agentic", "dify"],
         )
 
     def test_normalize_judge_modes_deduplicates_and_filters_invalid_values(self):
         self.assertEqual(
-            normalize_judge_modes(["dify", "rule_based", "dify", "invalid", "unified"]),
-            ["dify", "rule_based", "unified"],
+            normalize_judge_modes(["dify", "agentic", "dify", "invalid", "unified"]),
+            ["dify", "agentic", "unified"],
         )
 
     def test_extract_logical_agent_summary_keeps_only_logical_sections(self):

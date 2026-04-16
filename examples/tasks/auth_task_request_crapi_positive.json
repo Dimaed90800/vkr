@@ -1,0 +1,58 @@
+{
+  "execution_context": {
+    "target_url": "http://host.docker.internal:8888",
+    "allowed_hosts": ["host.docker.internal:8888"],
+    "roles": [
+      {
+        "name": "user_a",
+        "auth_headers": {
+          "Authorization": "Bearer <TOKEN_A>"
+        }
+      },
+      {
+        "name": "user_b",
+        "auth_headers": {
+          "Authorization": "Bearer <TOKEN_B>"
+        }
+      }
+    ],
+    "max_requests": 20,
+    "max_duration_sec": 300,
+    "max_retries_per_task": 1
+  },
+  "task": {
+    "id": "task_authorization_crapi_vehicle_location_001",
+    "class": "authorization",
+    "subtype": "bola",
+    "endpoint": "/identity/api/v2/vehicle/{id}/location",
+    "method": "GET",
+    "params": {
+      "path_params": ["id"],
+      "query_params": [],
+      "body_fields": [],
+      "object_id_candidates": ["4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5"],
+      "selected_object_id": "4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5",
+      "requires_object_id_enrichment": false,
+      "object_param_name": "carId"
+    },
+    "auth_context": {
+      "owner_role": "user_a",
+      "other_role": "user_b",
+      "token_strategy": "cross_role_replay"
+    },
+    "hypothesis": "Cross-role access to the same vehicle object may be possible.",
+    "priority": 100,
+    "retry_count": 0,
+    "rework_hint": null,
+    "status": "pending",
+    "allowed_tools": ["auth_test_access"]
+  },
+  "tool_name": "auth_test_access",
+  "arguments": {
+    "endpoint": "/identity/api/v2/vehicle/{id}/location",
+    "method": "GET",
+    "owner_role": "user_a",
+    "other_role": "user_b",
+    "object_id": "4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5"
+  }
+}

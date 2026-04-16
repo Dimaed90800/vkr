@@ -1,0 +1,21 @@
+{
+  "task_id": "task_authz_bola_vehicle_location_001",
+  "verdict": "confirmed",
+  "confidence": 0.94,
+  "reason": "Owner and non-owner roles both received successful and highly similar responses for the same vehicle object.",
+  "rework_hint": null,
+  "severity": "high",
+  "finding_candidate": {
+    "title": "Broken Object Level Authorization",
+    "vuln_type": "BOLA",
+    "endpoint": "http://127.0.0.1:8001/identity/api/v2/vehicle/veh-123/location",
+    "method": "GET",
+    "evidence_summary": "The owner role and a different role accessed the same vehicle location resource and received equivalent successful responses.",
+    "reproduction_steps": [
+      "Authenticate as user_a and request /identity/api/v2/vehicle/veh-123/location",
+      "Authenticate as user_b and repeat the same request",
+      "Compare status codes and response bodies"
+    ],
+    "remediation": "Enforce object ownership checks before returning vehicle location data."
+  }
+}

@@ -142,6 +142,10 @@ def build_session_llm_report(
         agent_memory_rows=agent_memory_rows,
         agent_judge_feedback_rows=agent_judge_feedback_rows,
     )
+    confirmed_top_findings = [
+        item for item in (final_report.get("top_findings") or [])
+        if item.get("verification_status") == "confirmed"
+    ]
 
     fallback_report = _render_local_report(final_report)
 
@@ -153,7 +157,7 @@ def build_session_llm_report(
             executive_summary=final_report["executive_summary"],
             risk_summary=final_report["risk_summary"],
             key_conclusion=final_report["key_conclusion"],
-            top_findings=final_report["top_findings"],
+            top_findings=confirmed_top_findings,
         )
         saved_report_path = _save_report_text(
             session_id=session_obj.id,

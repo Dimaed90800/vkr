@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from .db import Base, engine
 from .routers import (
+    agentic,
     automation,
     session,
     discovery,
@@ -25,6 +26,7 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="REST API Agentic Pentest Backend")
 
+app.include_router(agentic.router)
 app.include_router(session.router, prefix="/session", tags=["session"])
 app.include_router(discovery.router, prefix="/discovery", tags=["discovery"])
 app.include_router(observations.router, prefix="/observations", tags=["observations"])

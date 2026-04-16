@@ -1,0 +1,311 @@
+{
+  "version": "1.0",
+  "description": "Expected HTTP contract between Dify workflows and the backend toolbox.",
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/agentic/start",
+      "purpose": "Create an agentic session from user prompt and limits.",
+      "request": {
+        "target_name": "crapi",
+        "target_url": "http://host.docker.internal:8888",
+        "user_prompt": "Find confirmed BOLA and BOPLA vulnerabilities",
+        "allowed_test_classes": [
+          "discovery",
+          "bola",
+          "bopla",
+          "auth"
+        ],
+        "max_rounds": 15,
+        "budget_requests_total": 200,
+        "budget_time_total": 1800,
+        "strategy_config": {
+          "agentic_max_retries_per_candidate": 2,
+          "agentic_max_tasks_per_logical_agent": 4
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/context",
+      "purpose": "Return compact session context for orchestrator and worker agents."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/orchestrator-plan",
+      "purpose": "Return the logical-agent orchestration plan derived from the user prompt, enabled tools, and current session scope."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/router-plan",
+      "purpose": "Return prompt focus, agent plan, and normalized tasks for router/worker workflows."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/worker-tasks/auth",
+      "purpose": "Return structured auth worker tasks for bootstrap, registration, and login."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/worker-tasks/probe",
+      "purpose": "Return authenticated probe worker tasks used to create object-bearing observations for follow-up exploitation."
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/session/{session_id}/prepare-auth",
+      "purpose": "Run a bounded auth preparation loop to obtain two authenticated roles before BOLA execution.",
+      "request": {
+        "max_steps": 6
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/session/{session_id}/prepare-probe-seeds",
+      "purpose": "Run a bounded probe seeding loop to create authenticated observations after inventory seeding.",
+      "request": {
+        "max_steps": 4
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/worker-tasks/bola",
+      "purpose": "Return structured BOLA worker tasks with allowed tools and limits."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/worker-tasks/bopla",
+      "purpose": "Return structured BOPLA worker tasks for exposure analysis and follow-up verification."
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/session/{session_id}/worker-result",
+      "purpose": "Ingest a worker tool result, create or update a candidate finding, and return normalized evidence summary.",
+      "request": {
+        "worker_type": "replay_agent",
+        "tool_name": "probe_same_object_across_roles",
+        "task_id": "bola_probe::vehicle::uuid::user_a::user_b",
+        "vulnerability_class": "BOLA",
+        "result": {
+          "session_id": 159,
+          "owner_observation": {"id": 3134, "status_code": 200},
+          "other_observation": {"id": 3135, "status_code": 200},
+          "analysis": {"inference": "possible_bola"}
+        }
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/judge-package/{finding_id}",
+      "purpose": "Return the structured evidence package for the LLM judge."
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/session/{session_id}/judge-verdict",
+      "purpose": "Persist the structured verdict returned by the LLM judge.",
+      "request": {
+        "finding_id": 1,
+        "status": "confirmed",
+        "reason": "Cross-role access to the same object is confirmed.",
+        "finding_type": "BOLA",
+        "next_action": "save_finding"
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/judge-state",
+      "purpose": "Return judge loop state, confirmed findings, and candidate findings."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/loop-state",
+      "purpose": "Return compact continue/stop state for Dify loop control."
+    },
+    {
+      "method": "GET",
+      "path": "/agentic/session/{session_id}/report-package",
+      "purpose": "Return final report inputs and confirmed findings for report generation."
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Execute one allow-listed agentic tool command and return normalized structured results.",
+      "request": {
+        "tool_name": "bootstrap_roles",
+        "arguments": {
+          "session_id": 159,
+          "role_names": ["user_a", "user_b"]
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Register a prepared role through the strict tool interface.",
+      "request": {
+        "tool_name": "register_role",
+        "arguments": {
+          "session_id": 159,
+          "role_name": "user_a"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Login a prepared role and obtain bearer tokens through the strict tool interface.",
+      "request": {
+        "tool_name": "login_role",
+        "arguments": {
+          "session_id": 159,
+          "role_name": "user_a"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Execute one allow-listed agentic verification tool command and return normalized structured results.",
+      "request": {
+        "tool_name": "probe_same_object_across_roles",
+        "arguments": {
+          "session_id": 159,
+          "owner_role": "user_a",
+          "other_role": "user_b",
+          "endpoint": "http://host.docker.internal:8888/identity/api/v2/vehicle/abc/location",
+          "method": "GET"
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Analyze one stored observation for excessive data exposure through the strict tool interface.",
+      "request": {
+        "tool_name": "infer_bopla",
+        "arguments": {
+          "observation_id": 101,
+          "suspected_fields": ["email", "role", "available_credit"]
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Discover and parse an OpenAPI document for the current session target through the strict tool interface.",
+      "request": {
+        "tool_name": "discover_openapi",
+        "arguments": {
+          "session_id": 159
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Run the ZAP spider against the current session target through the strict tool interface.",
+      "request": {
+        "tool_name": "zap_spider",
+        "arguments": {
+          "session_id": 159,
+          "max_wait_sec": 60
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Run the ZAP AJAX spider against the current session target through the strict tool interface.",
+      "request": {
+        "tool_name": "zap_ajax_spider",
+        "arguments": {
+          "session_id": 159,
+          "max_wait_sec": 60
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Run a bounded ZAP active scan against the current session target through the strict tool interface.",
+      "request": {
+        "tool_name": "zap_active_scan",
+        "arguments": {
+          "session_id": 159,
+          "max_wait_sec": 180,
+          "recurse": true
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/tools/execute",
+      "purpose": "Run the normalized ZAP baseline wrapper against the current session target through the strict tool interface.",
+      "request": {
+        "tool_name": "zap_baseline_scan",
+        "arguments": {
+          "session_id": 159,
+          "profile": "mixed",
+          "max_spider_sec": 60,
+          "max_active_sec": 180,
+          "use_ajax_spider": false,
+          "import_openapi": true
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/agentic/session/{session_id}/run-round",
+      "purpose": "Run one agentic execution round. The backend performs router selection, execution, and judge update.",
+      "request": {
+        "user_prompt": "Optional prompt override for this round"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/v1/discovery/openapi",
+      "purpose": "Future toolbox endpoint for OpenAPI discovery/import."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/discovery/spider",
+      "purpose": "Future toolbox endpoint for spider-based discovery."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/discovery/ffuf",
+      "purpose": "Future toolbox endpoint for hidden path discovery."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/checks/bola",
+      "purpose": "Future toolbox endpoint for explicit BOLA checks."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/checks/bopla",
+      "purpose": "Future toolbox endpoint for explicit BOPLA checks."
+    },
+    {
+      "method": "POST",
+      "path": "/v1/checks/bfla",
+      "purpose": "Future toolbox endpoint for explicit BFLA checks."
+    }
+  ],
+  "judge_contract": {
+    "allowed_statuses": [
+      "confirmed",
+      "needs_retry",
+      "rejected",
+      "progress"
+    ],
+    "allowed_next_actions": [
+      "save_finding",
+      "retry_same_class",
+      "switch_role",
+      "switch_object",
+      "expand_discovery",
+      "verify_candidate",
+      "stop"
+    ]
+  }
+}

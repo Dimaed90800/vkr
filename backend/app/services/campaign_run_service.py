@@ -24,6 +24,7 @@ def create_campaign_session(
     *,
     target_name: str,
     target_url: str,
+    user_prompt: str | None,
     budget_requests_total: int | None,
     budget_time_total: int | None,
     max_rounds: int | None,
@@ -31,6 +32,9 @@ def create_campaign_session(
     enabled_agents: list[str] | None = None,
 ):
     normalized_agents = normalize_enabled_agents(enabled_agents)
+    strategy_payload = {"enabled_agents": normalized_agents, "orchestration_mode": "agentic"}
+    if user_prompt:
+        strategy_payload["user_prompt"] = user_prompt
     session_obj = TestSession(
         target_name=target_name,
         target_url=target_url,
@@ -42,7 +46,7 @@ def create_campaign_session(
         max_rounds=max_rounds,
         rounds_completed=0,
         allowed_test_classes_json=json.dumps(allowed_test_classes or [], ensure_ascii=False),
-        last_strategy_json=json.dumps({"enabled_agents": normalized_agents}, ensure_ascii=False),
+        last_strategy_json=json.dumps(strategy_payload, ensure_ascii=False),
     )
     db.add(session_obj)
     db.commit()

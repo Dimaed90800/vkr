@@ -78,7 +78,7 @@ def _build_filtered_experiment_dataset(
 def run_experiment(payload: dict, db: Session = Depends(get_db)):
     target_name = payload.get("target_name")
     target_url = payload.get("target_url")
-    judge_mode = payload.get("judge_mode", "rule_based")
+    judge_mode = payload.get("judge_mode", "agentic")
     max_rounds = payload.get("max_rounds", 5)
     profile = payload.get("profile", "mixed")
 

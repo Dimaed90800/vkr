@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vkr.local/schemas/finding.json",
+  "title": "ConfirmedFinding",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "title",
+    "vuln_type",
+    "endpoint",
+    "method",
+    "severity",
+    "confidence",
+    "evidence_summary",
+    "reproduction_steps",
+    "remediation"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "vuln_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "endpoint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "method": {
+      "type": "string",
+      "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "evidence_summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reproduction_steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "remediation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_task_id": {
+      "type": ["string", "null"]
+    },
+    "worker_type": {
+      "type": ["string", "null"],
+      "enum": ["authorization", "injection", "business_logic", null]
+    }
+  }
+}

@@ -38,6 +38,13 @@ from ..services.session_state_service import (
     update_strategy_state,
 )
 from ..services.terminal_reverification_service import run_terminal_reverification_pass
+from ..services.agentic_cycle_service import (
+    build_agentic_strategy_update,
+    choose_agentic_candidate,
+    extract_prompt_focus,
+    get_user_prompt_from_strategy,
+    judge_agentic_execution,
+)
 
 router = APIRouter()
 
@@ -463,10 +470,242 @@ def campaign_step(payload: CampaignStepRequest, db: Session = Depends(get_db)):
             "stop_reason": stop_reason,
         }
 
+    strategy_state = deserialize_strategy_state(getattr(session_obj, "last_strategy_json", None))
+    effective_user_prompt = str(payload.user_prompt or get_user_prompt_from_strategy(strategy_state) or "").strip()
+    if payload.user_prompt:
+        update_strategy_state(
+            session_obj,
+            {
+                "user_prompt": payload.user_prompt,
+                "orchestration_mode": "agentic" if payload.judge_mode == "agentic" else payload.judge_mode,
+            },
+        )
+        db.commit()
+        strategy_state = deserialize_strategy_state(getattr(session_obj, "last_strategy_json", None))
+
     runtime = generate_hypotheses_runtime_for_session(db, payload.session_id)
     generated = runtime["hypotheses"]
     agent_invocations = runtime["agent_invocations"]
     saved_candidates = _save_generated_hypotheses(db, payload.session_id, generated)
+
+    if getattr(payload, "judge_mode", "agentic") == "agentic":
+        allowed_test_classes = []
+        try:
+            allowed_test_classes = json.loads(getattr(session_obj, "allowed_test_classes_json", "[]") or "[]")
+        except Exception:
+            allowed_test_classes = []
+
+        selected, router_trace = choose_agentic_candidate(
+            saved_candidates,
+            user_prompt=effective_user_prompt,
+            allowed_test_classes=allowed_test_classes,
+            strategy_state=strategy_state,
+        )
+        if not selected:
+            session_obj.status = "stopped"
+            session_obj.stop_reason = "agentic_task_space_exhausted"
+            update_strategy_state(
+                session_obj,
+                {
+                    "judge_mode": "agentic",
+                    "router_focus": extract_prompt_focus(effective_user_prompt, allowed_test_classes),
+                    "agentic_router_trace": router_trace,
+                },
+            )
+            db.commit()
+            return {
+                "session_id": payload.session_id,
+                "status": "stopped",
+                "judge_mode": "agentic",
+                "stop_reason": session_obj.stop_reason,
+                "router": router_trace,
+            }
+
+        selected.status = "selected"
+        previous_rounds = db.query(JudgeDecision).filter(
+            JudgeDecision.session_id == payload.session_id
+        ).count()
+        decision = JudgeDecision(
+            session_id=payload.session_id,
+            round_no=previous_rounds + 1,
+            selected_hypothesis_id=selected.id,
+            decision_type=classify_decision_type(selected.hypothesis_type),
+            priority_score=router_trace.get("priority_score"),
+            judge_mode="agentic",
+            raw_selected_key=router_trace.get("candidate_key"),
+            raw_score=router_trace.get("priority_score"),
+            raw_reason=router_trace.get("selection_reason"),
+            resolution_mode=router_trace.get("resolution_mode"),
+            reasoning_summary=router_trace.get("selection_reason"),
+            required_evidence_json=json.dumps(build_required_evidence(selected), ensure_ascii=False),
+            stop_condition_json=json.dumps(build_stop_condition(selected), ensure_ascii=False),
+        )
+        db.add(decision)
+        record_judge_feedback(
+            db,
+            session_id=payload.session_id,
+            round_no=previous_rounds + 1,
+            judge_mode="agentic",
+            candidates=saved_candidates,
+            selected_hypothesis=selected,
+            selected_score=router_trace.get("priority_score"),
+            reasoning_summary=router_trace.get("selection_reason"),
+        )
+
+        register_round(session_obj)
+        update_strategy_state(
+            session_obj,
+            {
+                "judge_mode": "agentic",
+                "orchestration_mode": "agentic",
+                "user_prompt": effective_user_prompt or None,
+                "round_no": decision.round_no,
+                "selected_hypothesis_type": selected.hypothesis_type,
+                "selected_hypothesis_id": selected.id,
+                "selected_agent": selected.agent_name,
+                "router_focus": extract_prompt_focus(effective_user_prompt, allowed_test_classes),
+                "agentic_router_trace": router_trace,
+                "agents_invoked": [item["agent_name"] for item in agent_invocations],
+                "active_agents": [
+                    item["agent_name"]
+                    for item in agent_invocations
+                    if item.get("participated")
+                ],
+            },
+        )
+        db.commit()
+        db.refresh(decision)
+
+        execution_result, request_count = execute_hypothesis(db, session_obj, selected)
+        register_requests(session_obj, request_count)
+
+        if execution_result.get("action_executed") == "compare_roles":
+            created_finding = maybe_create_finding_from_comparison(
+                db=db,
+                session_id=payload.session_id,
+                selected_id=selected.id,
+                comparison=execution_result.get("comparison", {}),
+                endpoint=selected.target_endpoint,
+            )
+            if created_finding is not None:
+                execution_result["generated_finding_id"] = created_finding.id
+                execution_result["generated_finding_type"] = created_finding.finding_type
+                execution_result["generated_finding_status"] = created_finding.verification_status
+
+        if execution_result.get("action_executed") in {
+            "anonymous_probe",
+            "tokenless_replay_probe",
+            "auth_boundary_probe",
+        }:
+            selected_payload = {}
+            try:
+                selected_payload = json.loads(selected.payload_json or "{}")
+            except Exception:
+                selected_payload = {}
+            created_finding = maybe_create_auth_finding_from_execution(
+                db=db,
+                session_id=payload.session_id,
+                selected_id=selected.id,
+                action_executed=execution_result.get("action_executed"),
+                status_code=execution_result.get("status_code"),
+                endpoint=selected.target_endpoint,
+                observation_id=execution_result.get("observation_id"),
+                source_role=execution_result.get("source_role"),
+                source_observation_id=selected_payload.get("source_observation_id"),
+            )
+            if created_finding is not None:
+                execution_result["generated_finding_id"] = created_finding.id
+                execution_result["generated_finding_type"] = created_finding.finding_type
+                execution_result["generated_finding_status"] = created_finding.verification_status
+
+        judge_verdict = judge_agentic_execution(
+            db,
+            payload.session_id,
+            selected,
+            execution_result,
+        )
+        update_strategy_state(
+            session_obj,
+            build_agentic_strategy_update(
+                previous_state=deserialize_strategy_state(getattr(session_obj, "last_strategy_json", None)),
+                selected=selected,
+                router_trace=router_trace,
+                judge_verdict=judge_verdict,
+            ),
+        )
+        decision.reasoning_summary = judge_verdict.get("reasoning_summary")
+        decision.raw_reason = judge_verdict.get("reasoning_summary")
+        decision.resolution_mode = judge_verdict.get("resolution_mode")
+
+        record_agent_result(
+            db,
+            session_id=payload.session_id,
+            agent_name=selected.agent_name,
+            hypothesis=selected,
+            execution_result=execution_result,
+            request_count=request_count,
+        )
+
+        can_continue_after, stop_reason_after = can_continue_session(session_obj)
+        terminal_reverification = None
+        if not can_continue_after:
+            terminal_reverification = run_terminal_reverification_pass(db, session_obj)
+            session_obj.status = "stopped"
+            session_obj.stop_reason = stop_reason_after
+
+        db.commit()
+
+        return {
+            "session_id": payload.session_id,
+            "round_no": decision.round_no,
+            "judge_mode": "agentic",
+            "selected_hypothesis": {
+                "id": selected.id,
+                "type": selected.hypothesis_type,
+                "agent_name": selected.agent_name,
+                "target_endpoint": selected.target_endpoint,
+                "http_method": selected.http_method,
+                "description": selected.description,
+            },
+            "router": router_trace,
+            "judge": {
+                "decision_type": decision.decision_type,
+                "priority_score": decision.priority_score,
+                "reasoning_summary": decision.reasoning_summary,
+                "resolution_mode": decision.resolution_mode,
+                "raw_selected_key": decision.raw_selected_key,
+                "raw_score": decision.raw_score,
+                "verdict_status": judge_verdict.get("status"),
+                "confirmed_finding_ids": judge_verdict.get("confirmed_finding_ids", []),
+                "candidate_finding_ids": judge_verdict.get("candidate_finding_ids", []),
+                "follow_up_hypothesis_type": judge_verdict.get("follow_up_hypothesis_type"),
+            },
+            "agent_orchestration": {
+                "enabled_agents": runtime["enabled_agents"],
+                "enabled_logical_agents": runtime.get("enabled_logical_agents", []),
+                "exploitation_queue_summary": runtime.get("exploitation_queue_summary", {}),
+                "agents_invoked": [item["agent_name"] for item in agent_invocations],
+                "active_agents": [
+                    item["agent_name"]
+                    for item in agent_invocations
+                    if item.get("participated")
+                ],
+                "selected_agent": selected.agent_name,
+                "selected_logical_agent": router_trace.get("logical_agent_name"),
+                "agent_invocations": agent_invocations,
+                "logical_agent_summary": runtime.get("logical_agent_summary", {}),
+            },
+            "session_state": {
+                "status": session_obj.status,
+                "rounds_completed": session_obj.rounds_completed,
+                "max_rounds": session_obj.max_rounds,
+                "budget_requests_used": session_obj.budget_requests_used,
+                "budget_requests_total": session_obj.budget_requests_total,
+                "stop_reason": session_obj.stop_reason,
+            },
+            "execution_result": execution_result,
+            "terminal_reverification": terminal_reverification,
+        }
 
     selected, score, reasoning_summary, judge_trace = _select_hypothesis(payload, saved_candidates, db)
     selected.status = "selected"
@@ -643,6 +882,7 @@ def campaign_run(payload: CampaignRunRequest, db: Session = Depends(get_db)):
         db,
         target_name=payload.target_name,
         target_url=payload.target_url,
+        user_prompt=payload.user_prompt,
         budget_requests_total=payload.budget_requests_total,
         budget_time_total=payload.budget_time_total,
         max_rounds=payload.max_rounds,
@@ -656,6 +896,7 @@ def campaign_run(payload: CampaignRunRequest, db: Session = Depends(get_db)):
             CampaignStepRequest(
                 session_id=session_obj.id,
                 judge_mode=payload.judge_mode,
+                user_prompt=payload.user_prompt if not step_results else None,
             ),
             db=db,
         )

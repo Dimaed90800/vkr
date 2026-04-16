@@ -1,0 +1,59 @@
+{
+  "execution_context": {
+    "target_url": "http://127.0.0.1:8001",
+    "allowed_hosts": ["127.0.0.1:8001"],
+    "roles": [
+      {
+        "name": "user_a",
+        "token": "token-a",
+        "auth_headers": {
+          "Authorization": "Bearer token-a"
+        }
+      },
+      {
+        "name": "user_b",
+        "token": "token-b",
+        "auth_headers": {
+          "Authorization": "Bearer token-b"
+        }
+      }
+    ],
+    "max_requests": 20,
+    "max_duration_sec": 300,
+    "max_retries_per_task": 1
+  },
+  "task": {
+    "id": "task_authz_bola_vehicle_location_001",
+    "class": "authorization",
+    "subtype": "bola",
+    "endpoint": "/identity/api/v2/vehicle/veh-123/location",
+    "method": "GET",
+    "params": {
+      "path_params": ["vehicle_id"],
+      "query_params": ["mode"],
+      "body_fields": [],
+      "object_id_candidates": ["veh-123"]
+    },
+    "auth_context": {
+      "owner_role": "user_a",
+      "other_role": "user_b",
+      "token_strategy": "cross_role_replay"
+    },
+    "hypothesis": "Different roles may access the same vehicle location object.",
+    "priority": 90,
+    "retry_count": 0,
+    "rework_hint": null,
+    "status": "pending",
+    "allowed_tools": ["auth_test_access"]
+  },
+  "tool_name": "auth_test_access",
+  "arguments": {
+    "endpoint": "/identity/api/v2/vehicle/veh-123/location",
+    "method": "GET",
+    "owner_role": "user_a",
+    "other_role": "user_b",
+    "query_params": {
+      "mode": "vulnerable"
+    }
+  }
+}

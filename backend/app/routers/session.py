@@ -21,6 +21,9 @@ def create_session(payload: CreateSessionRequest, db: Session = Depends(get_db))
     enabled_agents = normalize_enabled_agents(payload.enabled_agents)
     strategy_payload = dict(payload.strategy_config or {})
     strategy_payload["enabled_agents"] = enabled_agents
+    if payload.user_prompt:
+        strategy_payload["user_prompt"] = payload.user_prompt
+    strategy_payload.setdefault("orchestration_mode", "agentic")
     session = TestSession(
         target_name=payload.target_name,
         target_url=payload.target_url,

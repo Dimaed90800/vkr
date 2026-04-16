@@ -1,0 +1,12 @@
+{
+  "toolbox_url": "http://127.0.0.1:8000",
+  "target_url": "http://demo_target_vulnerable:8001",
+  "openapi_url": "",
+  "openapi_spec_text": "{\n  \"openapi\": \"3.0.3\",\n  \"info\": {\n    \"title\": \"Demo Target API\",\n    \"version\": \"0.1.0\"\n  },\n  \"servers\": [\n    {\n      \"url\": \"http://127.0.0.1:8001\"\n    }\n  ],\n  \"paths\": {\n    \"/identity/api/v2/vehicle/{vehicle_id}/location\": {\n      \"get\": {\n        \"summary\": \"Get vehicle location\",\n        \"security\": [\n          {\n            \"bearerAuth\": []\n          }\n        ],\n        \"parameters\": [\n          {\n            \"name\": \"vehicle_id\",\n            \"in\": \"path\",\n            \"required\": true,\n            \"schema\": {\n              \"type\": \"string\"\n            }\n          },\n          {\n            \"name\": \"mode\",\n            \"in\": \"query\",\n            \"required\": false,\n            \"schema\": {\n              \"type\": \"string\",\n              \"enum\": [\"secure\", \"vulnerable\"]\n            }\n          }\n        ],\n        \"responses\": {\n          \"200\": {\n            \"description\": \"Vehicle location\"\n          },\n          \"401\": {\n            \"description\": \"Unauthorized\"\n          },\n          \"403\": {\n            \"description\": \"Forbidden\"\n          }\n        }\n      }\n    }\n  },\n  \"components\": {\n    \"securitySchemes\": {\n      \"bearerAuth\": {\n        \"type\": \"http\",\n        \"scheme\": \"bearer\"\n      }\n    }\n  }\n}",
+  "roles_json": "[\n  {\n    \"name\": \"user_a\",\n    \"token\": \"token-a\",\n    \"auth_headers\": {\n      \"Authorization\": \"Bearer token-a\"\n    }\n  },\n  {\n    \"name\": \"user_b\",\n    \"token\": \"token-b\",\n    \"auth_headers\": {\n      \"Authorization\": \"Bearer token-b\"\n    }\n  }\n]",
+  "allowed_hosts_json": "[\n  \"demo_target_vulnerable:8001\",\n  \"demo_target_secure:8001\",\n  \"host.docker.internal:8001\",\n  \"host.docker.internal:8002\",\n  \"127.0.0.1:8001\",\n  \"127.0.0.1:8002\"\n]",
+  "max_requests": 20,
+  "max_duration_sec": 300,
+  "max_retries_per_task": 1,
+  "user_prompt": "Проверь authorization/BOLA для demo target и сфокусируйся на endpoint location."
+}

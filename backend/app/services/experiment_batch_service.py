@@ -26,6 +26,7 @@ from .experiment_report_service import (
 )
 from .experiment_run_service import normalize_judge_modes, run_experiment_scenario
 from .llm_report_service import build_session_llm_report
+from .zap_baseline_service import run_zap_baseline
 
 
 def load_session_bundle(db: Session, session_id: int):
@@ -88,7 +89,8 @@ def build_run_batch_response(db: Session, payload: Dict[str, Any]) -> Dict[str, 
     strategy_config = payload.get("strategy_config") or {}
     budget_requests_total = payload.get("budget_requests_total", 200)
     budget_time_total = payload.get("budget_time_total", 1800)
-    external_baselines = payload.get("external_baselines") or []
+    external_baselines = list(payload.get("external_baselines") or [])
+    zap_baseline = payload.get("zap_baseline") or {}
 
     if not targets:
         if not target_name or not target_url:
@@ -102,6 +104,25 @@ def build_run_batch_response(db: Session, payload: Dict[str, Any]) -> Dict[str, 
                 "bootstrap_probes": bootstrap_probes,
             }
         ]
+
+    if zap_baseline.get("enabled"):
+        for target in targets:
+            current_target_name = target.get("target_name")
+            current_target_url = target.get("target_url")
+            current_profile = target.get("profile", profile)
+            if not current_target_name or not current_target_url:
+                continue
+            external_baselines.append(
+                run_zap_baseline(
+                    target_name=current_target_name,
+                    target_url=current_target_url,
+                    profile=current_profile,
+                    max_spider_sec=int(zap_baseline.get("max_spider_sec", 120)),
+                    max_active_sec=int(zap_baseline.get("max_active_sec", 300)),
+                    use_ajax_spider=bool(zap_baseline.get("use_ajax_spider", False)),
+                    import_openapi=bool(zap_baseline.get("import_openapi", True)),
+                )
+            )
 
     runs = []
     experiment_ids = []
@@ -176,6 +197,7 @@ def build_run_batch_response(db: Session, payload: Dict[str, Any]) -> Dict[str, 
             "enabled_logical_agents": enabled_logical_agents,
             "disabled_logical_agents": disabled_logical_agents,
             "strategy_config": strategy_config,
+            "external_baselines": external_baselines,
             "experiment_ids": sorted(experiment_ids),
             "runs_total": len(runs),
         },

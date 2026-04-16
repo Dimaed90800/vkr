@@ -1,0 +1,16 @@
+[
+  {
+    "name": "user_a",
+    "token": "token-a",
+    "auth_headers": {
+      "Authorization": "Bearer token-a"
+    }
+  },
+  {
+    "name": "user_b",
+    "token": "token-b",
+    "auth_headers": {
+      "Authorization": "Bearer token-b"
+    }
+  }
+]

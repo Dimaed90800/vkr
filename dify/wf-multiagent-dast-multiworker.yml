@@ -1,0 +1,2591 @@
+app:
+  description: Multi-agent DAST workflow aligned to the working orchestrated-v3 DSL
+    shape. It runs a Router, dispatches to specialized workers, evaluates evidence
+    with a Judge, maintains unified state_json in a bounded loop, and renders a final
+    report.
+  icon: 🛡️
+  icon_background: '#FFEAD5'
+  icon_type: emoji
+  mode: workflow
+  name: wf-multiagent-dast-multiworker
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai_api_compatible:0.0.42@cf508badd3f6c086c137a6034697e0c48a60038783b3c3ed0af2fe55000842e8
+    version: null
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: start-to-normalize
+      source: start
+      sourceHandle: source
+      target: normalize_input
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: normalize-to-parse-openapi
+      source: normalize_input
+      sourceHandle: source
+      target: parse_openapi
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: parse-openapi-to-plan-inputs
+      source: parse_openapi
+      sourceHandle: source
+      target: extract_plan_inputs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: plan-inputs-to-discover-endpoints
+      source: extract_plan_inputs
+      sourceHandle: source
+      target: discover_endpoints
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: discover-endpoints-to-extract-discovery-surface
+      source: discover_endpoints
+      sourceHandle: source
+      target: extract_discovery_surface
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: normalize-to-import-traffic-surface
+      source: normalize_input
+      sourceHandle: source
+      target: import_traffic_surface
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: import-traffic-surface-to-extract-traffic-surface
+      source: import_traffic_surface
+      sourceHandle: source
+      target: extract_traffic_surface
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: plan-inputs-to-merge-surfaces
+      source: extract_plan_inputs
+      sourceHandle: source
+      target: merge_surfaces
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: extract-discovery-surface-to-merge-surfaces
+      source: extract_discovery_surface
+      sourceHandle: source
+      target: merge_surfaces
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: extract-traffic-surface-to-merge-surfaces
+      source: extract_traffic_surface
+      sourceHandle: source
+      target: merge_surfaces
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: merge-surfaces-to-enrich-surface
+      source: merge_surfaces
+      sourceHandle: source
+      target: enrich_surface
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: enrich-surface-to-plan-tasks
+      source: enrich_surface
+      sourceHandle: source
+      target: plan_tasks
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: llm
+      id: plan-tasks-to-router
+      source: plan_tasks
+      sourceHandle: source
+      target: router_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: code
+      id: router-to-parse-plan
+      source: router_agent
+      sourceHandle: source
+      target: parse_router_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: parse-plan-to-init-state
+      source: parse_router_plan
+      sourceHandle: source
+      target: init_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: loop
+      id: init-state-to-main-loop
+      source: init_state
+      sourceHandle: source
+      target: main_loop_v1
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: loop
+        targetType: code
+      id: main-loop-to-final-state
+      source: main_loop_v1
+      sourceHandle: source
+      target: final_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: final-state-to-report-context
+      source: final_state
+      sourceHandle: source
+      target: aggregate_report_context
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: report-context-to-reporter
+      source: aggregate_report_context
+      sourceHandle: source
+      target: reporter_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: reporter-to-answer
+      source: reporter_agent
+      sourceHandle: source
+      target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: answer
+        targetType: end
+      id: answer-to-end
+      source: answer
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: loop-start
+        targetType: code
+      id: main-loop-start-to-state-manager
+      source: main_loop_start
+      sourceHandle: source
+      target: loop_state_manager
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: state-manager-to-schedule-next-task
+      source: loop_state_manager
+      sourceHandle: source
+      target: schedule_next_task
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: schedule-next-task-to-task-dispatcher
+      source: schedule_next_task
+      sourceHandle: source
+      target: task_dispatcher
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: llm
+      id: task-dispatcher-to-auth-worker
+      source: task_dispatcher
+      sourceHandle: source
+      target: authorization_worker
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: llm
+      id: task-dispatcher-to-injection-worker
+      source: task_dispatcher
+      sourceHandle: source
+      target: injection_worker
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: llm
+      id: task-dispatcher-to-business-worker
+      source: task_dispatcher
+      sourceHandle: source
+      target: business_logic_worker
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: llm
+        targetType: code
+      id: auth-worker-to-parse-tool
+      source: authorization_worker
+      sourceHandle: source
+      target: parse_worker_command
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: llm
+        targetType: code
+      id: injection-worker-to-parse-tool
+      source: injection_worker
+      sourceHandle: source
+      target: parse_worker_command
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: llm
+        targetType: code
+      id: business-worker-to-parse-tool
+      source: business_logic_worker
+      sourceHandle: source
+      target: parse_worker_command
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: parse-tool-to-execute
+      source: parse_worker_command
+      sourceHandle: source
+      target: execute_tool
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: execute-to-build-evidence
+      source: execute_tool
+      sourceHandle: source
+      target: build_evidence
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: llm
+      id: build-evidence-to-judge
+      source: build_evidence
+      sourceHandle: source
+      target: judge_agent
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: llm
+        targetType: code
+      id: judge-to-parse-verdict
+      source: judge_agent
+      sourceHandle: source
+      target: parse_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: parse-verdict-to-update-queue
+      source: parse_judge_verdict
+      sourceHandle: source
+      target: update_queue
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: update-queue-to-update-state
+      source: update_queue
+      sourceHandle: source
+      target: update_state
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: assigner
+      id: update_state-source-1776309351651-target
+      source: update_state
+      sourceHandle: source
+      target: '1776309351651'
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    nodes:
+    - data:
+        desc: Collect workflow input for the multi-agent DAST session.
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Toolbox URL
+          max_length: 500
+          options: []
+          required: true
+          type: text-input
+          variable: toolbox_url
+        - label: Target URL
+          max_length: 500
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: OpenAPI URL
+          max_length: 500
+          options: []
+          required: false
+          type: text-input
+          variable: openapi_url
+        - label: OpenAPI Spec Text
+          max_length: 40000
+          options: []
+          required: false
+          type: paragraph
+          variable: openapi_spec_text
+        - label: Roles JSON
+          max_length: 20000
+          options: []
+          required: true
+          type: paragraph
+          variable: roles_json
+        - label: Allowed Hosts JSON
+          max_length: 10000
+          options: []
+          required: false
+          type: paragraph
+          variable: allowed_hosts_json
+        - label: Traffic Requests JSON
+          max_length: 40000
+          options: []
+          required: false
+          type: paragraph
+          variable: traffic_requests_json
+        - label: Enable Discovery
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: enable_discovery
+        - label: Discovery Mode
+          max_length: 50
+          options: []
+          required: false
+          type: text-input
+          variable: discovery_mode
+        - label: ZAP Base URL
+          max_length: 500
+          options: []
+          required: false
+          type: text-input
+          variable: zap_base_url
+        - label: Discovery Seeds JSON
+          max_length: 20000
+          options: []
+          required: false
+          type: paragraph
+          variable: discovery_seeds_json
+        - label: Use Authenticated Discovery
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: use_authenticated_discovery
+        - label: Discovery Max Depth
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: discovery_max_depth
+        - label: Discovery Max Children
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: discovery_max_children
+        - label: Discovery Max Duration Seconds
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: discovery_max_duration_sec
+        - label: Use AJAX Spider
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: use_ajax_spider
+        - label: Max Requests
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: max_requests
+        - label: Max Duration Seconds
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: max_duration_sec
+        - label: Max Retries Per Task
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: max_retries_per_task
+        - label: User Prompt
+          max_length: 4000
+          options: []
+          required: false
+          type: paragraph
+          variable: user_prompt
+        x-outputs:
+        - name: toolbox_url
+          type: string
+        - name: target_url
+          type: string
+        - name: openapi_url
+          type: string
+        - name: openapi_spec_text
+          type: string
+        - name: roles_json
+          type: string
+        - name: allowed_hosts_json
+          type: string
+        - name: traffic_requests_json
+          type: string
+        - name: enable_discovery
+          type: string
+        - name: discovery_mode
+          type: string
+        - name: zap_base_url
+          type: string
+        - name: discovery_seeds_json
+          type: string
+        - name: use_authenticated_discovery
+          type: string
+        - name: discovery_max_depth
+          type: string
+        - name: discovery_max_children
+          type: string
+        - name: discovery_max_duration_sec
+          type: string
+        - name: use_ajax_spider
+          type: string
+        - name: max_requests
+          type: string
+        - name: max_duration_sec
+          type: string
+        - name: max_retries_per_task
+          type: string
+        - name: user_prompt
+          type: string
+      height: 739
+      id: start
+      position:
+        x: 0
+        y: 180
+      positionAbsolute:
+        x: 0
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\nfrom datetime import datetime, timezone\n\ndef _safe_int(value: str, default: int) -> int:\n    try:\n        return int(str(value or '').strip())\n    except Exception:\n        return default\n\ndef _safe_bool(value: str, default: bool) -> bool:\n    normalized = str(value or '').strip().lower()\n    if not normalized:\n        return default\n    if normalized in {'1', 'true', 'yes', 'y', 'on'}:\n        return True\n    if normalized in {'0', 'false', 'no', 'n', 'off'}:\n        return False\n    return default\n\ndef main(\n    toolbox_url: str,\n    target_url: str,\n    openapi_url: str = \"\",\n    openapi_spec_text: str = \"\",\n    roles_json: str = \"[]\",\n    allowed_hosts_json: str = \"[]\",\n    traffic_requests_json: str = \"[]\",\n    enable_discovery: str = \"\",\n    discovery_mode: str = \"\",\n    zap_base_url: str = \"\",\n    discovery_seeds_json: str = \"[]\",\n    use_authenticated_discovery: str = \"\",\n    discovery_max_depth: str = \"\",\n    discovery_max_children: str = \"\",\n    discovery_max_duration_sec: str = \"\",\n    use_ajax_spider: str = \"\",\n    max_requests: str = \"\",\n    max_duration_sec: str = \"\",\n    max_retries_per_task: str = \"\",\n    user_prompt: str = \"\",\n) -> dict:\n    try:\n        roles = json.loads(roles_json or '[]')\n    except Exception:\n        roles = []\n    try:\n        allowed_hosts = json.loads(allowed_hosts_json or '[]')\n    except Exception:\n        allowed_hosts = []\n    try:\n        discovery_seeds = json.loads(discovery_seeds_json or '[]')\n    except Exception:\n        discovery_seeds = []\n    if not isinstance(discovery_seeds, list):\n        discovery_seeds = []\n    try:\n        traffic_requests = json.loads(traffic_requests_json or '[]')\n    except Exception:\n        traffic_requests = []\n    if not isinstance(traffic_requests, list):\n        traffic_requests = []\n\n    discovery_enabled = _safe_bool(enable_discovery, True)\n    discovery_mode_value = str(discovery_mode or 'zap').strip() or 'zap'\n    zap_base_url_value = str(zap_base_url or 'http://zap:8080').strip() or 'http://zap:8080'\n    use_authenticated_discovery_value = _safe_bool(use_authenticated_discovery, False)\n    discovery_max_depth_value = _safe_int(discovery_max_depth, 2)\n    discovery_max_children_value = _safe_int(discovery_max_children, 50)\n    discovery_max_duration_sec_value = _safe_int(discovery_max_duration_sec, 120)\n    use_ajax_spider_value = _safe_bool(use_ajax_spider, False)\n\n    execution_context = {\n        \"toolbox_url\": str(toolbox_url or \"\").rstrip(\"/\"),\n        \"target_url\": str(target_url or \"\").rstrip(\"/\"),\n        \"openapi_url\": str(openapi_url or \"\").strip(),\n        \"openapi_spec_text\": str(openapi_spec_text or \"\"),\n        \"roles\": roles,\n        \"allowed_hosts\": allowed_hosts,\n        \"traffic_requests\": traffic_requests,\n        \"enable_discovery\": discovery_enabled,\n        \"discovery_mode\": discovery_mode_value,\n        \"zap_base_url\": zap_base_url_value,\n        \"discovery_seeds\": discovery_seeds,\n        \"use_authenticated_discovery\": use_authenticated_discovery_value,\n        \"discovery_max_depth\": discovery_max_depth_value,\n        \"discovery_max_children\": discovery_max_children_value,\n        \"discovery_max_duration_sec\": discovery_max_duration_sec_value,\n        \"use_ajax_spider\": use_ajax_spider_value,\n        \"max_requests\": _safe_int(max_requests, 100),\n        \"max_duration_sec\": _safe_int(max_duration_sec, 900),\n        \"max_retries_per_task\": _safe_int(max_retries_per_task, 1),\n        \"start_timestamp\": datetime.now(timezone.utc).isoformat(),\n        \"user_prompt\": str(user_prompt or \"\").strip(),\n    }\n\n    return {\n        \"toolbox_url\": execution_context[\"toolbox_url\"],\n        \"target_url\": execution_context[\"target_url\"],\n        \"openapi_url\": execution_context[\"openapi_url\"],\n        \"openapi_spec_text\": execution_context[\"openapi_spec_text\"],\n        \"roles_json\": json.dumps(roles, ensure_ascii=False),\n        \"allowed_hosts_json\": json.dumps(allowed_hosts, ensure_ascii=False),\n        \"traffic_requests_json\": json.dumps(traffic_requests, ensure_ascii=False),\n        \"enable_discovery\": discovery_enabled,\n        \"discovery_mode\": discovery_mode_value,\n        \"zap_base_url\": zap_base_url_value,\n        \"discovery_seeds_json\": json.dumps(discovery_seeds, ensure_ascii=False),\n        \"use_authenticated_discovery\": use_authenticated_discovery_value,\n        \"discovery_max_depth\": discovery_max_depth_value,\n        \"discovery_max_children\": discovery_max_children_value,\n        \"discovery_max_duration_sec\": discovery_max_duration_sec_value,\n        \"use_ajax_spider\": use_ajax_spider_value,\n        \"execution_context_json\": json.dumps(execution_context, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Normalize campaign input and initialize execution context.
+        outputs:
+          allowed_hosts_json:
+            children: null
+            type: string
+          traffic_requests_json:
+            children: null
+            type: string
+          discovery_max_children:
+            children: null
+            type: number
+          discovery_max_depth:
+            children: null
+            type: number
+          discovery_max_duration_sec:
+            children: null
+            type: number
+          discovery_mode:
+            children: null
+            type: string
+          discovery_seeds_json:
+            children: null
+            type: string
+          enable_discovery:
+            children: null
+            type: boolean
+          execution_context_json:
+            children: null
+            type: string
+          openapi_spec_text:
+            children: null
+            type: string
+          openapi_url:
+            children: null
+            type: string
+          roles_json:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          toolbox_url:
+            children: null
+            type: string
+          use_authenticated_discovery:
+            children: null
+            type: boolean
+          use_ajax_spider:
+            children: null
+            type: boolean
+          zap_base_url:
+            children: null
+            type: string
+        selected: false
+        title: Normalize Input
+        type: code
+        variables:
+        - value_selector:
+          - start
+          - toolbox_url
+          value_type: string
+          variable: toolbox_url
+        - value_selector:
+          - start
+          - target_url
+          value_type: string
+          variable: target_url
+        - value_selector:
+          - start
+          - openapi_url
+          value_type: string
+          variable: openapi_url
+        - value_selector:
+          - start
+          - openapi_spec_text
+          value_type: string
+          variable: openapi_spec_text
+        - value_selector:
+          - start
+          - roles_json
+          value_type: string
+          variable: roles_json
+        - value_selector:
+          - start
+          - allowed_hosts_json
+          value_type: string
+          variable: allowed_hosts_json
+        - value_selector:
+          - start
+          - traffic_requests_json
+          value_type: string
+          variable: traffic_requests_json
+        - value_selector:
+          - start
+          - enable_discovery
+          value_type: string
+          variable: enable_discovery
+        - value_selector:
+          - start
+          - discovery_mode
+          value_type: string
+          variable: discovery_mode
+        - value_selector:
+          - start
+          - zap_base_url
+          value_type: string
+          variable: zap_base_url
+        - value_selector:
+          - start
+          - discovery_seeds_json
+          value_type: string
+          variable: discovery_seeds_json
+        - value_selector:
+          - start
+          - use_authenticated_discovery
+          value_type: string
+          variable: use_authenticated_discovery
+        - value_selector:
+          - start
+          - discovery_max_depth
+          value_type: string
+          variable: discovery_max_depth
+        - value_selector:
+          - start
+          - discovery_max_children
+          value_type: string
+          variable: discovery_max_children
+        - value_selector:
+          - start
+          - discovery_max_duration_sec
+          value_type: string
+          variable: discovery_max_duration_sec
+        - value_selector:
+          - start
+          - use_ajax_spider
+          value_type: string
+          variable: use_ajax_spider
+        - value_selector:
+          - start
+          - max_requests
+          value_type: string
+          variable: max_requests
+        - value_selector:
+          - start
+          - max_duration_sec
+          value_type: string
+          variable: max_duration_sec
+        - value_selector:
+          - start
+          - max_retries_per_task
+          value_type: string
+          variable: max_retries_per_task
+        - value_selector:
+          - start
+          - user_prompt
+          value_type: string
+          variable: user_prompt
+      height: 96
+      id: normalize_input
+      position:
+        x: 300
+        y: 180
+      positionAbsolute:
+        x: 300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"target_url\": \"{{#normalize_input.target_url#}}\",\n  \"openapi_url\": \"{{#normalize_input.openapi_url#}}\",\n  \"openapi_spec_text\": \"{{#normalize_input.openapi_spec_text#}}\",\n  \"roles\": {{#normalize_input.roles_json#}},\n  \"planner_mode\": \"hybrid\"\n}\n"
+          type: json
+        desc: Parse OpenAPI into a normalized API surface for the Router.
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Parse OpenAPI
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/recon/openapi'
+        variables: []
+      height: 184
+      id: parse_openapi
+      position:
+        x: 600
+        y: 180
+      positionAbsolute:
+        x: 600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        payload = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n\n    normalized_surface = payload.get(\"normalized_surface\") or {\"endpoints\": []}\n    generated_tasks = payload.get(\"generated_tasks\") or []\n\n    return {\n        \"recon_body_json\": json.dumps(payload, ensure_ascii=False),\n        \"normalized_surface_json\": json.dumps(normalized_surface, ensure_ascii=False),\n        \"generated_tasks_json\": json.dumps(generated_tasks, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Extract normalized OpenAPI surface and generated tasks from recon response.
+        outputs:
+          generated_tasks_json:
+            children: null
+            type: string
+          normalized_surface_json:
+            children: null
+            type: string
+          recon_body_json:
+            children: null
+            type: string
+        selected: false
+        title: Extract OpenAPI Plan Inputs
+        type: code
+        variables:
+        - value_selector:
+          - parse_openapi
+          - body
+          value_type: string
+          variable: body
+      height: 112
+      id: extract_plan_inputs
+      position:
+        x: 900
+        y: 20
+      positionAbsolute:
+        x: 900
+        y: 20
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"target_url\": \"{{#normalize_input.target_url#}}\",\n  \"allowed_hosts\": {{#normalize_input.allowed_hosts_json#}},\n  \"roles\": {{#normalize_input.roles_json#}},\n  \"enable_discovery\": {{#normalize_input.enable_discovery#}},\n  \"discovery_mode\": \"{{#normalize_input.discovery_mode#}}\",\n  \"zap_base_url\": \"{{#normalize_input.zap_base_url#}}\",\n  \"discovery_seeds\": {{#normalize_input.discovery_seeds_json#}},\n  \"use_authenticated_discovery\": {{#normalize_input.use_authenticated_discovery#}},\n  \"use_spider\": true,\n  \"use_ajax_spider\": {{#normalize_input.use_ajax_spider#}},\n  \"max_depth\": {{#normalize_input.discovery_max_depth#}},\n  \"max_children\": {{#normalize_input.discovery_max_children#}},\n  \"max_duration_sec\": {{#normalize_input.discovery_max_duration_sec#}}\n}\n"
+          type: json
+        desc: Run ZAP-based endpoint discovery before planning.
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Discover Endpoints
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/recon/discovery'
+        variables: []
+      height: 184
+      id: discover_endpoints
+      position:
+        x: 1200
+        y: 300
+      positionAbsolute:
+        x: 1200
+        y: 300
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str, enable_discovery: bool = True) -> dict:\n    if not enable_discovery:\n        payload = {}\n    else:\n        try:\n            payload = json.loads(body or '{}')\n        except Exception:\n            payload = {}\n\n    normalized_surface = payload.get(\"normalized_surface\") or {\"endpoints\": []}\n    return {\n        \"discovery_body_json\": json.dumps(payload, ensure_ascii=False),\n        \"discovery_summary\": str(payload.get(\"discovery_summary\") or \"\"),\n        \"discovery_surface_json\": json.dumps(normalized_surface, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Extract normalized discovery surface with graceful fallback to empty discovery.
+        outputs:
+          discovery_body_json:
+            children: null
+            type: string
+          discovery_summary:
+            children: null
+            type: string
+          discovery_surface_json:
+            children: null
+            type: string
+        selected: false
+        title: Extract Discovery Surface
+        type: code
+        variables:
+        - value_selector:
+          - discover_endpoints
+          - body
+          value_type: string
+          variable: body
+        - value_selector:
+          - normalize_input
+          - enable_discovery
+          value_type: boolean
+          variable: enable_discovery
+      height: 112
+      id: extract_discovery_surface
+      position:
+        x: 1500
+        y: 300
+      positionAbsolute:
+        x: 1500
+        y: 300
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"requests\": {{#normalize_input.traffic_requests_json#}}\n}\n"
+          type: json
+        desc: Import observed HTTP traffic as an additional API surface source.
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Import Traffic Surface
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/recon/traffic'
+        variables: []
+      height: 184
+      id: import_traffic_surface
+      position:
+        x: 1200
+        y: 500
+      positionAbsolute:
+        x: 1200
+        y: 500
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str, traffic_requests_json: str = '[]') -> dict:\n    try:\n        payload = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n    try:\n        requests = json.loads(traffic_requests_json or '[]')\n    except Exception:\n        requests = []\n    if not isinstance(requests, list):\n        requests = []\n    if not requests:\n        payload = {}\n\n    normalized_surface = payload.get('normalized_surface') or {'endpoints': []}\n    return {\n        'traffic_body_json': json.dumps(payload, ensure_ascii=False),\n        'traffic_summary': str(payload.get('traffic_summary') or ''),\n        'traffic_surface_json': json.dumps(normalized_surface, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Extract normalized traffic-derived surface with graceful empty fallback.
+        outputs:
+          traffic_body_json:
+            children: null
+            type: string
+          traffic_summary:
+            children: null
+            type: string
+          traffic_surface_json:
+            children: null
+            type: string
+        selected: false
+        title: Extract Traffic Surface
+        type: code
+        variables:
+        - value_selector:
+          - import_traffic_surface
+          - body
+          value_type: string
+          variable: body
+        - value_selector:
+          - normalize_input
+          - traffic_requests_json
+          value_type: string
+          variable: traffic_requests_json
+      height: 112
+      id: extract_traffic_surface
+      position:
+        x: 1500
+        y: 500
+      positionAbsolute:
+        x: 1500
+        y: 500
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef _endpoint_key(endpoint):\n    return (str(endpoint.get('method') or 'GET').upper(), str(endpoint.get('path') or ''))\n\ndef _merge_strings(left, right):\n    values = []\n    seen = set()\n    for item in [*(left or []), *(right or [])]:\n        value = str(item or '').strip()\n        if not value or value in seen:\n            continue\n        seen.add(value)\n        values.append(value)\n    return values\n\ndef _merge_examples(left, right):\n    values = []\n    seen = set()\n    for item in [*(left or []), *(right or [])]:\n        if not isinstance(item, dict):\n            continue\n        key = (str(item.get('source') or ''), str(item.get('method') or ''), str(item.get('url') or ''))\n        if key in seen:\n            continue\n        seen.add(key)\n        values.append(item)\n    return values[:5]\n\ndef _merge_endpoint(primary, secondary):\n    merged = dict(primary)\n    merged['path_params'] = merged.get('path_params') or secondary.get('path_params') or []\n    merged['query_params'] = sorted(set((merged.get('query_params') or []) + (secondary.get('query_params') or [])))\n    merged['body_fields'] = sorted(set((merged.get('body_fields') or []) + (secondary.get('body_fields') or [])))\n    merged['object_param_name'] = merged.get('object_param_name') or secondary.get('object_param_name') or ''\n    merged['object_id_candidates'] = _merge_strings(merged.get('object_id_candidates') or [], secondary.get('object_id_candidates') or [])\n    left_signals = merged.get('resource_signals') or {}\n    right_signals = secondary.get('resource_signals') or {}\n    merged['resource_signals'] = {\n        'has_object_id': bool(left_signals.get('has_object_id')) or bool(right_signals.get('has_object_id')),\n        'has_role_fields': bool(left_signals.get('has_role_fields')) or bool(right_signals.get('has_role_fields')),\n        'has_sensitive_keywords': bool(left_signals.get('has_sensitive_keywords')) or bool(right_signals.get('has_sensitive_keywords')),\n    }\n    left_auth = merged.get('auth_signals') or {}\n    right_auth = secondary.get('auth_signals') or {}\n    merged['auth_signals'] = {\n        'has_auth_header': bool(left_auth.get('has_auth_header')) or bool(right_auth.get('has_auth_header')),\n        'has_cookie_auth': bool(left_auth.get('has_cookie_auth')) or bool(right_auth.get('has_cookie_auth')),\n        'header_names': _merge_strings(left_auth.get('header_names') or [], right_auth.get('header_names') or []),\n        'cookie_names': _merge_strings(left_auth.get('cookie_names') or [], right_auth.get('cookie_names') or []),\n    }\n    merged['observed_examples'] = _merge_examples(merged.get('observed_examples') or [], secondary.get('observed_examples') or [])\n    merged['sources'] = _merge_strings(merged.get('sources') or [], secondary.get('sources') or [])\n    merged['source_confidence'] = max(float(merged.get('source_confidence') or 0), float(secondary.get('source_confidence') or 0))\n    merged['auth_required'] = bool(merged.get('auth_required')) or bool(secondary.get('auth_required'))\n    merged['security_schemes'] = _merge_strings(merged.get('security_schemes') or [], secondary.get('security_schemes') or [])\n    left_classes = merged.get('candidate_classes') or []\n    right_classes = secondary.get('candidate_classes') or []\n    merged['candidate_classes'] = list(dict.fromkeys(left_classes + right_classes))\n    left_scores = merged.get('candidate_scores') or {}\n    right_scores = secondary.get('candidate_scores') or {}\n    merged['candidate_scores'] = {\n        'authorization': max(float(left_scores.get('authorization') or 0), float(right_scores.get('authorization') or 0)),\n        'injection': max(float(left_scores.get('injection') or 0), float(right_scores.get('injection') or 0)),\n        'business_logic': max(float(left_scores.get('business_logic') or 0), float(right_scores.get('business_logic') or 0)),\n    }\n    return merged\n\ndef _annotate(endpoint, source_name, confidence):\n    enriched = dict(endpoint)\n    enriched['sources'] = _merge_strings(enriched.get('sources') or [], [source_name])\n    enriched['source_confidence'] = max(float(enriched.get('source_confidence') or 0), confidence)\n    return enriched\n\ndef main(openapi_surface_json: str, discovery_surface_json: str, traffic_surface_json: str) -> dict:\n    try:\n        openapi_surface = json.loads(openapi_surface_json or '{}')\n    except Exception:\n        openapi_surface = {}\n    try:\n        discovery_surface = json.loads(discovery_surface_json or '{}')\n    except Exception:\n        discovery_surface = {}\n    try:\n        traffic_surface = json.loads(traffic_surface_json or '{}')\n    except Exception:\n        traffic_surface = {}\n\n    merged = {}\n    for endpoint in openapi_surface.get('endpoints') or []:\n        if isinstance(endpoint, dict):\n            merged[_endpoint_key(endpoint)] = _annotate(endpoint, 'openapi', 0.9)\n    for surface_name, confidence, surface in [('discovery', 0.75, discovery_surface), ('traffic', 0.95, traffic_surface)]:\n        for endpoint in surface.get('endpoints') or []:\n            if not isinstance(endpoint, dict):\n                continue\n            endpoint = _annotate(endpoint, surface_name, confidence)\n            key = _endpoint_key(endpoint)\n            if key in merged:\n                merged[key] = _merge_endpoint(merged[key], endpoint)\n            else:\n                merged[key] = endpoint\n\n    merged_surface = {'endpoints': sorted(merged.values(), key=lambda item: (str(item.get('path') or ''), str(item.get('method') or 'GET')))}\n    return {\n        'merged_surface_json': json.dumps(merged_surface, ensure_ascii=False),\n        'merged_surface_total': len(merged_surface['endpoints']),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Merge OpenAPI, ZAP discovery, and traffic-derived surfaces before planning.
+        outputs:
+          merged_surface_json:
+            children: null
+            type: string
+          merged_surface_total:
+            children: null
+            type: number
+        selected: false
+        title: Merge Surfaces
+        type: code
+        variables:
+        - value_selector:
+          - extract_plan_inputs
+          - normalized_surface_json
+          value_type: string
+          variable: openapi_surface_json
+        - value_selector:
+          - extract_discovery_surface
+          - discovery_surface_json
+          value_type: string
+          variable: discovery_surface_json
+        - value_selector:
+          - extract_traffic_surface
+          - traffic_surface_json
+          value_type: string
+          variable: traffic_surface_json
+      height: 112
+      id: merge_surfaces
+      position:
+        x: 1800
+        y: 300
+      positionAbsolute:
+        x: 1800
+        y: 300
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef _merge_strings(left, right):\n    values = []\n    seen = set()\n    for item in [*(left or []), *(right or [])]:\n        value = str(item or '').strip()\n        if not value or value in seen:\n            continue\n        seen.add(value)\n        values.append(value)\n    return values\n\ndef main(merged_surface_json: str) -> dict:\n    try:\n        surface = json.loads(merged_surface_json or '{}')\n    except Exception:\n        surface = {}\n\n    enriched = []\n    for endpoint in surface.get('endpoints') or []:\n        if not isinstance(endpoint, dict):\n            continue\n        item = dict(endpoint)\n        auth = item.get('auth_signals') or {}\n        if bool(auth.get('has_auth_header')) or bool(auth.get('has_cookie_auth')):\n            item['auth_required'] = True\n            item['security_schemes'] = _merge_strings(item.get('security_schemes') or [], ['observedAuth'])\n        if not item.get('source_confidence'):\n            sources = {str(source or '').strip().lower() for source in item.get('sources') or []}\n            if 'traffic' in sources:\n                item['source_confidence'] = 0.95\n            elif 'openapi' in sources:\n                item['source_confidence'] = 0.9\n            elif 'discovery' in sources:\n                item['source_confidence'] = 0.75\n            else:\n                item['source_confidence'] = 0.5\n        enriched.append(item)\n\n    final_surface = {'endpoints': sorted(enriched, key=lambda item: (str(item.get('path') or ''), str(item.get('method') or 'GET')))}\n    return {\n        'enriched_surface_json': json.dumps(final_surface, ensure_ascii=False),\n        'enriched_surface_total': len(final_surface['endpoints']),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Enrich merged surface with source confidence and observed auth signals.
+        outputs:
+          enriched_surface_json:
+            children: null
+            type: string
+          enriched_surface_total:
+            children: null
+            type: number
+        selected: false
+        title: Enrich Surface
+        type: code
+        variables:
+        - value_selector:
+          - merge_surfaces
+          - merged_surface_json
+          value_type: string
+          variable: merged_surface_json
+      height: 112
+      id: enrich_surface
+      position:
+        x: 2100
+        y: 300
+      positionAbsolute:
+        x: 2100
+        y: 300
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"execution_context\": {{#normalize_input.execution_context_json#}},\n  \"normalized_surface\": {{#enrich_surface.enriched_surface_json#}},\n  \"generated_tasks\": {{#extract_plan_inputs.generated_tasks_json#}},\n  \"routing_mode\": \"hybrid\"\n}\n"
+          type: json
+        desc: Build the backend-first task queue before handing it to the Router.
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Plan Tasks
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/plan/tasks'
+        variables: []
+      height: 184
+      id: plan_tasks
+      position:
+        x: 1200
+        y: 20
+      positionAbsolute:
+        x: 1200
+        y: 20
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Router refines backend-generated candidate tasks instead of creating
+          the queue from scratch.
+        model:
+          completion_params:
+            max_tokens: 1200
+            temperature: 0.1
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: "You are the Router Agent of a REST API DAST system.\n\nRole:\n- Review and optionally reprioritize backend-generated candidate tasks.\n- Allowed task classes: authorization, injection, business_logic.\n- Preserve the backend-generated queue structure whenever possible.\n- Do not validate vulnerabilities.\n- Do not execute tools.\n\nGoal:\n- Analyze the execution context, normalized API surface, and backend task plan.\n- Return the final prioritized task queue for workers.\n\nConstraints:\n- Use backend-generated tasks as the primary source of truth.\n- You may reprioritize, trim, or annotate tasks, but do not invent endpoints not present in the backend plan.\n- Keep tasks narrow, reproducible, and endpoint-focused.\n- Do not create duplicate tasks for the same endpoint and hypothesis.\n- Return JSON only.\n\nRequired output:\n{\n  \"router_summary\": \"short summary\",\n  \"tasks\": [\n    {\n      \"id\": \"task_authz_bola_001\",\n      \"class\": \"authorization\",\n      \"subtype\": \"bola\",\n      \"endpoint\": \"/identity/api/v2/vehicle/{id}/location\",\n      \"method\": \"GET\",\n      \"params\": {\n        \"path_params\": [\"id\"],\n        \"query_params\": [],\n        \"body_fields\": []\n      },\n      \"auth_context\": {\n        \"owner_role\": \"user_a\",\n        \"other_role\": \"user_b\",\n        \"token_strategy\": \"cross_role_replay\"\n      },\n      \"hypothesis\": \"Cross-role access to the same object may be possible.\",\n      \"priority\": 90,\n      \"retry_count\": 0,\n      \"rework_hint\": null,\n      \"status\": \"pending\",\n      \"allowed_tools\": [\"auth_test_access\"]\n    }\n  ]\n}"
+        - id: user
+          role: user
+          text: 'Execution context:
+
+            {{#normalize_input.execution_context_json#}}
+
+
+            Recon result:
+
+            {{#extract_plan_inputs.recon_body_json#}}
+
+
+            Backend planner result:
+
+            {{#plan_tasks.body#}}'
+        selected: false
+        title: Router Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 148
+      id: router_agent
+      position:
+        x: 900
+        y: 180
+      positionAbsolute:
+        x: 900
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef _normalize_tasks(tasks):\n    normalized = []\n    allowed_classes = {\"authorization\", \"injection\", \"business_logic\"}\n    for task in tasks:\n        if not isinstance(task, dict):\n            continue\n        if str(task.get(\"class\") or \"\").lower() not in allowed_classes:\n            task[\"class\"] = \"authorization\"\n        normalized.append(task)\n    return normalized\n\ndef main(text: str, planner_body: str = \"\") -> dict:\n    try:\n        payload = json.loads(text or '{}')\n    except Exception:\n        payload = {}\n\n    try:\n        planner = json.loads(planner_body or '{}')\n    except Exception:\n        planner = {}\n\n    router_tasks = payload.get('tasks') or []\n    if not isinstance(router_tasks, list):\n        router_tasks = []\n\n    fallback_tasks = planner.get(\"final_task_queue\") or planner.get(\"router_candidate_queue\") or planner.get(\"generated_tasks\") or []\n    if not isinstance(fallback_tasks, list):\n        fallback_tasks = []\n\n    normalized = _normalize_tasks(router_tasks) or _normalize_tasks(fallback_tasks)\n\n    return {\n        \"router_summary\": str(payload.get(\"router_summary\") or planner.get(\"planner_summary\") or \"\"),\n        \"pending_tasks_json\": json.dumps(normalized, ensure_ascii=False),\n        \"tasks_total\": len(normalized),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Parse Router output into a validated initial task list.
+        outputs:
+          pending_tasks_json:
+            children: null
+            type: string
+          router_summary:
+            children: null
+            type: string
+          tasks_total:
+            children: null
+            type: number
+        selected: false
+        title: Parse Router Plan
+        type: code
+        variables:
+        - value_selector:
+          - router_agent
+          - text
+          value_type: string
+          variable: text
+        - value_selector:
+          - plan_tasks
+          - body
+          value_type: string
+          variable: planner_body
+      height: 96
+      id: parse_router_plan
+      position:
+        x: 1200
+        y: 180
+      positionAbsolute:
+        x: 1200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(pending_tasks_json: str, execution_context_json: str, planner_body: str = \"\") -> dict:\n    try:\n        tasks = json.loads(pending_tasks_json or '[]')\n    except Exception:\n        tasks = []\n    try:\n        ctx = json.loads(execution_context_json or '{}')\n    except Exception:\n        ctx = {}\n    try:\n        planner = json.loads(planner_body or '{}')\n    except Exception:\n        planner = {}\n\n    state = {\n        \"pending_tasks\": tasks,\n        \"scheduler_state\": planner.get(\"scheduler_state\") or {},\n        \"confirmed_findings\": [],\n        \"rejected_findings\": [],\n        \"evidence_records\": [],\n        \"completed_tasks\": [],\n        \"budget_used\": 0,\n        \"max_requests\": ctx.get(\"max_requests\", 100),\n        \"max_duration_sec\": ctx.get(\"max_duration_sec\", 900),\n        \"start_timestamp\": ctx.get(\"start_timestamp\"),\n        \"max_retries\": ctx.get(\"max_retries_per_task\", 1),\n        \"stop_reason\": \"\",\n        \"last_selection_reason\": \"\",\n        \"last_deferred_classes\": [],\n    }\n    return {\"seed_state_json\": json.dumps(state, ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: Initialize unified state_json for the main worker loop.
+        outputs:
+          seed_state_json:
+            children: null
+            type: string
+        selected: false
+        title: Init State
+        type: code
+        variables:
+        - value_selector:
+          - parse_router_plan
+          - pending_tasks_json
+          value_type: string
+          variable: pending_tasks_json
+        - value_selector:
+          - normalize_input
+          - execution_context_json
+          value_type: string
+          variable: execution_context_json
+        - value_selector:
+          - plan_tasks
+          - body
+          value_type: string
+          variable: planner_body
+      height: 96
+      id: init_state
+      position:
+        x: 1500
+        y: 180
+      positionAbsolute:
+        x: 1500
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        break_conditions:
+        - comparison_operator: is
+          id: main-loop-break-1
+          value: true
+          varType: boolean
+          variable_selector:
+          - update_state
+          - should_exit_loop
+        error_handle_mode: terminated
+        height: 592
+        logical_operator: and
+        loop_count: 10
+        loop_variables:
+        - id: b7a762c1-0d2e-40ae-b6ce-3ec1700a6254
+          label: _current_loop_state
+          value:
+          - init_state
+          - seed_state_json
+          value_type: variable
+          var_type: string
+        selected: false
+        start_node_id: main_loop_start
+        title: Main Worker Loop
+        type: loop
+        width: 2814.011478510093
+      height: 592
+      id: main_loop_v1
+      position:
+        x: 1800
+        y: -40
+      positionAbsolute:
+        x: 1800
+        y: -40
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 2814
+      zIndex: 1
+    - data:
+        desc: ''
+        isInLoop: true
+        selected: false
+        title: ''
+        type: loop-start
+      draggable: false
+      height: 48
+      id: main_loop_start
+      parentId: main_loop_v1
+      position:
+        x: 24
+        y: 68
+      positionAbsolute:
+        x: 1824
+        y: 28
+      selectable: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom-loop-start
+      width: 44
+      zIndex: 1002
+    - data:
+        code: "import json\n\ndef main(current_loop_state_json: str) -> dict:\n    # Берем входящий JSON. \n    # На 1-й итерации Dify подставит сюда стартовый стейт, на 2-й и далее - обновленный.\n    value = str(current_loop_state_json or \"\").strip()\n    \n    try:\n        state = json.loads(value or '{}')\n    except Exception:\n        state = {}\n\n    return {\n        \"state_json\": json.dumps(state, ensure_ascii=False),\n        \"pending_tasks_json\": json.dumps(state.get(\"pending_tasks\") or [], ensure_ascii=False),\n        \"scheduler_state_json\": json.dumps(state.get(\"scheduler_state\") or {}, ensure_ascii=False),\n    }"
+        code_language: python3
+        dependencies: []
+        desc: Carry forward the latest state_json between loop iterations.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          pending_tasks_json:
+            children: null
+            type: string
+          scheduler_state_json:
+            children: null
+            type: string
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Loop State Manager (1)
+        type: code
+        variables:
+        - value_selector:
+          - main_loop_v1
+          - _current_loop_state
+          value_type: string
+          variable: current_loop_state_json
+      height: 96
+      id: loop_state_manager
+      parentId: main_loop_v1
+      position:
+        x: 20
+        y: 140
+      positionAbsolute:
+        x: 1820
+        y: 100
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: "{\n  \"pending_tasks\": {{#loop_state_manager.pending_tasks_json#}},\n  \"scheduler_state\": {{#loop_state_manager.scheduler_state_json#}}\n}\n"
+          type: json
+        desc: Ask backend scheduler for the single next fair task to execute.
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Schedule Next Task (1)
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/schedule/next-task'
+        variables: []
+      height: 184
+      id: schedule_next_task
+      parentId: main_loop_v1
+      position:
+        x: 280
+        y: 40
+      positionAbsolute:
+        x: 2080
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "import json\nfrom datetime import datetime, timezone\n\ndef _no_task() -> dict:\n    return {\n        \"id\": \"__no_task__\",\n        \"class\": \"authorization\",\n        \"subtype\": \"noop\",\n        \"endpoint\": \"/__dify_no_task__\",\n        \"method\": \"GET\",\n        \"params\": {\"path_params\": [], \"query_params\": [], \"body_fields\": []},\n        \"auth_context\": {\"owner_role\": \"user_a\", \"other_role\": \"user_b\", \"token_strategy\": \"none\"},\n        \"hypothesis\": \"No task available.\",\n        \"priority\": 0,\n        \"retry_count\": 0,\n        \"rework_hint\": None,\n        \"status\": \"pending\",\n        \"allowed_tools\": [\"auth_test_access\"],\n    }\n\ndef main(state_json: str, scheduler_body: str = \"\") -> dict:\n    try:\n        state = json.loads(state_json or '{}')\n    except Exception:\n        state = {}\n    try:\n        scheduler = json.loads(scheduler_body or '{}')\n    except Exception:\n        scheduler = {}\n\n    stop_reason = str(state.get(\"stop_reason\") or \"\")\n    if not stop_reason:\n        if state.get(\"budget_used\", 0) >= state.get(\"max_requests\", 100):\n            stop_reason = \"budget_exceeded\"\n        else:\n            start_ts = state.get(\"start_timestamp\")\n            max_dur = int(state.get(\"max_duration_sec\", 900) or 900)\n            if start_ts:\n                try:\n                    started = datetime.fromisoformat(start_ts)\n                    if (datetime.now(timezone.utc) - started).total_seconds() >= max_dur:\n                        stop_reason = \"timeout\"\n                except Exception:\n                    pass\n\n    if stop_reason:\n        state[\"stop_reason\"] = stop_reason\n        active = _no_task()\n        return {\n            \"active_task_json\": json.dumps(active, ensure_ascii=False),\n            \"task_class\": \"authorization\",\n            \"remaining_tasks_json\": json.dumps(state.get(\"pending_tasks\") or [], ensure_ascii=False),\n            \"scheduler_state_json\": json.dumps(state.get(\"scheduler_state\") or {}, ensure_ascii=False),\n            \"remaining_state_json\": json.dumps(state, ensure_ascii=False),\n            \"max_retries\": int(state.get(\"max_retries\", 1) or 1),\n        }\n\n    should_stop = bool(scheduler.get(\"should_stop\"))\n    if should_stop:\n        state[\"stop_reason\"] = state.get(\"stop_reason\") or \"no_runnable_tasks\"\n        active = _no_task()\n        return {\n            \"active_task_json\": json.dumps(active, ensure_ascii=False),\n            \"task_class\": \"authorization\",\n            \"remaining_tasks_json\": json.dumps(state.get(\"pending_tasks\") or [], ensure_ascii=False),\n            \"remaining_state_json\": json.dumps(state, ensure_ascii=False),\n            \"scheduler_state_json\": json.dumps(state.get(\"scheduler_state\") or {}, ensure_ascii=False),\n            \"max_retries\": int(state.get(\"max_retries\", 1) or 1),\n        }\n\n    active = scheduler.get(\"next_task\") or _no_task()\n    state[\"pending_tasks\"] = scheduler.get(\"remaining_tasks\") or []\n    state[\"scheduler_state\"] = scheduler.get(\"scheduler_state\") or state.get(\"scheduler_state\") or {}\n    state[\"last_selection_reason\"] = str(scheduler.get(\"selection_reason\") or \"\")\n    state[\"last_deferred_classes\"] = scheduler.get(\"deferred_classes\") or []\n    return {\n        \"active_task_json\": json.dumps(active, ensure_ascii=False),\n        \"task_class\": str(active.get(\"class\") or \"authorization\").lower(),\n        \"remaining_tasks_json\": json.dumps(state.get(\"pending_tasks\") or [], ensure_ascii=False),\n        \"scheduler_state_json\": json.dumps(state.get(\"scheduler_state\") or {}, ensure_ascii=False),\n        \"remaining_state_json\": json.dumps(state, ensure_ascii=False),\n        \"max_retries\": int(state.get(\"max_retries\", 1) or 1),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Pick the next task from unified state_json.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          active_task_json:
+            children: null
+            type: string
+          max_retries:
+            children: null
+            type: number
+          remaining_state_json:
+            children: null
+            type: string
+          remaining_tasks_json:
+            children: null
+            type: string
+          scheduler_state_json:
+            children: null
+            type: string
+          task_class:
+            children: null
+            type: string
+        selected: false
+        title: Task Dispatcher (1)
+        type: code
+        variables:
+        - value_selector:
+          - loop_state_manager
+          - state_json
+          value_type: string
+          variable: state_json
+        - value_selector:
+          - schedule_next_task
+          - body
+          value_type: string
+          variable: scheduler_body
+      height: 96
+      id: task_dispatcher
+      parentId: main_loop_v1
+      position:
+        x: 580
+        y: 140
+      positionAbsolute:
+        x: 2380
+        y: 100
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Authorization worker chooses one tool command.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        model:
+          completion_params:
+            max_tokens: 700
+            temperature: 0.1
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: "You are the Authorization Worker of a REST API DAST system.\n\nRole:\n- Test authorization and access-control weaknesses only.\n- Focus on BOLA, IDOR, token swap, role confusion, and access matrix issues.\n- Never confirm vulnerabilities.\n\nGoal:\n- Produce one strict tool command JSON.\n\nConstraints:\n- Use only allowed_tools from the task.\n- Stay inside the given endpoint and auth context.\n- If task.params.selected_object_id is present, you must use it.\n- If task.params.object_id_candidates is non-empty, use the first candidate or the selected_object_id from the task.\n- Do not invent guessed object IDs such as 1, 123, test, or sample.\n- Follow rework_hint directly if provided.\n- Do not wrap the output in markdown code fences.\n- Return one raw JSON object only.\n- Return JSON only.\n\nRequired output:\n{\n  \"mode\": \"tool_command\",\n  \"tool_name\": \"auth_test_access\",\n  \"arguments\": {\n    \"endpoint\": \"/identity/api/v2/vehicle/{carId}/location\",\n    \"method\": \"GET\",\n    \"owner_role\": \"user_a\",\n    \"other_role\": \"user_b\",\n    \"object_id\": \"4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5\"\n  },\n  \"worker_hypothesis\": \"Cross-role replay may expose the same object.\",\n  \"reasoning_summary\": \"short explanation\"\n}"
+        - id: user
+          role: user
+          text: 'Active task:
+
+            {{#task_dispatcher.active_task_json#}}
+
+
+            Execution context:
+
+            {{#normalize_input.execution_context_json#}}'
+        selected: false
+        title: Authorization Worker (1)
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 132
+      id: authorization_worker
+      parentId: main_loop_v1
+      position:
+        x: 600
+        y: 40
+      positionAbsolute:
+        x: 2400
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Injection worker chooses one tool command.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        model:
+          completion_params:
+            max_tokens: 700
+            temperature: 0.1
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: "You are the Injection Worker of a REST API DAST system.\n\nRole:\n- Test injection weaknesses such as SQLi, XSS, and command injection.\n- Never confirm vulnerabilities.\n\nGoal:\n- Produce one strict tool command JSON.\n\nRequired output:\n{\n  \"mode\": \"tool_command\",\n  \"tool_name\": \"injection_test\",\n  \"arguments\": {},\n  \"worker_hypothesis\": \"Input handling may be injectable.\",\n  \"reasoning_summary\": \"short explanation\"\n}"
+        - id: user
+          role: user
+          text: 'Active task:
+
+            {{#task_dispatcher.active_task_json#}}
+
+
+            Execution context:
+
+            {{#normalize_input.execution_context_json#}}'
+        selected: false
+        title: Injection Worker (1)
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 132
+      id: injection_worker
+      parentId: main_loop_v1
+      position:
+        x: 600
+        y: 240
+      positionAbsolute:
+        x: 2400
+        y: 200
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Business logic worker chooses one tool command.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        model:
+          completion_params:
+            max_tokens: 700
+            temperature: 0.1
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: "You are the Business Logic Worker of a REST API DAST system.\n\nRole:\n- Test workflow and business logic flaws only.\n- Never confirm vulnerabilities.\n\nGoal:\n- Produce one strict tool command JSON.\n\nRequired output:\n{\n  \"mode\": \"tool_command\",\n  \"tool_name\": \"logic_test\",\n  \"arguments\": {},\n  \"worker_hypothesis\": \"The workflow may allow an unintended state transition.\",\n  \"reasoning_summary\": \"short explanation\"\n}"
+        - id: user
+          role: user
+          text: 'Active task:
+
+            {{#task_dispatcher.active_task_json#}}
+
+
+            Execution context:
+
+            {{#normalize_input.execution_context_json#}}'
+        selected: false
+        title: Business Logic Worker (1)
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 132
+      id: business_logic_worker
+      parentId: main_loop_v1
+      position:
+        x: 600
+        y: 440
+      positionAbsolute:
+        x: 2400
+        y: 400
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "import json\n\ndef _strip_code_fences(text):\n    value = str(text or \"\").strip()\n    if value.startswith(\"```\"):\n        lines = value.splitlines()\n        if lines and lines[0].startswith(\"```\"):\n            lines = lines[1:]\n        if lines and lines[-1].strip() == \"```\":\n            lines = lines[:-1]\n        value = \"\\n\".join(lines).strip()\n    return value\n\ndef _is_guessed_object_id(value):\n    normalized = str(value or '').strip().lower()\n    return normalized in {'1', '123', 'test', 'sample', 'example', 'demo', 'foo', 'bar'}\n\ndef _extract_placeholders(endpoint):\n    placeholders = []\n    current = \"\"\n    in_placeholder = False\n    for char in str(endpoint or \"\"):\n        if char == \"{\":\n            current = \"\"\n            in_placeholder = True\n        elif char == \"}\":\n            if current:\n                placeholders.append(current)\n            in_placeholder = False\n        elif in_placeholder:\n            current += char\n    return placeholders\n\ndef _materialize_endpoint(endpoint, object_id):\n    endpoint_value = str(endpoint or \"\")\n    if object_id in (None, \"\"):\n        return endpoint_value\n    for placeholder in _extract_placeholders(endpoint_value):\n        endpoint_value = endpoint_value.replace(\"{\" + placeholder + \"}\", str(object_id))\n    return endpoint_value\n\ndef main(task_class: str, auth_text: str = \"\", injection_text: str = \"\", business_text: str = \"\", active_task_json: str = \"\") -> dict:\n    chosen = auth_text\n    if str(task_class or \"\").lower() == \"injection\":\n        chosen = injection_text\n    elif str(task_class or \"\").lower() == \"business_logic\":\n        chosen = business_text\n\n    try:\n        payload = json.loads(_strip_code_fences(chosen) or '{}')\n    except Exception:\n        payload = {}\n\n    try:\n        active_task = json.loads(active_task_json or '{}')\n    except Exception:\n        active_task = {}\n\n    arguments = payload.get('arguments') or {}\n    if not isinstance(arguments, dict):\n        arguments = {}\n\n    params = active_task.get(\"params\") or {}\n    if not isinstance(params, dict):\n        params = {}\n\n    selected_object_id = params.get(\"selected_object_id\")\n    candidate_ids = params.get(\"object_id_candidates\") or []\n    if not isinstance(candidate_ids, list):\n        candidate_ids = []\n    if not selected_object_id and candidate_ids:\n        selected_object_id = candidate_ids[0]\n\n    selected_class = str(task_class or 'authorization').lower()\n    default_tool = 'auth_test_access'\n    default_endpoint = '/v1/auth/test-access'\n    if selected_class == 'injection':\n        default_tool = 'injection_test'\n        default_endpoint = '/v1/injection/test'\n    elif selected_class == 'business_logic':\n        default_tool = 'logic_test'\n        default_endpoint = '/v1/logic/test'\n\n    tool_name = str(payload.get('tool_name') or default_tool)\n    if selected_class == 'authorization':\n        chosen_object_id = arguments.get(\"object_id\") or selected_object_id\n        if _is_guessed_object_id(chosen_object_id) and selected_object_id:\n            chosen_object_id = selected_object_id\n        if chosen_object_id:\n            arguments[\"object_id\"] = chosen_object_id\n\n        task_endpoint = str(active_task.get(\"endpoint\") or \"\")\n        worker_endpoint = str(arguments.get(\"endpoint\") or task_endpoint)\n        if _extract_placeholders(task_endpoint):\n            worker_endpoint = task_endpoint\n        arguments[\"endpoint\"] = _materialize_endpoint(worker_endpoint, chosen_object_id)\n\n    return {\n        \"tool_name\": tool_name,\n        \"tool_endpoint\": default_endpoint,\n        \"tool_arguments_json\": json.dumps(arguments, ensure_ascii=False),\n        \"worker_hypothesis\": str(payload.get('worker_hypothesis') or active_task.get('hypothesis') or ''),\n        \"reasoning_summary\": str(payload.get('reasoning_summary') or ''),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Select the relevant worker output and normalize one tool command.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          reasoning_summary:
+            children: null
+            type: string
+          tool_arguments_json:
+            children: null
+            type: string
+          tool_endpoint:
+            children: null
+            type: string
+          tool_name:
+            children: null
+            type: string
+          worker_hypothesis:
+            children: null
+            type: string
+        selected: false
+        title: Parse Worker Command (1)
+        type: code
+        variables:
+        - value_selector:
+          - task_dispatcher
+          - task_class
+          value_type: string
+          variable: task_class
+        - value_selector:
+          - authorization_worker
+          - text
+          value_type: string
+          variable: auth_text
+        - value_selector:
+          - injection_worker
+          - text
+          value_type: string
+          variable: injection_text
+        - value_selector:
+          - business_logic_worker
+          - text
+          value_type: string
+          variable: business_text
+        - value_selector:
+          - task_dispatcher
+          - active_task_json
+          value_type: string
+          variable: active_task_json
+      height: 96
+      id: parse_worker_command
+      parentId: main_loop_v1
+      position:
+        x: 930
+        y: 210
+      positionAbsolute:
+        x: 2730
+        y: 170
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"execution_context\": {{#normalize_input.execution_context_json#}},\n  \"task\": {{#task_dispatcher.active_task_json#}},\n  \"tool_name\": \"{{#parse_worker_command.tool_name#}}\",\n  \"arguments\": {{#parse_worker_command.tool_arguments_json#}}\n}\n"
+          type: json
+        desc: Execute the selected worker tool against the toolbox backend.
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Execute Tool Request (1)
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}{{#parse_worker_command.tool_endpoint#}}'
+        variables: []
+      height: 186
+      id: execute_tool
+      parentId: main_loop_v1
+      position:
+        x: 1260
+        y: 210
+      positionAbsolute:
+        x: 3060
+        y: 170
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "import json\nfrom datetime import datetime, timezone\n\ndef main(active_task_json: str, body: str, worker_hypothesis: str, reasoning_summary: str) -> dict:\n    try:\n        task = json.loads(active_task_json or '{}')\n    except Exception:\n        task = {}\n    try:\n        result = json.loads(body or '{}')\n    except Exception:\n        result = {}\n\n    evidence = {\n        \"task_id\": task.get(\"id\"),\n        \"worker_type\": task.get(\"class\"),\n        \"request_summary\": result.get(\"request_summary\") or {},\n        \"response_summary\": result.get(\"response_summary\") or {},\n        \"raw_status\": result.get(\"raw_status\") or \"unknown\",\n        \"indicators\": result.get(\"indicators\") or [],\n        \"reasoning\": reasoning_summary or worker_hypothesis,\n        \"artifacts\": result.get(\"artifacts\") or [],\n        \"timestamp\": datetime.now(timezone.utc).isoformat(),\n    }\n    return {\"evidence_json\": json.dumps(evidence, ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: Build normalized evidence JSON for the Judge.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          evidence_json:
+            children: null
+            type: string
+        selected: false
+        title: Build Evidence (1)
+        type: code
+        variables:
+        - value_selector:
+          - task_dispatcher
+          - active_task_json
+          value_type: string
+          variable: active_task_json
+        - value_selector:
+          - execute_tool
+          - body
+          value_type: string
+          variable: body
+        - value_selector:
+          - parse_worker_command
+          - worker_hypothesis
+          value_type: string
+          variable: worker_hypothesis
+        - value_selector:
+          - parse_worker_command
+          - reasoning_summary
+          value_type: string
+          variable: reasoning_summary
+      height: 96
+      id: build_evidence
+      parentId: main_loop_v1
+      position:
+        x: 1570
+        y: 210
+      positionAbsolute:
+        x: 3370
+        y: 170
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Judge evaluates structured evidence and returns confirmed, rejected,
+          or rework.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        model:
+          completion_params:
+            max_tokens: 700
+            temperature: 0.1
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: 'You are the Judge Agent of a REST API DAST system.
+
+            Role:
+
+            You validate structured evidence produced by workers.
+
+            You are the only component that decides whether a finding is confirmed,
+            rejected, or needs rework.
+
+            Goal:
+
+            Evaluate the evidence object against the active task.
+
+            Return a strict verdict object.
+
+            Constraints:
+
+            Use only the provided task and evidence.
+
+            Do not trust worker conclusions without supporting evidence.
+
+            Be conservative when evidence is incomplete, but do not downgrade strong
+            direct evidence into rework.
+
+            Treat blocked preconditions, invalid object identifiers, validation failures,
+            and non-authorization errors as non-security outcomes unless the evidence
+            still contains a meaningful authorization comparison.
+
+            Return JSON only. No prose, no markdown, no code fences.
+
+            Allowed verdicts:
+
+            confirmed
+
+            rejected
+
+            rework
+
+            Required output schema:
+
+            {
+
+            "task_id": "task_authz_bola_001",
+
+            "verdict": "confirmed",
+
+            "confidence": 0.93,
+
+            "reason": "short explanation",
+
+            "rework_hint": null,
+
+            "severity": "high",
+
+            "finding_candidate": {
+
+            "title": "Broken Object Level Authorization",
+
+            "vuln_type": "BOLA",
+
+            "endpoint": "http://host.docker.internal:8888/identity/api/v2/vehicle/123/location",
+
+            "method": "GET",
+
+            "evidence_summary": "Two different roles accessed the same object and
+            received equivalent successful responses.",
+
+            "reproduction_steps": [
+
+            "Authenticate as user_a",
+
+            "Request the endpoint",
+
+            "Authenticate as user_b",
+
+            "Repeat the same request",
+
+            "Compare both responses"
+
+            ],
+
+            "remediation": "Enforce object ownership and role-based checks before
+            returning resource data."
+
+            }
+
+            }
+
+            Field rules:
+
+            confidence: float from 0.0 to 1.0
+
+            severity: one of low, medium, high, critical
+
+            rework_hint: null unless verdict is rework
+
+            finding_candidate: null unless verdict is confirmed
+
+            Judging rules:
+
+            confirmed: only when the evidence directly supports the vulnerability
+            hypothesis
+
+            rejected: when the evidence contradicts the hypothesis, is clearly benign,
+            or the authorization assessment could not actually be performed
+
+            rework: only when evidence is plausibly security-relevant but still incomplete,
+            and a realistic next step exists
+
+            Mandatory confirmation rules:
+
+            If the evidence shows all of the following:
+
+            raw_status = "success"
+
+            request_summary.endpoint contains a concrete object identifier, not a
+            placeholder like {id}
+
+            response_summary.owner.status_code in [200, 201, 202, 204]
+
+            response_summary.other.status_code in [200, 201, 202, 204]
+
+            response_summary.similarity >= 0.9
+
+            indicators include "potential_bola"
+
+            response_summary.failure_analysis.failure_type = "unknown"
+
+            then verdict must be "confirmed".
+
+            In that case:
+
+            rework_hint must be null
+
+            severity must not be null
+
+            finding_candidate must be populated
+
+            Do not return "rework" if a concrete object ID was actually tested and
+            both roles received equivalent successful responses.
+
+            A valid tested object ID may appear in:
+
+            request_summary.endpoint
+
+            worker tool arguments
+
+            evidence artifacts
+
+            response body previews
+
+            If those show a concrete UUID or object identifier, do not claim that
+            the object ID is missing.
+
+            If both roles successfully access the same object and receive equivalent
+            successful responses, that is direct authorization evidence, not an incomplete
+            result.
+
+            Mandatory rejection rules:
+
+            If raw_status = "blocked", verdict must be rejected.
+
+            If indicators include invalid_object_id, validation_failure, blocked_guessed_object_id,
+            input_conversion_failure, or non_authorization_error, verdict must be
+            rejected unless the evidence still contains a valid authorization comparison
+            with meaningful statuses.
+
+            If response_summary.failure_analysis.failure_type is invalid_object_id
+            or validation_failure, verdict must be rejected.
+
+            If response_summary.replan.decision = "stop" and response_summary.replan.reason
+            = "no_valid_object_id_available", verdict must be rejected.
+
+            If authorization assessment could not be performed because no valid object
+            ID was available, set:
+
+            verdict = rejected
+
+            rework_hint = null
+
+            finding_candidate = null
+
+            severity = null
+
+            Rework rules:
+
+            Use rework only when there is meaningful security-oriented partial evidence
+            and a realistic next step exists.
+
+            Do not use rework for blocked invalid-object-id cases, validation failures,
+            non-authorization errors, or already successful same-object authorization
+            comparisons.
+
+            Rework is appropriate only when a plausible security hypothesis remains
+            unresolved and the next step is concrete and realistic.
+
+            If verdict is rework:
+
+            set finding_candidate to null
+
+            provide a short, precise, actionable rework_hint
+
+            do not set severity higher than the evidence supports
+
+            If verdict is rejected:
+
+            set rework_hint to null
+
+            set finding_candidate to null
+
+            set severity to null
+
+            Example blocked-invalid-object-id verdict:
+
+            {
+
+            "task_id": "task_authorization_001",
+
+            "verdict": "rejected",
+
+            "confidence": 0.98,
+
+            "reason": "Authorization assessment could not be performed because the
+            object ID was blocked as invalid and no evidence-backed replacement ID
+            was available.",
+
+            "rework_hint": null,
+
+            "severity": null,
+
+            "finding_candidate": null
+
+            }
+
+            Example positive BOLA verdict:
+
+            {
+
+            "task_id": "task_authorization_001",
+
+            "verdict": "confirmed",
+
+            "confidence": 0.98,
+
+            "reason": "Both roles successfully accessed the same vehicle object and
+            received equivalent successful responses, which directly supports a BOLA
+            authorization weakness.",
+
+            "rework_hint": null,
+
+            "severity": "high",
+
+            "finding_candidate": {
+
+            "title": "Broken Object Level Authorization",
+
+            "vuln_type": "BOLA",
+
+            "endpoint": "http://host.docker.internal:8888/identity/api/v2/vehicle/4bae9968-ec7f-4de3-a3a0-ba1b2ab5e5e5/location",
+
+            "method": "GET",
+
+            "evidence_summary": "Two different roles accessed the same vehicle object
+            and received equivalent successful responses.",
+
+            "reproduction_steps": [
+
+            "Authenticate as user_a",
+
+            "Request the vehicle endpoint with the tested object ID",
+
+            "Authenticate as user_b",
+
+            "Repeat the same request",
+
+            "Compare both successful responses"
+
+            ],
+
+            "remediation": "Enforce object ownership and authorization checks before
+            returning vehicle data."
+
+            }
+
+            }
+
+            '
+        - id: user
+          role: user
+          text: 'Active task:
+
+            {{#task_dispatcher.active_task_json#}}
+
+
+            Evidence:
+
+            {{#build_evidence.evidence_json#}}'
+        selected: false
+        title: Judge Agent (1)
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 148
+      id: judge_agent
+      parentId: main_loop_v1
+      position:
+        x: 1890
+        y: 210
+      positionAbsolute:
+        x: 3690
+        y: 170
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "import json\n\ndef main(text: str, active_task_json: str) -> dict:\n    try:\n        payload = json.loads(text or '{}')\n    except Exception:\n        payload = {}\n    try:\n        active_task = json.loads(active_task_json or '{}')\n    except Exception:\n        active_task = {}\n\n    return {\n        \"task_id\": str(payload.get(\"task_id\") or active_task.get(\"id\") or \"\"),\n        \"verdict\": str(payload.get(\"verdict\") or \"rejected\"),\n        \"reason\": str(payload.get(\"reason\") or \"\"),\n        \"rework_hint\": payload.get(\"rework_hint\"),\n        \"rework_hint_json\": json.dumps(payload.get(\"rework_hint\"), ensure_ascii=False),\n        \"finding_candidate_json\": json.dumps(payload.get(\"finding_candidate\"), ensure_ascii=False),\n        \"verdict_json\": json.dumps(payload, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Parse the Judge verdict JSON.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          finding_candidate_json:
+            children: null
+            type: string
+          reason:
+            children: null
+            type: string
+          rework_hint:
+            children: null
+            type: string
+          rework_hint_json:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+          verdict:
+            children: null
+            type: string
+          verdict_json:
+            children: null
+            type: string
+        selected: false
+        title: Parse Judge Verdict (1)
+        type: code
+        variables:
+        - value_selector:
+          - judge_agent
+          - text
+          value_type: string
+          variable: text
+        - value_selector:
+          - task_dispatcher
+          - active_task_json
+          value_type: string
+          variable: active_task_json
+      height: 80
+      id: parse_judge_verdict
+      parentId: main_loop_v1
+      position:
+        x: 2210
+        y: 210
+      positionAbsolute:
+        x: 4010
+        y: 170
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: "{\n  \"pending_tasks\": {{#task_dispatcher.remaining_tasks_json#}},\n  \"active_task\": {{#task_dispatcher.active_task_json#}},\n  \"verdict\": \"{{#parse_judge_verdict.verdict#}}\",\n  \"rework_hint\": {{#parse_judge_verdict.rework_hint_json#}},\n  \"max_retries\": {{#task_dispatcher.max_retries#}},\n  \"scheduler_state\": {{#task_dispatcher.scheduler_state_json#}}\n}\n"
+          type: json
+        desc: Let backend update the queue after verdict and preserve fairness for
+          re-entry.
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Update Queue (1)
+        type: http-request
+        url: '{{#normalize_input.toolbox_url#}}/v1/schedule/update-queue'
+        variables: []
+      height: 200
+      id: update_queue
+      parentId: main_loop_v1
+      position:
+        x: 2530
+        y: 40
+      positionAbsolute:
+        x: 4330
+        y: 0
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "import json\n\ndef main(remaining_state_json: str, active_task_json: str, verdict_json: str, evidence_json: str, queue_body: str = \"\") -> dict:\n    try:\n        state = json.loads(remaining_state_json or '{}')\n    except Exception:\n        state = {}\n    try:\n        task = json.loads(active_task_json or '{}')\n    except Exception:\n        task = {}\n    try:\n        verdict = json.loads(verdict_json or '{}')\n    except Exception:\n        verdict = {}\n    try:\n        evidence = json.loads(evidence_json or '{}')\n    except Exception:\n        evidence = {}\n    try:\n        queue_update = json.loads(queue_body or '{}')\n    except Exception:\n        queue_update = {}\n\n    task_id = str(task.get(\"id\") or \"\")\n    if task_id == \"__no_task__\":\n        state[\"stop_reason\"] = state.get(\"stop_reason\") or \"no_tasks\"\n        return {\n            \"state_json\": json.dumps(state, ensure_ascii=False),\n            \"should_exit_loop\": True,\n        }\n\n    state.setdefault(\"pending_tasks\", [])\n    state.setdefault(\"confirmed_findings\", [])\n    state.setdefault(\"rejected_findings\", [])\n    state.setdefault(\"evidence_records\", [])\n    state.setdefault(\"completed_tasks\", [])\n    state[\"pending_tasks\"] = queue_update.get(\"pending_tasks\") or state.get(\"pending_tasks\") or []\n    state[\"scheduler_state\"] = queue_update.get(\"scheduler_state\") or state.get(\"scheduler_state\") or {}\n    state[\"last_queue_update_reason\"] = str(queue_update.get(\"queue_update_reason\") or \"\")\n\n    state[\"budget_used\"] = int(state.get(\"budget_used\", 0) or 0) + 1\n    state[\"evidence_records\"].append(evidence)\n    state[\"completed_tasks\"].append(task_id)\n\n    verdict_name = str(verdict.get(\"verdict\") or \"rejected\")\n    if verdict_name == \"confirmed\" and verdict.get(\"finding_candidate\"):\n        state[\"confirmed_findings\"].append(verdict[\"finding_candidate\"])\n    elif verdict_name == \"rework\" and queue_update.get(\"requeued_task_id\"):\n        pass\n    elif verdict_name == \"rework\" and not queue_update.get(\"requeued_task_id\"):\n        state[\"rejected_findings\"].append({\n            \"task_id\": task_id,\n            \"reason\": str(queue_update.get(\"queue_update_reason\") or \"retry_limit_exceeded\"),\n        })\n    else:\n        state[\"rejected_findings\"].append({\n            \"task_id\": task_id,\n            \"reason\": str(verdict.get(\"reason\") or \"\"),\n        })\n\n    if queue_update.get(\"should_stop\") and not state.get(\"pending_tasks\"):\n        state[\"stop_reason\"] = state.get(\"stop_reason\") or \"no_tasks\"\n    should_exit = bool(state.get(\"stop_reason\")) or len(state.get(\"pending_tasks\") or []) == 0\n    return {\n        \"state_json\": json.dumps(state, ensure_ascii=False),\n        \"should_exit_loop\": should_exit,\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Merge verdict results into unified state_json and decide whether the
+          loop should stop.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Update State (1)
+        type: code
+        variables:
+        - value_selector:
+          - task_dispatcher
+          - remaining_state_json
+          value_type: string
+          variable: remaining_state_json
+        - value_selector:
+          - task_dispatcher
+          - active_task_json
+          value_type: string
+          variable: active_task_json
+        - value_selector:
+          - parse_judge_verdict
+          - verdict_json
+          value_type: string
+          variable: verdict_json
+        - value_selector:
+          - build_evidence
+          - evidence_json
+          value_type: string
+          variable: evidence_json
+        - value_selector:
+          - update_queue
+          - body
+          value_type: string
+          variable: queue_body
+      height: 112
+      id: update_state
+      parentId: main_loop_v1
+      position:
+        x: 2254.011478510093
+        y: 368.51648413779225
+      positionAbsolute:
+        x: 4054.011478510093
+        y: 328.51648413779225
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: "def main(seed_state_json: str, current_state_json: str = \"\") -> dict:\n    value = str(current_state_json or \"\").strip()\n    return {\"state_json\": value if value else str(seed_state_json or \"\")}\n"
+        code_language: python3
+        dependencies: []
+        desc: Resolve the last unified state after loop completion.
+        outputs:
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Final State
+        type: code
+        variables:
+        - value_selector:
+          - init_state
+          - seed_state_json
+          value_type: string
+          variable: seed_state_json
+        - value_selector:
+          - update_state
+          - state_json
+          value_type: string
+          variable: current_state_json
+      height: 96
+      id: final_state
+      position:
+        x: 5150
+        y: 180
+      positionAbsolute:
+        x: 5150
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(target_url: str, state_json: str) -> dict:\n    try:\n        state = json.loads(state_json or '{}')\n    except Exception:\n        state = {}\n    report_context = {\n        \"target_url\": target_url,\n        \"confirmed_findings\": state.get(\"confirmed_findings\", []),\n        \"completed_tasks\": len(state.get(\"completed_tasks\", [])),\n        \"rejected_tasks\": len(state.get(\"rejected_findings\", [])),\n        \"evidence_records\": len(state.get(\"evidence_records\", [])),\n        \"stop_reason\": state.get(\"stop_reason\", \"loop_finished\"),\n        \"budget_used\": state.get(\"budget_used\", 0),\n    }\n    return {\n        \"report_context_json\": json.dumps(report_context, ensure_ascii=False),\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: Build the final report package from unified state_json.
+        outputs:
+          report_context_json:
+            children: null
+            type: string
+        selected: false
+        title: Aggregate Report Context
+        type: code
+        variables:
+        - value_selector:
+          - normalize_input
+          - target_url
+          value_type: string
+          variable: target_url
+        - value_selector:
+          - final_state
+          - state_json
+          value_type: string
+          variable: state_json
+      height: 96
+      id: aggregate_report_context
+      position:
+        x: 5450
+        y: 180
+      positionAbsolute:
+        x: 5450
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Render the final report from confirmed findings.
+        model:
+          completion_params:
+            max_tokens: 1200
+            temperature: 0.2
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: 'You are the Reporter Agent of a REST API DAST system.
+
+
+            Role:
+
+            - Write the final report using confirmed findings only.
+
+            - Do not validate findings.
+
+            - Do not invent evidence.
+
+
+            Goal:
+
+            - Produce a concise professional security report in Markdown.
+
+            - Summarize only confirmed findings from the session.
+
+
+            Constraints:
+
+            - Use only the provided confirmed findings and summary.
+
+            - Do not include rejected or unconfirmed findings as confirmed findings.
+
+            - Return Markdown only.
+
+            - Write in Russian.
+
+            - If there are zero confirmed findings, explicitly state that no confirmed
+            findings were recorded.'
+        - id: user
+          role: user
+          text: 'Report context:
+
+            {{#aggregate_report_context.report_context_json#}}'
+        selected: false
+        title: Reporter Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 132
+      id: reporter_agent
+      position:
+        x: 5760
+        y: 180
+      positionAbsolute:
+        x: 5760
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#reporter_agent.text#}}'
+        desc: ''
+        selected: false
+        title: Answer
+        type: answer
+        variables: []
+      height: 103
+      id: answer
+      position:
+        x: 6070
+        y: 180
+      positionAbsolute:
+        x: 6070
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        desc: ''
+        outputs: []
+        selected: false
+        title: End
+        type: end
+      height: 52
+      id: end
+      position:
+        x: 6360
+        y: 205
+      positionAbsolute:
+        x: 6360
+        y: 205
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        isInIteration: false
+        isInLoop: true
+        items:
+        - input_type: variable
+          operation: over-write
+          value:
+          - update_state
+          - state_json
+          variable_selector:
+          - main_loop_v1
+          - _current_loop_state
+          write_mode: over-write
+        loop_id: main_loop_v1
+        selected: false
+        title: Назначение переменной
+        type: assigner
+        version: '2'
+      height: 84
+      id: '1776309351651'
+      parentId: main_loop_v1
+      position:
+        x: 2556.011478510093
+        y: 368.51648413779225
+      positionAbsolute:
+        x: 4356.011478510093
+        y: 328.51648413779225
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    viewport:
+      x: -4152.157833005097
+      y: 248.2866904144148
+      zoom: 0.7065511237471219
+  rag_pipeline_variables: []

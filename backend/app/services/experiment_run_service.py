@@ -258,7 +258,7 @@ def run_experiment_scenario(
     *,
     target_name: str,
     target_url: str,
-    judge_mode: str = "rule_based",
+    judge_mode: str = "agentic",
     max_rounds: int = 5,
     profile: str = "mixed",
     budget_requests_total: Optional[int] = 200,
@@ -451,15 +451,15 @@ def run_experiment_scenario(
 def normalize_judge_modes(judge_modes=None) -> List[str]:
     normalized = []
     seen = set()
-    source = judge_modes or ["rule_based", "dify", "unified"]
+    source = judge_modes or ["agentic", "dify"]
 
     for item in source:
         mode = str(item or "").strip().lower()
-        if mode not in {"rule_based", "dify", "unified"}:
+        if mode not in {"agentic", "rule_based", "dify", "unified"}:
             continue
         if mode in seen:
             continue
         seen.add(mode)
         normalized.append(mode)
 
-    return normalized or ["rule_based", "dify", "unified"]
+    return normalized or ["agentic", "dify"]

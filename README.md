@@ -5,17 +5,25 @@
 This project implements an adaptive platform for automated REST API security testing as part of a bachelor's thesis.
 
 The system combines:
-- hypothesis generation
 - specialized multi-agent roles
-- strategy arbitration
+- prompt-driven routing
 - adaptive campaign execution
 - observation analysis
 - findings extraction
 - experiment comparison
 
-The current practical focus is comparison of two judge modes:
-- `rule_based`
+The current practical focus is an agentic execution loop:
+- user prompt as the campaign goal
+- router that distributes tasks to specialized logical agents
+- worker agents that execute search and exploitation actions
+- judge that validates only execution results
+- report generation from confirmed vulnerabilities
+
+Legacy-compatible experiment modes are still available for comparison:
+- `agentic`
 - `dify`
+- `rule_based`
+- `unified`
 
 The main security targets are:
 - BOLA
@@ -30,6 +38,7 @@ The implementation is split into three layers.
 The backend is the central system component and is responsible for:
 - `TestSession` lifecycle
 - agent registry and per-session enabled agent configuration
+- prompt-aware router and judge state
 - campaign execution
 - hypothesis generation and prioritization
 - observations and findings
@@ -40,12 +49,13 @@ The backend is the central system component and is responsible for:
 ### 2. Dify
 
 Dify is used as:
-- an optional LLM-based judge mode
-- an optional specialized `dify_bola_agent` workflow for additional BOLA hypothesis generation
+- an optional provider for specialized worker agents
+- an optional legacy judge mode for experiment comparison
+- an optional report-generation provider
 
-It selects the next hypothesis candidate and works as an intelligent arbitration layer.
+In the main `agentic` flow, Dify is not required to arbitrate every step. It can be used by worker agents and by the final report generator.
 
-The system preserves fallback behavior so that `rule_based` selection remains available when Dify is unavailable or returns an invalid result.
+The system preserves fallback behavior so that legacy `rule_based` selection remains available when Dify is unavailable or returns an invalid result in comparison modes.
 
 ### 3. n8n
 
@@ -63,19 +73,21 @@ Business logic is intentionally kept in the backend rather than moved into `n8n`
 
 The core adaptive workflow is:
 
-`hypothesis -> judge -> execution -> observation -> analysis -> findings`
+`user_prompt -> router -> agent task -> execution -> judge -> retry_or_next -> confirmed finding -> report`
 
 In the current implementation this is expressed as a multi-agent pipeline:
 
-`agent -> hypothesis -> judge -> execution -> observation -> finding`
+`logical_agent -> hypothesis -> execution -> judge verdict -> follow-up verification -> finding`
 
-Agents do not execute HTTP actions directly. They generate structured hypotheses, the judge selects the next action, and the backend executor performs the request and stores the resulting observations/findings.
+Agents do not execute HTTP actions directly. They generate structured hypotheses, the backend executor performs the request, and the judge evaluates only the produced result and whether exploitation was actually confirmed.
 
 ## Current Capabilities
 
 Implemented practical features include:
-- stable `rule_based` baseline
-- working `dify` judge mode with fallback
+- prompt-driven `agentic` orchestration mode
+- router over logical agents
+- judge loop with bounded retries
+- confirmed-finding-first reporting flow
 - working `dify_bola_agent` integration
 - explicit agent catalog and session-level enabled agent configuration
 - BOLA detection and verification flow
@@ -145,7 +157,8 @@ curl -X POST http://localhost:8000/campaign/run \
   -d '{
     "target_name": "crapi",
     "target_url": "http://host.docker.internal:8888",
-    "judge_mode": "rule_based",
+    "user_prompt": "Найди подтвержденные BOLA и BOPLA уязвимости и дойди до верификации эксплуатации",
+    "judge_mode": "agentic",
     "max_rounds": 15,
     "allowed_test_classes": ["discovery", "bola", "bopla", "auth"],
     "enabled_agents": [
@@ -169,7 +182,7 @@ curl -X POST http://localhost:8000/experiments/run \
   -d '{
     "target_name": "crapi",
     "target_url": "http://host.docker.internal:8888",
-    "judge_mode": "rule_based",
+    "judge_mode": "agentic",
     "max_rounds": 15,
     "profile": "mixed"
   }'
@@ -199,7 +212,7 @@ curl "http://localhost:8000/experiments/export.csv?last_n_runs=5&view=summary"
 The platform currently tracks:
 - observations
 - generated hypotheses
-- judge decisions
+- router and judge decisions
 - findings total
 - BOLA findings
 - BOPLA findings
@@ -219,14 +232,14 @@ The following orchestration workflows are currently supported:
 
 ### Campaign runners
 
-- `Rule-Based Campaign Runner (Detailed)`
+- `Agentic Campaign Runner (Detailed)`
 - `Dify Campaign Runner (Detailed)`
-- `Rule-Based Campaign Runner (Simple)`
+- `Agentic Campaign Runner (Simple)`
 - `Dify Campaign Runner (Simple)`
 
 ### Experiment runners
 
-- `Rule-Based Experiment Runner`
+- `Agentic Experiment Runner`
 - `Dify Experiment Runner`
 - `Batch Experiments With Reports`
 - `Batch Job Runner (Polling)`
@@ -304,7 +317,7 @@ curl -X POST http://localhost:8000/experiments/run-batch-with-reports \
     "target_url": "http://host.docker.internal:8888",
     "profile": "mixed",
     "max_rounds": 15,
-    "judge_modes": ["rule_based", "dify", "unified"]
+    "judge_modes": ["agentic", "dify"]
   }'
 ```
 
@@ -335,7 +348,7 @@ curl -X POST http://localhost:8000/automation/run-batch-job \
     "target_url": "http://host.docker.internal:8888",
     "profile": "mixed",
     "max_rounds": 5,
-    "judge_modes": ["rule_based"]
+    "judge_modes": ["agentic"]
   }'
 ```
 
@@ -364,12 +377,20 @@ Advanced experiment-design options are also supported in batch and automation pa
   - enable only selected logical agents such as `authentication_agent`, `authorization_agent`, `exposure_agent`
 - `disabled_logical_agents`
   - run agent ablations without editing backend code
+- `strategy_config.agentic_max_retries_per_candidate`
+  - bound judge-triggered retries for the same task candidate
+- `strategy_config.agentic_max_tasks_per_logical_agent`
+  - prevent infinite cycling on one logical agent
+- `strategy_config.agentic_max_judge_history_items`
+  - cap stored judge-history state in the session strategy payload
 - `strategy_config.unified_weights`
-  - override unified arbitration blend weights for ablation experiments
+  - override unified arbitration blend weights for legacy ablation experiments
 - `bootstrap_probes`
   - attach target-specific seed requests for API portability experiments
 - `targets`
   - run the same judge-mode matrix across multiple API targets in one batch
+- `zap_baseline`
+  - run a classical OWASP ZAP baseline scan and attach normalized results automatically to `external_baselines`
 - `external_baselines`
   - attach normalized results from external tools such as Schemathesis, RESTler, EvoMaster or RESTSpecIT for side-by-side comparison in the generated comparison report
 
@@ -379,10 +400,12 @@ Example payload for an ablation and portability-oriented automation run:
 curl -X POST http://localhost:8000/automation/run-batch-job \
   -H "Content-Type: application/json" \
   -d '{
-    "judge_modes": ["rule_based", "dify", "unified"],
+    "judge_modes": ["agentic", "dify", "unified"],
     "max_rounds": 12,
     "enabled_logical_agents": ["authorization_agent", "exposure_agent"],
     "strategy_config": {
+      "agentic_max_retries_per_candidate": 2,
+      "agentic_max_tasks_per_logical_agent": 4,
       "unified_weights": {
         "rule_weight": 0.55,
         "dify_weight": 0.45
@@ -395,6 +418,13 @@ curl -X POST http://localhost:8000/automation/run-batch-job \
         "profile": "mixed"
       }
     ],
+    "zap_baseline": {
+      "enabled": true,
+      "import_openapi": true,
+      "use_ajax_spider": false,
+      "max_spider_sec": 120,
+      "max_active_sec": 300
+    },
     "external_baselines": [
       {
         "tool": "schemathesis",
@@ -429,7 +459,7 @@ Run basic tests:
 
 - BOPLA detection is still heuristic
 - Dify quality depends on external provider stability and token availability
-- `dify` runs are less stable than `rule_based`
+- legacy `dify` and `unified` comparison runs are less stable than the default `agentic` flow
 - local Python 3.9 environments may emit an `urllib3` / `LibreSSL` warning
 - no reinforcement learning layer is implemented yet
 
@@ -443,6 +473,8 @@ Run basic tests:
 ## Thesis Context
 
 The project supports a bachelor's thesis on adaptive vulnerability detection in REST APIs using strategy arbitration and automated orchestration.
+
+For current implementation work, treat `agentic` as the primary orchestration mode and `rule_based` / `unified` as legacy-compatible experiment modes.
 
 ## Author
 

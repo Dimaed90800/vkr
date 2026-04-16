@@ -1,0 +1,832 @@
+app:
+  name: wf-multiagent-dast-skeleton
+  mode: workflow
+  description: >-
+    Best-effort Dify MVP skeleton for Router -> Authorization Worker -> Judge ->
+    Reporter with queue state carried as JSON strings.
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    nodes:
+      - id: start
+        type: start
+        position: { x: 40, y: 240 }
+        data:
+          title: Start
+          desc: Collect campaign input.
+          variables:
+            - variable: target_url
+              label: Target URL
+              type: text-input
+              required: true
+              max_length: 500
+            - variable: openapi_url
+              label: OpenAPI URL
+              type: text-input
+              required: false
+              max_length: 500
+            - variable: openapi_spec_text
+              label: OpenAPI Spec Text
+              type: paragraph
+              required: false
+              max_length: 20000
+            - variable: roles_json
+              label: Roles JSON
+              type: paragraph
+              required: true
+              max_length: 10000
+            - variable: allowed_hosts_json
+              label: Allowed Hosts JSON
+              type: paragraph
+              required: true
+              max_length: 5000
+            - variable: selected_classes_csv
+              label: Selected Classes CSV
+              type: text-input
+              required: true
+              max_length: 200
+            - variable: max_requests
+              label: Max Requests
+              type: number
+              required: true
+            - variable: max_duration_sec
+              label: Max Duration Seconds
+              type: number
+              required: true
+            - variable: max_retries_per_task
+              label: Max Retries Per Task
+              type: number
+              required: true
+            - variable: user_prompt
+              label: User Prompt
+              type: paragraph
+              required: true
+              max_length: 4000
+
+      - id: normalize_input
+        type: code
+        position: { x: 300, y: 240 }
+        data:
+          title: Normalize Input
+          desc: Normalize raw input and initialize execution context.
+          code_language: python3
+          code: |
+            import json
+            from datetime import datetime, timezone
+
+            def main(
+                target_url: str,
+                openapi_url: str = "",
+                openapi_spec_text: str = "",
+                roles_json: str = "[]",
+                allowed_hosts_json: str = "[]",
+                selected_classes_csv: str = "authorization",
+                max_requests: int = 100,
+                max_duration_sec: int = 900,
+                max_retries_per_task: int = 1,
+                user_prompt: str = "",
+            ) -> dict:
+                try:
+                    roles = json.loads(roles_json or "[]")
+                except Exception:
+                    roles = []
+                try:
+                    allowed_hosts = json.loads(allowed_hosts_json or "[]")
+                except Exception:
+                    allowed_hosts = []
+                selected_classes = [
+                    item.strip() for item in (selected_classes_csv or "").split(",") if item.strip()
+                ] or ["authorization"]
+                execution_context = {
+                    "target_url": str(target_url or "").strip(),
+                    "openapi_url": str(openapi_url or "").strip(),
+                    "openapi_spec_text": str(openapi_spec_text or ""),
+                    "roles": roles,
+                    "allowed_hosts": allowed_hosts,
+                    "selected_classes": selected_classes,
+                    "max_requests": int(max_requests or 0),
+                    "max_duration_sec": int(max_duration_sec or 0),
+                    "max_retries_per_task": int(max_retries_per_task or 0),
+                    "request_budget_used": 0,
+                    "start_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "user_prompt": str(user_prompt or "").strip(),
+                }
+                return {
+                    "execution_context_json": json.dumps(execution_context, ensure_ascii=False),
+                    "target_url_norm": execution_context["target_url"],
+                    "openapi_url_norm": execution_context["openapi_url"],
+                    "openapi_spec_text_norm": execution_context["openapi_spec_text"],
+                    "roles_norm_json": json.dumps(roles, ensure_ascii=False),
+                    "allowed_hosts_norm_json": json.dumps(allowed_hosts, ensure_ascii=False),
+                    "selected_classes_json": json.dumps(selected_classes, ensure_ascii=False),
+                }
+          variables:
+            - variable: target_url
+              value_selector: [start, target_url]
+            - variable: openapi_url
+              value_selector: [start, openapi_url]
+            - variable: openapi_spec_text
+              value_selector: [start, openapi_spec_text]
+            - variable: roles_json
+              value_selector: [start, roles_json]
+            - variable: allowed_hosts_json
+              value_selector: [start, allowed_hosts_json]
+            - variable: selected_classes_csv
+              value_selector: [start, selected_classes_csv]
+            - variable: max_requests
+              value_selector: [start, max_requests]
+            - variable: max_duration_sec
+              value_selector: [start, max_duration_sec]
+            - variable: max_retries_per_task
+              value_selector: [start, max_retries_per_task]
+            - variable: user_prompt
+              value_selector: [start, user_prompt]
+
+      - id: parse_openapi
+        type: http-request
+        position: { x: 580, y: 240 }
+        data:
+          title: Parse OpenAPI
+          desc: Call external toolbox to parse API surface.
+          method: post
+          url: '{{#normalize_input.target_url_norm#}}/v1/recon/openapi'
+          headers: Content-Type:application/json
+          body:
+            type: json
+            data:
+              - type: text
+                value: |
+                  {
+                    "target_url": "{{#normalize_input.target_url_norm#}}",
+                    "openapi_url": "{{#normalize_input.openapi_url_norm#}}",
+                    "openapi_spec_text": {{#normalize_input.openapi_spec_text_norm#}}
+                  }
+          authorization:
+            type: no-auth
+            config: null
+          retry_config:
+            retry_enabled: true
+            max_retries: 1
+            retry_interval: 300
+
+      - id: router_agent
+        type: llm
+        position: { x: 860, y: 240 }
+        data:
+          title: Router Agent
+          desc: Build initial task queue.
+          model:
+            provider: langgenius/openai/openai
+            name: gpt-4.1
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |
+                {{#sys.router_prompt#}}
+            - role: user
+              text: |
+                Execution context:
+                {{#normalize_input.execution_context_json#}}
+
+                Parsed API surface:
+                {{#parse_openapi.body#}}
+          vision:
+            enabled: false
+        # NOTE: In a real importable DSL, replace the indirection above with the raw system prompt text
+        # from dify/prompts/router_agent.md.
+
+      - id: parse_router_plan
+        type: code
+        position: { x: 1140, y: 240 }
+        data:
+          title: Parse Router Plan
+          desc: Parse router output and keep only authorization tasks for MVP.
+          code_language: python3
+          code: |
+            import json
+
+            def main(text: str) -> dict:
+                try:
+                    payload = json.loads(text or "{}")
+                except Exception:
+                    payload = {}
+                tasks = payload.get("tasks") or []
+                if not isinstance(tasks, list):
+                    tasks = []
+                auth_tasks = [task for task in tasks if str(task.get("class") or "") == "authorization"]
+                return {
+                    "router_summary": str(payload.get("router_summary") or ""),
+                    "pending_tasks_json": json.dumps(auth_tasks, ensure_ascii=False),
+                }
+          variables:
+            - variable: text
+              value_selector: [router_agent, text]
+
+      - id: init_queue_state
+        type: code
+        position: { x: 1420, y: 240 }
+        data:
+          title: Init Queue State
+          desc: Initialize workflow mutable state.
+          code_language: python3
+          code: |
+            import json
+
+            def main(pending_tasks_json: str) -> dict:
+                try:
+                    tasks = json.loads(pending_tasks_json or "[]")
+                except Exception:
+                    tasks = []
+                return {
+                    "pending_tasks_json": json.dumps(tasks, ensure_ascii=False),
+                    "active_task_json": "null",
+                    "confirmed_findings_json": "[]",
+                    "rejected_findings_json": "[]",
+                    "evidence_records_json": "[]",
+                    "completed_tasks_json": "[]",
+                    "stop_reason": "",
+                    "should_stop": len(tasks) == 0,
+                }
+          variables:
+            - variable: pending_tasks_json
+              value_selector: [parse_router_plan, pending_tasks_json]
+
+      - id: main_loop
+        type: loop
+        position: { x: 1710, y: 160 }
+        data:
+          title: Main Task Loop
+          desc: Process pending authorization tasks one by one.
+          loop_count: 20
+
+      - id: loop_pick_active_task
+        type: code
+        parentId: main_loop
+        position: { x: 1940, y: 160 }
+        data:
+          title: Pick Active Task
+          desc: Pop first pending task.
+          isInLoop: true
+          code_language: python3
+          code: |
+            import json
+
+            def main(pending_tasks_json: str) -> dict:
+                try:
+                    tasks = json.loads(pending_tasks_json or "[]")
+                except Exception:
+                    tasks = []
+                if not tasks:
+                    return {
+                        "active_task_json": "null",
+                        "pending_tasks_remaining_json": "[]",
+                        "should_stop": True,
+                    }
+                active = tasks[0]
+                remaining = tasks[1:]
+                return {
+                    "active_task_json": json.dumps(active, ensure_ascii=False),
+                    "pending_tasks_remaining_json": json.dumps(remaining, ensure_ascii=False),
+                    "should_stop": False,
+                }
+          variables:
+            - variable: pending_tasks_json
+              value_selector: [init_queue_state, pending_tasks_json]
+
+      - id: loop_should_stop
+        type: if-else
+        parentId: main_loop
+        position: { x: 2200, y: 160 }
+        data:
+          title: Stop Check
+          desc: Exit loop when no tasks remain.
+          cases:
+            - case_id: stop
+              id: stop
+              logical_operator: and
+              conditions:
+                - id: stop-cond
+                  variable_selector: [loop_pick_active_task, should_stop]
+                  comparison_operator: is
+                  value: true
+                  varType: boolean
+
+      - id: authorization_worker
+        type: llm
+        parentId: main_loop
+        position: { x: 2460, y: 80 }
+        data:
+          title: Authorization Worker
+          desc: Produce one toolbox command for the active task.
+          isInLoop: true
+          model:
+            provider: langgenius/openai/openai
+            name: gpt-4.1
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |
+                {{#sys.authorization_worker_prompt#}}
+            - role: user
+              text: |
+                Active task:
+                {{#loop_pick_active_task.active_task_json#}}
+
+                Execution context:
+                {{#normalize_input.execution_context_json#}}
+          vision:
+            enabled: false
+        # NOTE: Replace the prompt indirection with the raw content of dify/prompts/authorization_worker.md in real Dify.
+
+      - id: parse_worker_command
+        type: code
+        parentId: main_loop
+        position: { x: 2740, y: 80 }
+        data:
+          title: Parse Worker Command
+          desc: Parse worker JSON into tool name and arguments.
+          isInLoop: true
+          code_language: python3
+          code: |
+            import json
+
+            def main(text: str, active_task_json: str) -> dict:
+                try:
+                    payload = json.loads(text or "{}")
+                except Exception:
+                    payload = {}
+                try:
+                    active_task = json.loads(active_task_json or "null") or {}
+                except Exception:
+                    active_task = {}
+                tool_name = str(payload.get("tool_name") or "")
+                arguments = payload.get("arguments") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                allowed_tools = active_task.get("allowed_tools") or []
+                if tool_name not in allowed_tools and allowed_tools:
+                    tool_name = allowed_tools[0]
+                return {
+                    "tool_name": tool_name,
+                    "tool_arguments_json": json.dumps(arguments, ensure_ascii=False),
+                    "worker_hypothesis": str(payload.get("worker_hypothesis") or active_task.get("hypothesis") or ""),
+                    "reasoning_summary": str(payload.get("reasoning_summary") or ""),
+                }
+          variables:
+            - variable: text
+              value_selector: [authorization_worker, text]
+            - variable: active_task_json
+              value_selector: [loop_pick_active_task, active_task_json]
+
+      - id: execute_tool
+        type: http-request
+        parentId: main_loop
+        position: { x: 3020, y: 80 }
+        data:
+          title: Execute Tool
+          desc: Call toolbox API. MVP assumes auth_test_access is supported.
+          isInLoop: true
+          method: post
+          url: '{{#normalize_input.target_url_norm#}}/v1/auth/test-access'
+          headers: Content-Type:application/json
+          body:
+            type: json
+            data:
+              - type: text
+                value: |
+                  {
+                    "execution_context": {{#normalize_input.execution_context_json#}},
+                    "task": {{#loop_pick_active_task.active_task_json#}},
+                    "tool_name": "{{#parse_worker_command.tool_name#}}",
+                    "arguments": {{#parse_worker_command.tool_arguments_json#}}
+                  }
+          authorization:
+            type: no-auth
+            config: null
+          retry_config:
+            retry_enabled: true
+            max_retries: 1
+            retry_interval: 300
+
+      - id: build_evidence
+        type: code
+        parentId: main_loop
+        position: { x: 3300, y: 80 }
+        data:
+          title: Build Evidence
+          desc: Build normalized evidence object.
+          isInLoop: true
+          code_language: python3
+          code: |
+            import json
+            from datetime import datetime, timezone
+
+            def main(active_task_json: str, worker_hypothesis: str, reasoning_summary: str, body: str) -> dict:
+                try:
+                    task = json.loads(active_task_json or "null") or {}
+                except Exception:
+                    task = {}
+                try:
+                    result = json.loads(body or "{}")
+                except Exception:
+                    result = {}
+                evidence = {
+                    "task_id": task.get("id"),
+                    "worker_type": task.get("class"),
+                    "request_summary": result.get("request_summary") or {},
+                    "response_summary": result.get("response_summary") or {},
+                    "raw_status": result.get("raw_status") or "unknown",
+                    "indicators": result.get("indicators") or [],
+                    "reasoning": reasoning_summary or worker_hypothesis,
+                    "artifacts": result.get("artifacts") or [],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                return {
+                    "evidence_json": json.dumps(evidence, ensure_ascii=False),
+                }
+          variables:
+            - variable: active_task_json
+              value_selector: [loop_pick_active_task, active_task_json]
+            - variable: worker_hypothesis
+              value_selector: [parse_worker_command, worker_hypothesis]
+            - variable: reasoning_summary
+              value_selector: [parse_worker_command, reasoning_summary]
+            - variable: body
+              value_selector: [execute_tool, body]
+
+      - id: persist_evidence
+        type: http-request
+        parentId: main_loop
+        position: { x: 3580, y: 80 }
+        data:
+          title: Persist Evidence
+          desc: Persist evidence in external store.
+          isInLoop: true
+          method: post
+          url: '{{#normalize_input.target_url_norm#}}/v1/evidence/store'
+          headers: Content-Type:application/json
+          body:
+            type: json
+            data:
+              - type: text
+                value: |
+                  {
+                    "evidence": {{#build_evidence.evidence_json#}}
+                  }
+          authorization:
+            type: no-auth
+            config: null
+
+      - id: judge_agent
+        type: llm
+        parentId: main_loop
+        position: { x: 3860, y: 80 }
+        data:
+          title: Judge Agent
+          desc: Evaluate evidence and return verdict.
+          isInLoop: true
+          model:
+            provider: langgenius/openai/openai
+            name: gpt-4.1
+            mode: chat
+            completion_params:
+              temperature: 0.1
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |
+                {{#sys.judge_prompt#}}
+            - role: user
+              text: |
+                Active task:
+                {{#loop_pick_active_task.active_task_json#}}
+
+                Evidence:
+                {{#build_evidence.evidence_json#}}
+          vision:
+            enabled: false
+        # NOTE: Replace the prompt indirection with dify/prompts/judge_agent.md in real Dify.
+
+      - id: parse_judge_verdict
+        type: code
+        parentId: main_loop
+        position: { x: 4140, y: 80 }
+        data:
+          title: Parse Judge Verdict
+          desc: Parse strict verdict JSON.
+          isInLoop: true
+          code_language: python3
+          code: |
+            import json
+
+            def main(text: str) -> dict:
+                try:
+                    payload = json.loads(text or "{}")
+                except Exception:
+                    payload = {}
+                return {
+                    "verdict": str(payload.get("verdict") or "rejected"),
+                    "verdict_json": json.dumps(payload, ensure_ascii=False),
+                }
+          variables:
+            - variable: text
+              value_selector: [judge_agent, text]
+
+      - id: verdict_branch
+        type: if-else
+        parentId: main_loop
+        position: { x: 4420, y: 80 }
+        data:
+          title: Verdict Branch
+          desc: Branch on confirmed/rejected/rework.
+          cases:
+            - case_id: confirmed
+              id: confirmed
+              logical_operator: and
+              conditions:
+                - id: verdict-confirmed
+                  variable_selector: [parse_judge_verdict, verdict]
+                  comparison_operator: is
+                  value: confirmed
+                  varType: string
+            - case_id: rework
+              id: rework
+              logical_operator: and
+              conditions:
+                - id: verdict-rework
+                  variable_selector: [parse_judge_verdict, verdict]
+                  comparison_operator: is
+                  value: rework
+                  varType: string
+
+      - id: update_queue_state
+        type: code
+        parentId: main_loop
+        position: { x: 4700, y: 80 }
+        data:
+          title: Update Queue State
+          desc: Update pending tasks and findings. Rework is appended to queue as a simple MVP placeholder.
+          isInLoop: true
+          code_language: python3
+          code: |
+            import json
+
+            def main(
+                active_task_json: str,
+                pending_tasks_remaining_json: str,
+                confirmed_findings_json: str,
+                rejected_findings_json: str,
+                evidence_records_json: str,
+                verdict_json: str,
+                evidence_json: str,
+            ) -> dict:
+                try:
+                    active_task = json.loads(active_task_json or "null") or {}
+                except Exception:
+                    active_task = {}
+                try:
+                    pending = json.loads(pending_tasks_remaining_json or "[]")
+                except Exception:
+                    pending = []
+                try:
+                    confirmed = json.loads(confirmed_findings_json or "[]")
+                except Exception:
+                    confirmed = []
+                try:
+                    rejected = json.loads(rejected_findings_json or "[]")
+                except Exception:
+                    rejected = []
+                try:
+                    evidence_records = json.loads(evidence_records_json or "[]")
+                except Exception:
+                    evidence_records = []
+                try:
+                    verdict = json.loads(verdict_json or "{}")
+                except Exception:
+                    verdict = {}
+                try:
+                    evidence = json.loads(evidence_json or "{}")
+                except Exception:
+                    evidence = {}
+
+                evidence_records.append(evidence)
+                verdict_name = str(verdict.get("verdict") or "rejected")
+
+                if verdict_name == "confirmed" and verdict.get("finding_candidate"):
+                    confirmed.append(verdict["finding_candidate"])
+                elif verdict_name == "rework":
+                    active_task["retry_count"] = int(active_task.get("retry_count") or 0) + 1
+                    active_task["rework_hint"] = verdict.get("rework_hint")
+                    active_task["status"] = "pending"
+                    pending.append(active_task)
+                else:
+                    rejected.append({
+                        "task_id": active_task.get("id"),
+                        "reason": verdict.get("reason") or "",
+                    })
+
+                return {
+                    "pending_tasks_json": json.dumps(pending, ensure_ascii=False),
+                    "confirmed_findings_json": json.dumps(confirmed, ensure_ascii=False),
+                    "rejected_findings_json": json.dumps(rejected, ensure_ascii=False),
+                    "evidence_records_json": json.dumps(evidence_records, ensure_ascii=False),
+                }
+          variables:
+            - variable: active_task_json
+              value_selector: [loop_pick_active_task, active_task_json]
+            - variable: pending_tasks_remaining_json
+              value_selector: [loop_pick_active_task, pending_tasks_remaining_json]
+            - variable: confirmed_findings_json
+              value_selector: [init_queue_state, confirmed_findings_json]
+            - variable: rejected_findings_json
+              value_selector: [init_queue_state, rejected_findings_json]
+            - variable: evidence_records_json
+              value_selector: [init_queue_state, evidence_records_json]
+            - variable: verdict_json
+              value_selector: [parse_judge_verdict, verdict_json]
+            - variable: evidence_json
+              value_selector: [build_evidence, evidence_json]
+
+      - id: aggregate_report_context
+        type: code
+        position: { x: 1980, y: 520 }
+        data:
+          title: Aggregate Report Context
+          desc: Build final reporter context.
+          code_language: python3
+          code: |
+            import json
+
+            def main(
+                target_url: str,
+                pending_tasks_json: str,
+                confirmed_findings_json: str,
+                rejected_findings_json: str,
+                evidence_records_json: str,
+            ) -> dict:
+                try:
+                    pending = json.loads(pending_tasks_json or "[]")
+                except Exception:
+                    pending = []
+                try:
+                    confirmed = json.loads(confirmed_findings_json or "[]")
+                except Exception:
+                    confirmed = []
+                try:
+                    rejected = json.loads(rejected_findings_json or "[]")
+                except Exception:
+                    rejected = []
+                try:
+                    evidence = json.loads(evidence_records_json or "[]")
+                except Exception:
+                    evidence = []
+                report_context = {
+                    "target_url": target_url,
+                    "confirmed_findings": confirmed,
+                    "rejected_findings_count": len(rejected),
+                    "remaining_tasks_count": len(pending),
+                    "evidence_records_count": len(evidence),
+                }
+                return {
+                    "report_context_json": json.dumps(report_context, ensure_ascii=False),
+                }
+          variables:
+            - variable: target_url
+              value_selector: [normalize_input, target_url_norm]
+            - variable: pending_tasks_json
+              value_selector: [update_queue_state, pending_tasks_json]
+            - variable: confirmed_findings_json
+              value_selector: [update_queue_state, confirmed_findings_json]
+            - variable: rejected_findings_json
+              value_selector: [update_queue_state, rejected_findings_json]
+            - variable: evidence_records_json
+              value_selector: [update_queue_state, evidence_records_json]
+
+      - id: reporter_agent
+        type: llm
+        position: { x: 2260, y: 520 }
+        data:
+          title: Reporter Agent
+          desc: Render final report from confirmed findings only.
+          model:
+            provider: langgenius/openai/openai
+            name: gpt-4.1
+            mode: chat
+            completion_params:
+              temperature: 0.2
+          context:
+            enabled: false
+            variable_selector: []
+          prompt_template:
+            - role: system
+              text: |
+                {{#sys.reporter_prompt#}}
+            - role: user
+              text: |
+                Report context:
+                {{#aggregate_report_context.report_context_json#}}
+          vision:
+            enabled: false
+        # NOTE: Replace the prompt indirection with dify/prompts/reporter_agent.md in real Dify.
+
+      - id: answer
+        type: answer
+        position: { x: 2540, y: 520 }
+        data:
+          title: Answer
+          answer: '{{#reporter_agent.text#}}'
+
+    edges:
+      - id: e1
+        source: start
+        target: normalize_input
+      - id: e2
+        source: normalize_input
+        target: parse_openapi
+      - id: e3
+        source: parse_openapi
+        target: router_agent
+      - id: e4
+        source: router_agent
+        target: parse_router_plan
+      - id: e5
+        source: parse_router_plan
+        target: init_queue_state
+      - id: e6
+        source: init_queue_state
+        target: main_loop
+      - id: e7
+        source: main_loop
+        target: aggregate_report_context
+      - id: e8
+        source: aggregate_report_context
+        target: reporter_agent
+      - id: e9
+        source: reporter_agent
+        target: answer
+      - id: loop1
+        source: loop_pick_active_task
+        target: loop_should_stop
+      - id: loop2
+        source: loop_should_stop
+        target: authorization_worker
+      - id: loop3
+        source: authorization_worker
+        target: parse_worker_command
+      - id: loop4
+        source: parse_worker_command
+        target: execute_tool
+      - id: loop5
+        source: execute_tool
+        target: build_evidence
+      - id: loop6
+        source: build_evidence
+        target: persist_evidence
+      - id: loop7
+        source: persist_evidence
+        target: judge_agent
+      - id: loop8
+        source: judge_agent
+        target: parse_judge_verdict
+      - id: loop9
+        source: parse_judge_verdict
+        target: verdict_branch
+      - id: loop10
+        source: verdict_branch
+        target: update_queue_state
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.7

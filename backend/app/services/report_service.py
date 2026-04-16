@@ -33,6 +33,25 @@ def _safe_list(value):
     return []
 
 
+def _ru_severity_label(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "high": "высокий",
+        "medium": "средний",
+        "low": "низкий",
+    }.get(normalized, normalized or "не указан")
+
+
+def _ru_finding_type_label(value: str | None) -> str:
+    normalized = str(value or "").strip().lower()
+    return {
+        "possible_bola": "нарушение авторизации на уровне объектов (BOLA)",
+        "possible_bopla": "нарушение авторизации на уровне свойств объекта (BOPLA)",
+        "possible_authentication_bypass": "обход границы аутентификации",
+        "auth_boundary_signal": "диагностический сигнал границы аутентификации",
+    }.get(normalized, value or "не указан")
+
+
 def _sanitize_headers(headers, role_name: str | None = None):
     if not isinstance(headers, dict):
         return {}
@@ -873,22 +892,64 @@ def _build_key_conclusion(findings):
     }
 
 
+def _confirmed_findings_by_type(findings):
+    confirmed = [f for f in findings if getattr(f, "verification_status", "candidate") == "confirmed"]
+    return {
+        "all": confirmed,
+        "bola": [f for f in confirmed if f.finding_type == "possible_bola"],
+        "bopla": [f for f in confirmed if f.finding_type == "possible_bopla"],
+        "auth": [f for f in confirmed if f.finding_type == "possible_authentication_bypass"],
+        "auth_signals": [f for f in confirmed if f.finding_type == "auth_boundary_signal"],
+    }
+
+
+def _ru_confirmed_count_phrase(count: int, noun_root: str = "наход") -> str:
+    count = int(count or 0)
+    mod10 = count % 10
+    mod100 = count % 100
+    if mod10 == 1 and mod100 != 11:
+        return f"{count} подтверждённую {noun_root}ку"
+    if mod10 in {2, 3, 4} and mod100 not in {12, 13, 14}:
+        return f"{count} подтверждённые {noun_root}ки"
+    return f"{count} подтверждённых {noun_root}ок"
+
+
 def build_session_summary_text(session_obj, roles, findings, judge_decisions, observations):
     roles_total = len(roles)
     authenticated_roles = len([r for r in roles if r.access_token])
     findings_total = len(findings)
-    bola_findings = [f for f in findings if f.finding_type == "possible_bola"]
-    bopla_findings = [f for f in findings if f.finding_type == "possible_bopla"]
-    auth_findings = [f for f in findings if f.finding_type == "possible_authentication_bypass"]
-    auth_signals = [f for f in findings if f.finding_type == "auth_boundary_signal"]
+    confirmed = _confirmed_findings_by_type(findings)
+    bola_findings = confirmed["bola"]
+    bopla_findings = confirmed["bopla"]
+    auth_findings = confirmed["auth"]
+    auth_signals = confirmed["auth_signals"]
+    confirmed_total = len(confirmed["all"])
 
     base = (
         f"В рамках сессии тестирования #{session_obj.id} для цели '{session_obj.target_name}' "
-        f"({session_obj.target_url}) система выполнила автоматизированную кампанию анализа API. "
-        f"В ходе кампании было подготовлено {roles_total} ролей, из которых успешно аутентифицированы "
-        f"{authenticated_roles}. Всего накоплено {len(observations)} наблюдений, принято "
-        f"{len(judge_decisions)} решений арбитража и зафиксировано {findings_total} результатов анализа."
+        f"({session_obj.target_url}) выполнена автоматизированная кампания анализа API. "
+        f"Подготовлено ролей: {roles_total}; успешно аутентифицировано: {authenticated_roles}. "
+        f"Накоплено наблюдений: {len(observations)}; решений арбитража: {len(judge_decisions)}; "
+        f"результатов анализа: {findings_total}; подтверждено: {confirmed_total}."
     )
+
+    if bola_findings and bopla_findings:
+        bola_finding = bola_findings[0]
+        bopla_finding = bopla_findings[0]
+        bola_evidence = _safe_load_json(bola_finding.evidence_json) or {}
+        bopla_evidence = _safe_load_json(bopla_finding.evidence_json) or {}
+        return (
+            base
+            + (
+                f" Подтверждены две значимые проблемы безопасности API: "
+                f"нарушение авторизации на уровне объектов на endpoint '{bola_finding.endpoint or 'N/A'}' "
+                f"для ролей {bola_evidence.get('owner_role', 'unknown')} и {bola_evidence.get('other_role', 'unknown')}, "
+                f"а также нарушение авторизации на уровне свойств объекта / избыточное раскрытие данных на endpoint "
+                f"'{bopla_finding.endpoint or 'N/A'}', где выявлено раскрытие полей "
+                f"{', '.join((bopla_evidence.get('exposed_fields') or [])[:5]) or 'N/A'}. "
+                f"Обе находки подтверждены и требуют приоритетного исправления."
+            )
+        )
 
     if bola_findings:
         finding = bola_findings[0]
@@ -900,14 +961,13 @@ def build_session_summary_text(session_obj, roles, findings, judge_decisions, ob
         status_other = evidence.get("status_other", "unknown")
 
         bola_text = (
-            f" Наиболее значимым результатом стал кандидат на Broken Object Level Authorization. "
-            f"Система автоматически выбрала гипотезу проверки объектного доступа и выполнила запрос "
+            f" Подтверждено нарушение авторизации на уровне объектов. "
+            f"Система выполнила проверку объектного доступа и направила запрос "
             f"к endpoint '{endpoint}' от имени ролей {owner_role} и {other_role}. "
             f"Обе роли получили успешные ответы ({status_owner} и {status_other}), "
-            f"а содержимое ответов было интерпретировано как эквивалентное, что дало основание "
-            f"классифицировать результат как 'possible_bola'. "
-            f"Найденный результат сохранён в виде finding с уровнем критичности '{finding.severity}' "
-            f"и статусом верификации '{finding.verification_status}'."
+            f"а содержимое ответов было признано эквивалентным, что дало основание "
+            f"классифицировать результат как подтверждённую находку BOLA. "
+            f"Критичность: {_ru_severity_label(finding.severity)}."
         )
         return base + bola_text
 
@@ -918,11 +978,10 @@ def build_session_summary_text(session_obj, roles, findings, judge_decisions, ob
         exposed_fields = evidence.get("exposed_fields", [])
 
         bopla_text = (
-            f" Наиболее значимым результатом стал кандидат на Broken Object Property Level Authorization "
-            f"или excessive data exposure. На endpoint '{endpoint}' были выявлены потенциально "
+            f" Подтверждено нарушение авторизации на уровне свойств объекта "
+            f"или избыточное раскрытие данных. На endpoint '{endpoint}' выявлены потенциально "
             f"чувствительные поля: {', '.join(exposed_fields[:5]) or 'N/A'}. "
-            f"Результат сохранён как finding со статусом '{finding.verification_status}' "
-            f"и уровнем критичности '{finding.severity}'."
+            f"Критичность: {_ru_severity_label(finding.severity)}."
         )
         return base + bopla_text
 
@@ -934,11 +993,10 @@ def build_session_summary_text(session_obj, roles, findings, judge_decisions, ob
         status_code = evidence.get("status_code", "unknown")
 
         auth_text = (
-            f" Наиболее значимым результатом стал кандидат на нарушение границы аутентификации. "
+            f" Подтверждено нарушение границы аутентификации. "
             f"Для endpoint '{endpoint}' шаг '{action_executed}' получил успешный ответ ({status_code}), "
             f"что может указывать на некорректное применение требований аутентификации. "
-            f"Результат сохранён как finding со статусом '{finding.verification_status}' "
-            f"и уровнем критичности '{finding.severity}'."
+            f"Критичность: {_ru_severity_label(finding.severity)}."
         )
         return base + auth_text
 
@@ -964,38 +1022,50 @@ def build_session_summary_text(session_obj, roles, findings, judge_decisions, ob
 
 
 def build_session_executive_summary(session_obj, findings):
-    bola_findings = [f for f in findings if f.finding_type == "possible_bola"]
-    bopla_findings = [f for f in findings if f.finding_type == "possible_bopla"]
-    auth_findings = [f for f in findings if f.finding_type == "possible_authentication_bypass"]
-    auth_signals = [f for f in findings if f.finding_type == "auth_boundary_signal"]
+    confirmed = _confirmed_findings_by_type(findings)
+    bola_findings = confirmed["bola"]
+    bopla_findings = confirmed["bopla"]
+    auth_findings = confirmed["auth"]
+    auth_signals = confirmed["auth_signals"]
+
+    if bola_findings and bopla_findings:
+        return {
+            "risk_level": "high",
+            "headline": "Подтверждены нарушения разграничения доступа на уровне объектов и свойств",
+            "message": (
+                f"Для цели '{session_obj.target_name}' автоматизированная кампания выявила "
+                f"{_ru_confirmed_count_phrase(len(bola_findings))} BOLA и "
+                f"{_ru_confirmed_count_phrase(len(bopla_findings))} BOPLA."
+            )
+        }
 
     if bola_findings:
         return {
             "risk_level": "high",
-            "headline": "Обнаружен кандидат на нарушение объектного разграничения доступа",
+            "headline": "Подтверждено нарушение объектного разграничения доступа",
             "message": (
                 f"Для цели '{session_obj.target_name}' автоматизированная кампания выявила "
-                f"{len(bola_findings)} кандидат(а/ов) на Broken Object Level Authorization."
+                f"{_ru_confirmed_count_phrase(len(bola_findings))} BOLA."
             )
         }
 
     if bopla_findings:
         return {
             "risk_level": "medium",
-            "headline": "Обнаружен кандидат на избыточную выдачу свойств объекта",
+            "headline": "Подтверждена избыточная выдача свойств объекта",
             "message": (
                 f"Для цели '{session_obj.target_name}' автоматизированная кампания выявила "
-                f"{len(bopla_findings)} кандидат(а/ов) на Broken Object Property Level Authorization."
+                f"{_ru_confirmed_count_phrase(len(bopla_findings))} BOPLA."
             )
         }
 
     if auth_findings:
         return {
             "risk_level": "medium",
-            "headline": "Обнаружен кандидат на обход границы аутентификации",
+            "headline": "Подтверждено нарушение границы аутентификации",
             "message": (
                 f"Для цели '{session_obj.target_name}' автоматизированная кампания выявила "
-                f"{len(auth_findings)} кандидат(а/ов) на possible authentication bypass."
+                f"{_ru_confirmed_count_phrase(len(auth_findings))} обхода границы аутентификации."
             )
         }
 
@@ -1058,7 +1128,9 @@ def build_final_session_report(
         top_findings.append({
             "id": finding.id,
             "type": finding.finding_type,
+            "type_label_ru": _ru_finding_type_label(finding.finding_type),
             "severity": finding.severity,
+            "severity_label_ru": _ru_severity_label(finding.severity),
             "endpoint": finding.endpoint,
             "verification_status": finding.verification_status,
             "title": finding.title,
@@ -1081,7 +1153,9 @@ def build_final_session_report(
         candidate_finding_details.append({
             "id": finding.id,
             "type": finding.finding_type,
+            "type_label_ru": _ru_finding_type_label(finding.finding_type),
             "severity": finding.severity,
+            "severity_label_ru": _ru_severity_label(finding.severity),
             "endpoint": finding.endpoint,
             "verification_status": finding.verification_status,
             "title": finding.title,

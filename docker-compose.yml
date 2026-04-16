@@ -1,74 +1,96 @@
 services:
-  postgres:
-    image: postgres:16
-    container_name: pentest_postgres
-    environment:
-      POSTGRES_DB: pentestdb
-      POSTGRES_USER: pentest
-      POSTGRES_PASSWORD: pentest
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pentest -d pentestdb"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-
-  backend:
-    build: .
-    container_name: pentest_backend
-    environment:
-      DATABASE_URL: postgresql+psycopg2://pentest:pentest@postgres:5432/pentestdb
-      ZAP_BASE_URL: http://zap:8080
-      ZAP_API_KEY: changeme
-      DIFY_API_URL: ${DIFY_API_URL}
-      DIFY_API_KEY: ${DIFY_API_KEY}
-      BOLA_AGENT_DIFY_API_URL: ${BOLA_AGENT_DIFY_API_URL}
-      BOLA_AGENT_DIFY_API_KEY: ${BOLA_AGENT_DIFY_API_KEY}
-      BOPLA_AGENT_DIFY_API_URL: ${BOPLA_AGENT_DIFY_API_URL}
-      BOPLA_AGENT_DIFY_API_KEY: ${BOPLA_AGENT_DIFY_API_KEY}
-      AUTH_AGENT_DIFY_API_URL: ${AUTH_AGENT_DIFY_API_URL}
-      AUTH_AGENT_DIFY_API_KEY: ${AUTH_AGENT_DIFY_API_KEY}
-      REPORT_AGENT_DIFY_API_URL: ${REPORT_AGENT_DIFY_API_URL}
-      REPORT_AGENT_DIFY_API_KEY: ${REPORT_AGENT_DIFY_API_KEY}
+  toolbox:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     depends_on:
-      postgres:
-        condition: service_healthy
-      zap:
-        condition: service_started
+      - zap
     ports:
       - "8000:8000"
-    volumes:
-      - ./backend:/app
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
   zap:
     image: zaproxy/zap-stable
-    container_name: pentest_zap
-    command: >
-      zap.sh -daemon
-      -host 0.0.0.0
-      -port 8080
-      -config api.key=changeme
-      -config api.addrs.addr.name=.*
-      -config api.addrs.addr.regex=true
+    platform: linux/amd64
+    container_name: zap
+    command:
+      - zap.sh
+      - -daemon
+      - -host
+      - 0.0.0.0
+      - -port
+      - "8080"
+      - -config
+      - api.disablekey=true
+      - -config
+      - api.addrs.addr.name=.*
+      - -config
+      - api.addrs.addr.regex=true
     ports:
       - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-f",
+          "http://localhost:8080/JSON/core/view/version/"
+        ]
+      start_period: 45s
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
-  n8n:
-    image: docker.n8n.io/n8nio/n8n
-    container_name: pentest_n8n
-    ports:
-      - "5678:5678"
+  demo_target_vulnerable:
+    build:
+      context: .
+      dockerfile: demo_target/Dockerfile
     environment:
-      N8N_HOST: localhost
-      N8N_PORT: 5678
-      N8N_PROTOCOL: http
-      TZ: America/Los_Angeles
-    volumes:
-      - n8n_data:/home/node/.n8n
+      DEMO_TARGET_MODE: vulnerable
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
-volumes:
-  postgres_data:
-  n8n_data:
+  demo_target_secure:
+    build:
+      context: .
+      dockerfile: demo_target/Dockerfile
+    environment:
+      DEMO_TARGET_MODE: secure
+    ports:
+      - "8002:8001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s

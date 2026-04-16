@@ -1,0 +1,1096 @@
+app:
+  description: 'Legacy best-effort orchestrator skeleton for Dify. The current backend-aligned flow is prepare-auth -> prepare-probe-seeds -> worker-task -> tool execute -> worker-result -> judge-package -> judge-verdict -> report.'
+  icon: '🧠'
+  icon_background: '#FFEAD5'
+  mode: workflow
+  name: wf-agentic-orchestrator
+  use_icon_as_answer_icon: false
+dependencies:
+- current_identifier: null
+  type: marketplace
+  value:
+    marketplace_plugin_unique_identifier: langgenius/openai:0.2.3@5a7f82fa86e28332ad51941d0b491c1e8a38ead539656442f7bf4c6129cd15fa
+    version: null
+kind: app
+version: 0.5.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: start-to-normalize
+      selected: false
+      source: start
+      sourceHandle: source
+      target: normalize_input
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: normalize-to-start-session
+      selected: false
+      source: normalize_input
+      sourceHandle: source
+      target: start_session
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: session-to-bootstrap
+      selected: false
+      source: start_session
+      sourceHandle: source
+      target: parse_session
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: bootstrap-to-router
+      selected: false
+      source: parse_session
+      sourceHandle: source
+      target: get_router_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: router-to-parse-router
+      selected: false
+      source: get_router_plan
+      sourceHandle: source
+      target: parse_router_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: parse-router-to-router-agent
+      selected: false
+      source: parse_router_plan
+      sourceHandle: source
+      target: router_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: http-request
+      id: router-agent-to-run-round
+      selected: false
+      source: router_agent
+      sourceHandle: source
+      target: run_round
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: run-round-to-parse-round
+      selected: false
+      source: run_round
+      sourceHandle: source
+      target: parse_round
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: parse-round-to-judge-state
+      selected: false
+      source: parse_round
+      sourceHandle: source
+      target: get_judge_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: judge-state-to-parse-judge
+      selected: false
+      source: get_judge_state
+      sourceHandle: source
+      target: parse_judge_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: parse-judge-to-judge-agent
+      selected: false
+      source: parse_judge_state
+      sourceHandle: source
+      target: judge_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: http-request
+      id: judge-agent-to-report-package
+      selected: false
+      source: judge_agent
+      sourceHandle: source
+      target: get_report_package
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: report-package-to-parse-report
+      selected: false
+      source: get_report_package
+      sourceHandle: source
+      target: parse_report_package
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: llm
+      id: parse-report-to-report-agent
+      selected: false
+      source: parse_report_package
+      sourceHandle: source
+      target: report_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: llm
+        targetType: answer
+      id: report-agent-to-answer
+      selected: false
+      source: report_agent
+      sourceHandle: source
+      target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: answer
+        targetType: end
+      id: answer-to-end
+      selected: false
+      source: answer
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: 'Start one best-effort Dify-native orchestration pass.'
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Backend Base URL
+          max_length: 200
+          options: []
+          required: true
+          type: text-input
+          variable: backend_base_url
+        - label: Target Name
+          max_length: 100
+          options: []
+          required: true
+          type: text-input
+          variable: target_name
+        - label: Target URL
+          max_length: 500
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: User Prompt
+          max_length: 4000
+          options: []
+          required: true
+          type: paragraph
+          variable: user_prompt
+        - label: Allowed Test Classes CSV
+          max_length: 200
+          options: []
+          required: false
+          type: text-input
+          variable: allowed_test_classes_csv
+        - label: Max Rounds
+          max_length: 10
+          options: []
+          required: false
+          type: text-input
+          variable: max_rounds
+        x-outputs:
+        - name: backend_base_url
+          type: string
+        - name: target_name
+          type: string
+        - name: target_url
+          type: string
+        - name: user_prompt
+          type: string
+        - name: allowed_test_classes_csv
+          type: string
+        - name: max_rounds
+          type: string
+      height: 210
+      id: start
+      position:
+        x: 0
+        y: 220
+      positionAbsolute:
+        x: 0
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          def _normalize_classes(value: str) -> list:
+              raw = str(value or "").strip()
+              if not raw:
+                  return ["discovery", "bola", "bopla", "auth"]
+              result = []
+              for item in raw.split(","):
+                  normalized = str(item or "").strip().lower()
+                  if normalized and normalized not in result:
+                      result.append(normalized)
+              return result or ["discovery", "bola", "bopla", "auth"]
+
+          def _safe_int(value: str, default: int) -> int:
+              value = str(value or "").strip()
+              if not value:
+                  return default
+              try:
+                  return int(value)
+              except Exception:
+                  return default
+
+          def main(
+              backend_base_url: str,
+              target_name: str,
+              target_url: str,
+              user_prompt: str,
+              allowed_test_classes_csv: str = "",
+              max_rounds: str = "",
+          ) -> dict:
+              return {
+                  "backend_base_url": str(backend_base_url or "").strip().rstrip("/"),
+                  "target_name": str(target_name or "").strip(),
+                  "target_url": str(target_url or "").strip(),
+                  "user_prompt": str(user_prompt or "").strip(),
+                  "allowed_test_classes_json": _normalize_classes(allowed_test_classes_csv),
+                  "max_rounds_value": _safe_int(max_rounds, 12),
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Normalize orchestrator input.'
+        outputs:
+          backend_base_url:
+            children: null
+            type: string
+          target_name:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          user_prompt:
+            children: null
+            type: string
+          allowed_test_classes_json:
+            children: null
+            type: array[string]
+          max_rounds_value:
+            children: null
+            type: number
+        selected: false
+        title: Normalize Input
+        type: code
+        variables:
+        - value_selector:
+          - start
+          - backend_base_url
+          variable: backend_base_url
+        - value_selector:
+          - start
+          - target_name
+          variable: target_name
+        - value_selector:
+          - start
+          - target_url
+          variable: target_url
+        - value_selector:
+          - start
+          - user_prompt
+          variable: user_prompt
+        - value_selector:
+          - start
+          - allowed_test_classes_csv
+          variable: allowed_test_classes_csv
+        - value_selector:
+          - start
+          - max_rounds
+          variable: max_rounds
+      height: 100
+      id: normalize_input
+      position:
+        x: 300
+        y: 220
+      positionAbsolute:
+        x: 300
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "target_name": "{{#normalize_input.target_name#}}",
+              "target_url": "{{#normalize_input.target_url#}}",
+              "user_prompt": "{{#normalize_input.user_prompt#}}",
+              "allowed_test_classes": {{#normalize_input.allowed_test_classes_json#}},
+              "max_rounds": {{#normalize_input.max_rounds_value#}}
+            }
+          type: json
+        desc: 'Create agentic backend session.'
+        headers: 'Content-Type:application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Start Session
+        type: http-request
+        url: '{{#normalize_input.backend_base_url#}}/agentic/start'
+        variables: []
+      height: 170
+      id: start_session
+      position:
+        x: 610
+        y: 220
+      positionAbsolute:
+        x: 610
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          import json
+
+          def main(body: str, backend_base_url: str) -> dict:
+              payload = json.loads(body)
+              session = payload.get("session", {}) or {}
+              next_endpoints = payload.get("next_endpoints", {}) or {}
+
+              return {
+                  "session_id": session.get("id"),
+                  "backend_base_url": str(backend_base_url or "").strip().rstrip("/"),
+                  "router_plan_url": f"{str(backend_base_url or '').strip().rstrip('/')}{next_endpoints.get('router_plan', '')}",
+                  "judge_state_url": f"{str(backend_base_url or '').strip().rstrip('/')}{next_endpoints.get('judge_state', '')}",
+                  "loop_state_url": f"{str(backend_base_url or '').strip().rstrip('/')}{next_endpoints.get('loop_state', '')}",
+                  "report_package_url": f"{str(backend_base_url or '').strip().rstrip('/')}{next_endpoints.get('report_package', '')}",
+                  "run_round_url": f"{str(backend_base_url or '').strip().rstrip('/')}{next_endpoints.get('run_round', '')}",
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Build absolute backend URLs from session bootstrap.'
+        outputs:
+          session_id:
+            children: null
+            type: number
+          backend_base_url:
+            children: null
+            type: string
+          router_plan_url:
+            children: null
+            type: string
+          judge_state_url:
+            children: null
+            type: string
+          loop_state_url:
+            children: null
+            type: string
+          report_package_url:
+            children: null
+            type: string
+          run_round_url:
+            children: null
+            type: string
+        selected: false
+        title: Parse Session
+        type: code
+        variables:
+        - value_selector:
+          - start_session
+          - body
+          variable: body
+        - value_selector:
+          - normalize_input
+          - backend_base_url
+          variable: backend_base_url
+      height: 110
+      id: parse_session
+      position:
+        x: 920
+        y: 220
+      positionAbsolute:
+        x: 920
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: ''
+          type: none
+        desc: 'Read backend router plan.'
+        headers: ''
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 2
+          retry_enabled: true
+          retry_interval: 200
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Router Plan
+        type: http-request
+        url: '{{#parse_session.router_plan_url#}}'
+        variables: []
+      height: 165
+      id: get_router_plan
+      position:
+        x: 1230
+        y: 220
+      positionAbsolute:
+        x: 1230
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              payload = json.loads(body)
+              tasks = payload.get("tasks", []) or []
+              router_selection = payload.get("router_selection", {}) or {}
+              return {
+                  "tasks_json": json.dumps(tasks, ensure_ascii=False),
+                  "router_selection_json": json.dumps(router_selection, ensure_ascii=False),
+                  "tasks_total": payload.get("tasks_total", 0),
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Normalize router plan before router agent reasoning.'
+        outputs:
+          tasks_json:
+            children: null
+            type: string
+          router_selection_json:
+            children: null
+            type: string
+          tasks_total:
+            children: null
+            type: number
+        selected: false
+        title: Parse Router Plan
+        type: code
+        variables:
+        - value_selector:
+          - get_router_plan
+          - body
+          variable: body
+      height: 100
+      id: parse_router_plan
+      position:
+        x: 1540
+        y: 220
+      positionAbsolute:
+        x: 1540
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 'Router agent interprets the backend plan and states what should run next.'
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: sys
+          role: system
+          text: |
+            You are a router agent for an adaptive REST API pentest system.
+            Interpret the provided router plan and describe the highest-priority next action.
+            Do not invent tasks outside the given plan.
+            Be concise.
+        - id: user
+          role: user
+          text: |
+            Tasks total: {{#parse_router_plan.tasks_total#}}
+            Router selection: {{#parse_router_plan.router_selection_json#}}
+            Tasks: {{#parse_router_plan.tasks_json#}}
+
+            State the next action in one short paragraph.
+        selected: false
+        title: Router Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 130
+      id: router_agent
+      position:
+        x: 1850
+        y: 220
+      positionAbsolute:
+        x: 1850
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "user_prompt": "{{#normalize_input.user_prompt#}}"
+            }
+          type: json
+        desc: 'Run one backend agentic round.'
+        headers: 'Content-Type:application/json'
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Run One Round
+        type: http-request
+        url: '{{#parse_session.run_round_url#}}'
+        variables: []
+      height: 170
+      id: run_round
+      position:
+        x: 2160
+        y: 220
+      positionAbsolute:
+        x: 2160
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              payload = json.loads(body)
+              judge = payload.get("judge", {}) or {}
+              execution_result = payload.get("execution_result", {}) or {}
+              selected_hypothesis = payload.get("selected_hypothesis", {}) or {}
+              return {
+                  "judge_json": json.dumps(judge, ensure_ascii=False),
+                  "execution_result_json": json.dumps(execution_result, ensure_ascii=False),
+                  "selected_hypothesis_json": json.dumps(selected_hypothesis, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Extract round outputs before judge inspection.'
+        outputs:
+          judge_json:
+            children: null
+            type: string
+          execution_result_json:
+            children: null
+            type: string
+          selected_hypothesis_json:
+            children: null
+            type: string
+        selected: false
+        title: Parse Round
+        type: code
+        variables:
+        - value_selector:
+          - run_round
+          - body
+          variable: body
+      height: 100
+      id: parse_round
+      position:
+        x: 2470
+        y: 220
+      positionAbsolute:
+        x: 2470
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: ''
+          type: none
+        desc: 'Read backend judge state after the round.'
+        headers: ''
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 200
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Judge State
+        type: http-request
+        url: '{{#parse_session.judge_state_url#}}'
+        variables: []
+      height: 165
+      id: get_judge_state
+      position:
+        x: 2780
+        y: 220
+      positionAbsolute:
+        x: 2780
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              payload = json.loads(body)
+              loop_state = payload.get("judge_loop", {}) or {}
+              confirmed_findings = payload.get("confirmed_findings", []) or []
+              candidate_findings = payload.get("candidate_findings", []) or []
+              return {
+                  "judge_loop_json": json.dumps(loop_state, ensure_ascii=False),
+                  "confirmed_findings_json": json.dumps(confirmed_findings, ensure_ascii=False),
+                  "candidate_findings_json": json.dumps(candidate_findings, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Normalize judge-state payload.'
+        outputs:
+          judge_loop_json:
+            children: null
+            type: string
+          confirmed_findings_json:
+            children: null
+            type: string
+          candidate_findings_json:
+            children: null
+            type: string
+        selected: false
+        title: Parse Judge State
+        type: code
+        variables:
+        - value_selector:
+          - get_judge_state
+          - body
+          variable: body
+      height: 100
+      id: parse_judge_state
+      position:
+        x: 3090
+        y: 220
+      positionAbsolute:
+        x: 3090
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 'Judge agent explains whether the round achieved confirmed exploitation.'
+        model:
+          completion_params:
+            temperature: 0.1
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: sys
+          role: system
+          text: |
+            You are the judge agent for an adaptive REST API pentest system.
+            Evaluate only the provided round output and judge state.
+            Do not invent findings.
+            State briefly whether confirmed exploitation was achieved.
+        - id: user
+          role: user
+          text: |
+            Selected hypothesis: {{#parse_round.selected_hypothesis_json#}}
+            Round judge payload: {{#parse_round.judge_json#}}
+            Execution result: {{#parse_round.execution_result_json#}}
+            Judge loop state: {{#parse_judge_state.judge_loop_json#}}
+            Confirmed findings: {{#parse_judge_state.confirmed_findings_json#}}
+            Candidate findings: {{#parse_judge_state.candidate_findings_json#}}
+
+            Answer in concise Russian.
+        selected: false
+        title: Judge Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 135
+      id: judge_agent
+      position:
+        x: 3400
+        y: 220
+      positionAbsolute:
+        x: 3400
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - type: text
+            value: ''
+          type: none
+        desc: 'Fetch backend report inputs.'
+        headers: ''
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 200
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Report Package
+        type: http-request
+        url: '{{#parse_session.report_package_url#}}'
+        variables: []
+      height: 165
+      id: get_report_package
+      position:
+        x: 3710
+        y: 220
+      positionAbsolute:
+        x: 3710
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              payload = json.loads(body)
+              report_inputs = payload.get("report_inputs", {}) or {}
+              return {
+                  "executive_summary_json": json.dumps(report_inputs.get("executive_summary", {}), ensure_ascii=False),
+                  "risk_summary_json": json.dumps(report_inputs.get("risk_summary", {}), ensure_ascii=False),
+                  "key_conclusion_json": json.dumps(report_inputs.get("key_conclusion", {}), ensure_ascii=False),
+                  "confirmed_top_findings_json": json.dumps(report_inputs.get("confirmed_top_findings", []), ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: 'Prepare report inputs for the final report agent.'
+        outputs:
+          executive_summary_json:
+            children: null
+            type: string
+          risk_summary_json:
+            children: null
+            type: string
+          key_conclusion_json:
+            children: null
+            type: string
+          confirmed_top_findings_json:
+            children: null
+            type: string
+        selected: false
+        title: Parse Report Package
+        type: code
+        variables:
+        - value_selector:
+          - get_report_package
+          - body
+          variable: body
+      height: 100
+      id: parse_report_package
+      position:
+        x: 4020
+        y: 220
+      positionAbsolute:
+        x: 4020
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: 'Final report agent writes the campaign report using confirmed findings.'
+        model:
+          completion_params:
+            temperature: 0.2
+          mode: chat
+          name: gpt-4o-mini
+          provider: langgenius/openai/openai
+        prompt_template:
+        - id: sys
+          role: system
+          text: |
+            You are the final reporting agent for an adaptive REST API pentest.
+            Use only confirmed findings as primary findings.
+            Additional observations may be mentioned separately.
+            Return concise Markdown in Russian.
+        - id: user
+          role: user
+          text: |
+            Executive summary: {{#parse_report_package.executive_summary_json#}}
+            Risk summary: {{#parse_report_package.risk_summary_json#}}
+            Key conclusion: {{#parse_report_package.key_conclusion_json#}}
+            Confirmed top findings: {{#parse_report_package.confirmed_top_findings_json#}}
+            Router note: {{#router_agent.text#}}
+            Judge note: {{#judge_agent.text#}}
+
+            Build the final report.
+        selected: false
+        title: Report Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 140
+      id: report_agent
+      position:
+        x: 4330
+        y: 220
+      positionAbsolute:
+        x: 4330
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 255
+    - data:
+        answer: '{{#report_agent.text#}}'
+        desc: ''
+        selected: false
+        title: Answer
+        type: answer
+        variables: []
+      height: 100
+      id: answer
+      position:
+        x: 4640
+        y: 220
+      positionAbsolute:
+        x: 4640
+        y: 220
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 240
+    - data:
+        desc: ''
+        outputs: []
+        selected: false
+        title: End
+        type: end
+      height: 52
+      id: end
+      position:
+        x: 4920
+        y: 245
+      positionAbsolute:
+        x: 4920
+        y: 245
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 240
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.34
+  rag_pipeline_variables: []

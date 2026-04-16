@@ -1,0 +1,24 @@
+{
+  "id": "task_authz_bola_vehicle_location_001",
+  "class": "authorization",
+  "subtype": "bola",
+  "endpoint": "/identity/api/v2/vehicle/veh-123/location",
+  "method": "GET",
+  "params": {
+    "path_params": ["vehicle_id"],
+    "query_params": ["mode"],
+    "body_fields": [],
+    "object_id_candidates": ["veh-123"]
+  },
+  "auth_context": {
+    "owner_role": "user_a",
+    "other_role": "user_b",
+    "token_strategy": "cross_role_replay"
+  },
+  "hypothesis": "Different roles may access the same vehicle location object.",
+  "priority": 90,
+  "retry_count": 0,
+  "rework_hint": null,
+  "status": "pending",
+  "allowed_tools": ["auth_test_access"]
+}
