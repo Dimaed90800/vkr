@@ -52,6 +52,13 @@ class TaskPrerequisites(BaseModel):
     requires_list_candidate: bool = False
 
 
+class ToolPreference(BaseModel):
+    preferred_tool: str | None = None
+    fallback_tools: list[str] = Field(default_factory=list)
+    artifact_requirements: list[str] = Field(default_factory=list)
+    budget_profile: str = "balanced"
+
+
 class TaskModel(BaseModel):
     id: str
     class_name: str = Field(..., alias="class")
@@ -86,6 +93,12 @@ class TaskModel(BaseModel):
     payload_family: str | None = None
     resource_family: str | None = None
     context_source: str | None = None
+    worker_role: str | None = None
+    preferred_tool: str | None = None
+    fallback_tools: list[str] = Field(default_factory=list)
+    artifact_requirements: list[str] = Field(default_factory=list)
+    budget_profile: str = "balanced"
+    tool_preference: ToolPreference = Field(default_factory=ToolPreference)
 
     model_config = {"populate_by_name": True}
 

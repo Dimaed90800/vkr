@@ -1393,6 +1393,7 @@ class TestingService:
                 target_url=request.execution_context.target_url,
                 allowed_hosts=list(request.execution_context.allowed_hosts or []),
                 roles=[],
+                allow_autonomous_capture=True,
                 max_duration_sec=min(int(request.execution_context.max_duration_sec or 30), 30),
                 max_requests=min(int(request.execution_context.max_requests or 20), 20),
                 user_prompt=str(request.execution_context.user_prompt or ""),

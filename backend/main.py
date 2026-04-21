@@ -8,6 +8,7 @@ try:
     from backend.api.routes_surface_acquisition import router as surface_acquisition_router
     from backend.api.routes_store import router as store_router
     from backend.api.routes_tests import router as tests_router
+    from backend.api.routes_tool_wrappers import router as tool_wrappers_router
     from backend.api.routes_traffic_discovery import router as traffic_discovery_router
     from backend.models.common import HealthResponse
     from backend.storage.memory_store import memory_store
@@ -19,6 +20,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from api.routes_surface_acquisition import router as surface_acquisition_router
     from api.routes_store import router as store_router
     from api.routes_tests import router as tests_router
+    from api.routes_tool_wrappers import router as tool_wrappers_router
     from api.routes_traffic_discovery import router as traffic_discovery_router
     from models.common import HealthResponse
     from storage.memory_store import memory_store
@@ -37,6 +39,7 @@ app.include_router(surface_acquisition_router, prefix="/v1")
 app.include_router(planning_router, prefix="/v1")
 app.include_router(scheduling_router, prefix="/v1")
 app.include_router(tests_router, prefix="/v1")
+app.include_router(tool_wrappers_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
 
 

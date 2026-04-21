@@ -45,6 +45,7 @@ RUN go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@v3.7.1 && \
     chmod +x /usr/local/bin/nuclei /usr/local/bin/httpx /usr/local/bin/ffuf
 
 COPY backend /app
+COPY scripts /app/scripts
 
 EXPOSE 8000
 

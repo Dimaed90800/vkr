@@ -72,6 +72,11 @@ class TaskGenerator:
         "injection": "injection_test",
         "business_logic": "logic_test",
     }
+    WORKER_ROLE_BY_CLASS = {
+        "authorization": "Auth & Identity Agent",
+        "injection": "Contract & Negative Testing Agent",
+        "business_logic": "Business Flow / Stateful Agent",
+    }
     AUTH_HIGH_PRIORITY_SUBSTRINGS = (
         "/admin",
         "/management",
@@ -144,6 +149,7 @@ class TaskGenerator:
                 subtype = self._subtype(family_candidate["family_id"], endpoint, features, synthesized_context)
                 readiness = self._readiness(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
                 allowed_tools = self._allowed_tools(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
+                tool_preference = self._tool_preference(candidate_class, family_candidate["family_id"], readiness)
                 preparation_options = self._preparation_options(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
                 test_strategy = self._test_strategy(candidate_class, family_candidate["family_id"], readiness, preparation_options)
                 expected_evidence = list(family_candidate.get("expected_evidence") or [])
@@ -188,6 +194,12 @@ class TaskGenerator:
                     "evidence_feasibility": float(family_candidate.get("evidence_feasibility") or 0.0),
                     "noise_risk": float(family_candidate.get("noise_penalty") or 0.0),
                     "recommended_next_step": recommended_next_step,
+                    "worker_role": self.WORKER_ROLE_BY_CLASS.get(candidate_class),
+                    "preferred_tool": tool_preference["preferred_tool"],
+                    "fallback_tools": tool_preference["fallback_tools"],
+                    "artifact_requirements": tool_preference["artifact_requirements"],
+                    "budget_profile": tool_preference["budget_profile"],
+                    "tool_preference": tool_preference,
                 }
                 tasks.append(task)
 
@@ -385,8 +397,8 @@ class TaskGenerator:
         if candidate_class == "authorization":
             if readiness == "ready_to_test":
                 if family_id in {"property_level_authorization", "mass_assignment"}:
-                    return ["property_mutation_test"]
-                return ["auth_test_access"]
+                    return ["akto_authz_scan", "astf_top10_suite", "property_mutation_test"]
+                return ["akto_authz_scan", "astf_top10_suite", "auth_test_access"]
             if self._is_auth_bootstrap_endpoint(endpoint.path, synthesized_context):
                 return ["auto_provision"]
             if family_id == "authentication_weakness":
@@ -403,24 +415,70 @@ class TaskGenerator:
         if candidate_class == "injection":
             if readiness == "ready_to_test":
                 if family_id == "reflection_or_template_sink":
-                    return ["reflection_probe", "injection_test"]
-                return ["injection_test", "reflection_probe", "path_fuzz_probe"]
+                    return ["schemathesis_negative_test", "cats_fuzz_test", "reflection_probe", "injection_test"]
+                return ["schemathesis_negative_test", "cats_fuzz_test", "astf_top10_suite", "injection_test", "reflection_probe", "path_fuzz_probe"]
             if readiness == "needs_preparation":
                 return ["input_shape_probe"]
             return ["noop_outcome"]
         if readiness == "ready_to_test":
             mapping = {
-                "excessive_data_exposure": ["data_exposure_test"],
-                "resource_abuse_rate_limit": ["resource_abuse_test"],
-                "security_misconfiguration": ["misconfiguration_test"],
-                "improper_assets_management": ["version_diff_test"],
-                "documentation_inventory_leak": ["version_diff_test"],
+                "excessive_data_exposure": ["akto_authz_scan", "astf_top10_suite", "data_exposure_test"],
+                "resource_abuse_rate_limit": ["cats_fuzz_test", "astf_top10_suite", "resource_abuse_test"],
+                "security_misconfiguration": ["astf_top10_suite", "misconfiguration_test"],
+                "improper_assets_management": ["akto_inventory_discovery", "astf_top10_suite", "version_diff_test"],
+                "documentation_inventory_leak": ["akto_inventory_discovery", "astf_top10_suite", "version_diff_test"],
                 "url_fetch_or_ssrf": ["noop_outcome"],
             }
-            return mapping.get(family_id, ["logic_test"])
+            return mapping.get(family_id, ["restler_fuzz", "schemathesis_stateful_test", "logic_test"])
         if readiness == "needs_preparation":
             return ["workflow_probe"]
         return ["noop_outcome"]
+
+    def _tool_preference(self, candidate_class: str, family_id: str, readiness: str) -> dict:
+        if readiness not in {"ready_to_test", "needs_preparation"}:
+            return {
+                "preferred_tool": "noop_outcome",
+                "fallback_tools": [],
+                "artifact_requirements": [],
+                "budget_profile": "minimal",
+            }
+        if candidate_class == "authorization":
+            fallback = ["astf_top10_suite", "auth_test_access"]
+            if family_id in {"property_level_authorization", "mass_assignment"}:
+                fallback = ["astf_top10_suite", "property_mutation_test"]
+            return {
+                "preferred_tool": "akto_authz_scan",
+                "fallback_tools": fallback,
+                "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+                "budget_profile": "balanced",
+            }
+        if candidate_class == "injection":
+            return {
+                "preferred_tool": "schemathesis_negative_test",
+                "fallback_tools": ["cats_fuzz_test", "astf_top10_suite", "injection_test"],
+                "artifact_requirements": ["http_trace", "raw_report"],
+                "budget_profile": "balanced",
+            }
+        if family_id in {"invalid_transition", "repeated_sensitive_action", "cross_role_workflow_abuse"}:
+            return {
+                "preferred_tool": "restler_fuzz",
+                "fallback_tools": ["schemathesis_stateful_test", "logic_test"],
+                "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+                "budget_profile": "stateful",
+            }
+        if family_id in {"improper_assets_management", "documentation_inventory_leak"}:
+            return {
+                "preferred_tool": "akto_inventory_discovery",
+                "fallback_tools": ["astf_top10_suite", "version_diff_test"],
+                "artifact_requirements": ["raw_report"],
+                "budget_profile": "minimal",
+            }
+        return {
+            "preferred_tool": "schemathesis_stateful_test",
+            "fallback_tools": ["restler_fuzz", "akto_authz_scan", "logic_test"],
+            "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+            "budget_profile": "balanced",
+        }
 
     def _required_capabilities(self, candidate_class: str, family_id: str, endpoint) -> list[str]:
         if candidate_class == "authorization":

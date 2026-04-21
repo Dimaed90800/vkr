@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -26,7 +27,17 @@ class DiagnosticLoggingService:
         "cookies",
         "set-cookie",
         "auth_headers",
+        "api_key",
+        "x-api-key",
+        "x_api_key",
+        "session",
+        "sessionid",
     }
+    SECRET_KEY_FRAGMENTS = ("authorization", "cookie", "token", "api-key", "api_key", "secret", "session")
+    SECRET_TEXT_RE = re.compile(
+        r"(?i)\b(authorization|cookie|x-api-key|api[-_]?key|token|secret|session)([=: ]+)(\S+)"
+    )
+    BEARER_TEXT_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+")
     PREVIEW_LIMIT = 180
     COLLECTION_LIMIT = 12
 
@@ -57,6 +68,7 @@ class DiagnosticLoggingService:
         event = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event_type": str(event_type or "").strip(),
+            "event_name": str(event_type or "").strip(),
             "component": str(component or "").strip(),
             "status": str(status or "").strip(),
             "summary": self._clip(summary),
@@ -323,7 +335,7 @@ class DiagnosticLoggingService:
             redacted = {}
             for key, item in value.items():
                 lower = str(key).lower()
-                if lower in self.SECRET_KEYS:
+                if lower in self.SECRET_KEYS or any(fragment in lower for fragment in self.SECRET_KEY_FRAGMENTS):
                     redacted[str(key)] = self._redacted_secret(item)
                 else:
                     redacted[str(key)] = self._redact(item)
@@ -333,8 +345,13 @@ class DiagnosticLoggingService:
         if isinstance(value, tuple):
             return [self._redact(item) for item in value[: self.COLLECTION_LIMIT]]
         if isinstance(value, str):
-            return self._clip(value)
+            return self._clip(self._redact_text(value))
         return value
+
+    def _redact_text(self, value: str) -> str:
+        text = str(value or "")
+        text = self.SECRET_TEXT_RE.sub(r"\1\2<redacted>", text)
+        return self.BEARER_TEXT_RE.sub("Bearer <redacted>", text)
 
     def _redacted_secret(self, value: Any) -> str:
         raw = str(value or "")

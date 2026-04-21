@@ -1,13 +1,16 @@
 import logging
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Body, HTTPException, status
 
 try:
     from backend.models.testing import ToolTestRequest, ToolTestResponse
     from backend.services.testing_service import TestingService
+    from backend.services.wrapper_observability import append_run_event
 except ModuleNotFoundError:  # pragma: no cover
     from models.testing import ToolTestRequest, ToolTestResponse
     from services.testing_service import TestingService
+    from services.wrapper_observability import append_run_event
 
 
 logger = logging.getLogger(__name__)
@@ -22,7 +25,26 @@ TOOL_NAME_ALIASES = {
 
 def _normalized_request(request: ToolTestRequest) -> ToolTestRequest:
     canonical_tool_name = TOOL_NAME_ALIASES.get(request.tool_name, request.tool_name)
-    return request if canonical_tool_name == request.tool_name else request.model_copy(update={"tool_name": canonical_tool_name})
+    normalized = request if canonical_tool_name == request.tool_name else request.model_copy(update={"tool_name": canonical_tool_name})
+    append_run_event(
+        event_name="legacy_tool_dispatch_start",
+        run_id=normalized.execution_context.run_id,
+        task_id=normalized.task.id,
+        worker_role=normalized.task.worker_role or (normalized.task.context_hints or {}).get("router_assigned_worker"),
+        tool_name=normalized.tool_name,
+        status="started",
+        summary="Legacy tool endpoint received a request.",
+        target_url=str(normalized.execution_context.target_url),
+        reason={"fallback_reason": "legacy_endpoint_selected"},
+        extra={
+            "preferred_tool": normalized.task.preferred_tool
+            or getattr(normalized.task.tool_preference, "preferred_tool", None),
+            "used_legacy_path": True,
+            "noop_path": normalized.tool_name == "noop_outcome",
+            "current_task_missing": normalized.task.id == "__no_task__",
+        },
+    )
+    return normalized
 
 
 @router.post(
@@ -204,6 +226,49 @@ async def capture_anonymous_traffic(request: ToolTestRequest) -> ToolTestRespons
 
 
 @router.post("/worker/noop-outcome", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
-async def noop_outcome(request: ToolTestRequest) -> ToolTestResponse:
-    request = _normalized_request(request)
+async def noop_outcome(payload: Any = Body(default=None)) -> ToolTestResponse:
+    if not isinstance(payload, dict):
+        logger.info("Noop outcome received non-object payload type=%s", type(payload).__name__)
+        append_run_event(
+            event_name="legacy_tool_dispatch_start",
+            run_id=None,
+            task_id=None,
+            worker_role=None,
+            tool_name="noop_outcome",
+            status="skipped",
+            summary="Noop endpoint received an empty or invalid non-object payload.",
+            reason={"fallback_reason": "empty_or_invalid_noop_request"},
+            extra={"used_legacy_path": True, "noop_path": True, "current_task_missing": True},
+        )
+        return ToolTestResponse(
+            request_summary={"action": "noop_outcome"},
+            response_summary={
+                "status": "skipped",
+                "reason": "empty_or_invalid_noop_request",
+                "payload_type": type(payload).__name__,
+            },
+            raw_status="skipped",
+            indicators=["noop_outcome", "invalid_noop_request"],
+        )
+    try:
+        request = _normalized_request(ToolTestRequest.model_validate(payload))
+    except Exception as exc:
+        logger.info("Noop outcome received invalid payload: %s", exc)
+        append_run_event(
+            event_name="legacy_tool_dispatch_start",
+            run_id=None,
+            task_id=None,
+            worker_role=None,
+            tool_name="noop_outcome",
+            status="skipped",
+            summary="Noop endpoint received an invalid object payload.",
+            reason={"fallback_reason": "invalid_noop_request", "exception_type": type(exc).__name__},
+            extra={"used_legacy_path": True, "noop_path": True, "current_task_missing": True},
+        )
+        return ToolTestResponse(
+            request_summary={"action": "noop_outcome"},
+            response_summary={"status": "skipped", "reason": "invalid_noop_request"},
+            raw_status="skipped",
+            indicators=["noop_outcome", "invalid_noop_request"],
+        )
     return await testing_service.noop_outcome(request)
