@@ -19,6 +19,12 @@ class ObservedHttpRequest(BaseModel):
 
 class TrafficDiscoveryRequest(BaseModel):
     requests: list[ObservedHttpRequest] = Field(default_factory=list)
+    target_url: HttpUrl | None = None
+    allowed_hosts: list[str] = Field(default_factory=list)
+    roles: list[dict[str, Any]] = Field(default_factory=list)
+    max_duration_sec: int = 30
+    max_requests: int = 20
+    user_prompt: str = ""
 
 
 class TrafficDiscoveryResponse(BaseModel):

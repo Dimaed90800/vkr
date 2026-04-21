@@ -1,3 +1,138 @@
+#services:
+#  toolbox:
+#    build:
+#      context: .
+#      dockerfile: backend/Dockerfile
+#    depends_on:
+#      - zap
+#      - playwright-runner
+#      - mitmproxy
+#      - nuclei
+#      - ffuf
+#      - httpx
+#    environment:
+#      ZAP_BASE_URL: http://zap:8080
+#      PLAYWRIGHT_RUNNER_URL: http://playwright-runner:3000
+#      MITMPROXY_URL: http://mitmproxy:8081
+#      NUCLEI_BIN: /usr/local/bin/nuclei
+#      FFUF_BIN: /usr/local/bin/ffuf
+#      HTTPX_BIN: /usr/local/bin/httpx
+#    ports:
+#      - "8000:8000"
+#    healthcheck:
+#      test:
+#        [
+#          "CMD",
+#          "python",
+#          "-c",
+#          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"
+#        ]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 5s
+#
+#  zap:
+#    image: zaproxy/zap-stable
+#    platform: linux/amd64
+#    container_name: zap
+#    command:
+#      - zap.sh
+#      - -daemon
+#      - -host
+#      - 0.0.0.0
+#      - -port
+#      - "8080"
+#      - -config
+#      - api.disablekey=true
+#      - -config
+#      - api.addrs.addr.name=.*
+#      - -config
+#      - api.addrs.addr.regex=true
+#    ports:
+#      - "8080:8080"
+#    restart: unless-stopped
+#    healthcheck:
+#      test:
+#        [
+#          "CMD",
+#          "curl",
+#          "-f",
+#          "http://localhost:8080/JSON/core/view/version/"
+#        ]
+#      start_period: 45s
+#      interval: 10s
+#      timeout: 5s
+#      retries: 10
+#
+#  playwright-runner:
+#    image: mcr.microsoft.com/playwright:v1.52.0-jammy
+#    command: ["sleep", "infinity"]
+#    restart: unless-stopped
+#
+#  mitmproxy:
+#    image: mitmproxy/mitmproxy:latest
+#    command: ["mitmdump", "--listen-host", "0.0.0.0", "--listen-port", "8081"]
+#    ports:
+#      - "8081:8081"
+#    restart: unless-stopped
+#
+#  nuclei:
+#    image: projectdiscovery/nuclei:latest
+#    command: ["sleep", "infinity"]
+#    restart: unless-stopped
+#
+#  ffuf:
+#    image: ffuf/ffuf:latest
+#    command: ["sleep", "infinity"]
+#    restart: unless-stopped
+#
+#  httpx:
+#    image: projectdiscovery/httpx:latest
+#    command: ["sleep", "infinity"]
+#    restart: unless-stopped
+#
+#  demo_target_vulnerable:
+#    build:
+#      context: .
+#      dockerfile: demo_target/Dockerfile
+#    environment:
+#      DEMO_TARGET_MODE: vulnerable
+#    ports:
+#      - "8001:8001"
+#    healthcheck:
+#      test:
+#        [
+#          "CMD",
+#          "python",
+#          "-c",
+#          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+#        ]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 5s
+#
+#  demo_target_secure:
+#    build:
+#      context: .
+#      dockerfile: demo_target/Dockerfile
+#    environment:
+#      DEMO_TARGET_MODE: secure
+#    ports:
+#      - "8002:8001"
+#    healthcheck:
+#      test:
+#        [
+#          "CMD",
+#          "python",
+#          "-c",
+#          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)"
+#        ]
+#      interval: 10s
+#      timeout: 5s
+#      retries: 5
+#      start_period: 5s
 services:
   toolbox:
     build:
@@ -5,8 +140,20 @@ services:
       dockerfile: backend/Dockerfile
     depends_on:
       - zap
+      - playwright-runner
+      - mitmproxy
+    environment:
+      ZAP_BASE_URL: http://zap:8080
+      PLAYWRIGHT_RUNNER_URL: http://playwright-runner:3000
+      MITMPROXY_URL: http://mitmproxy:8081
+      NUCLEI_BIN: /usr/local/bin/nuclei
+      FFUF_BIN: /usr/local/bin/ffuf
+      HTTPX_BIN: /usr/local/bin/httpx
+      DAST_LOG_DIR: /app/logs/dast_runs
     ports:
       - "8000:8000"
+    volumes:
+      - ./logs:/app/logs
     healthcheck:
       test:
         [
@@ -52,6 +199,18 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  playwright-runner:
+    image: mcr.microsoft.com/playwright:v1.52.0-jammy
+    command: ["sleep", "infinity"]
+    restart: unless-stopped
+
+  mitmproxy:
+    image: mitmproxy/mitmproxy:latest
+    command: ["mitmdump", "--listen-host", "0.0.0.0", "--listen-port", "8081"]
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
 
   demo_target_vulnerable:
     build:

@@ -5,6 +5,7 @@ try:
     from backend.api.routes_planning import router as planning_router
     from backend.api.routes_recon import router as recon_router
     from backend.api.routes_scheduling import router as scheduling_router
+    from backend.api.routes_surface_acquisition import router as surface_acquisition_router
     from backend.api.routes_store import router as store_router
     from backend.api.routes_tests import router as tests_router
     from backend.api.routes_traffic_discovery import router as traffic_discovery_router
@@ -15,6 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from api.routes_planning import router as planning_router
     from api.routes_recon import router as recon_router
     from api.routes_scheduling import router as scheduling_router
+    from api.routes_surface_acquisition import router as surface_acquisition_router
     from api.routes_store import router as store_router
     from api.routes_tests import router as tests_router
     from api.routes_traffic_discovery import router as traffic_discovery_router
@@ -31,6 +33,7 @@ app = FastAPI(
 app.include_router(recon_router, prefix="/v1")
 app.include_router(discovery_router, prefix="/v1")
 app.include_router(traffic_discovery_router, prefix="/v1")
+app.include_router(surface_acquisition_router, prefix="/v1")
 app.include_router(planning_router, prefix="/v1")
 app.include_router(scheduling_router, prefix="/v1")
 app.include_router(tests_router, prefix="/v1")

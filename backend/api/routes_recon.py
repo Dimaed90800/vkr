@@ -38,12 +38,12 @@ def parse_openapi(request: OpenAPIReconRequest) -> OpenAPIReconResponse:
         surface = openapi_service.parse(request)
         normalized_surface = openapi_normalizer.normalize(request, surface)
         generated_tasks: list[dict] = []
-        if request.planner_mode in {"auto_tasks", "hybrid"}:
+        if request.planner_mode in {"auto_tasks", "hybrid", "mvp_openapi"}:
             generated_tasks = task_generator.generate(
                 normalized_surface,
                 roles=request.roles,
             )
-        surface.normalized_surface = normalized_surface if request.planner_mode in {"surface_only", "hybrid", "auto_tasks"} else None
+        surface.normalized_surface = normalized_surface if request.planner_mode in {"surface_only", "hybrid", "auto_tasks", "mvp_openapi"} else None
         surface.generated_tasks = generated_tasks
         surface.raw_metadata = {
             **(surface.raw_metadata or {}),

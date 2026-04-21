@@ -1,1 +1,3 @@
-"""In-memory storage for the minimal DAST toolbox backend."""
+from .memory_store import memory_store
+
+__all__ = ["memory_store"]

@@ -1,33 +1,28 @@
-import threading
-import uuid
+from __future__ import annotations
 
-try:
-    from backend.models.storage import EvidenceRecord, FindingRecord
-except ModuleNotFoundError:  # pragma: no cover
-    from models.storage import EvidenceRecord, FindingRecord
+from collections import defaultdict
+from uuid import uuid4
 
 
 class MemoryStore:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self.evidence_records: dict[str, dict] = {}
-        self.findings: dict[str, dict] = {}
+        self.evidence_records: list[dict] = []
+        self.findings: list[dict] = []
+        self.evidence_by_session: dict[str, list[dict]] = defaultdict(list)
+        self.findings_by_session: dict[str, list[dict]] = defaultdict(list)
 
-    def store_evidence(self, session_id: int | str | None, evidence: EvidenceRecord) -> str:
-        evidence_id = f"ev_{uuid.uuid4().hex[:10]}"
-        payload = evidence.model_dump()
-        payload["session_id"] = session_id
-        with self._lock:
-            self.evidence_records[evidence_id] = payload
+    def store_evidence(self, session_id: str, evidence) -> str:
+        evidence_id = f"evidence-{uuid4().hex[:12]}"
+        payload = {"id": evidence_id, "session_id": session_id, "evidence": evidence.model_dump(mode='json') if hasattr(evidence, 'model_dump') else evidence}
+        self.evidence_records.append(payload)
+        self.evidence_by_session[session_id].append(payload)
         return evidence_id
 
-    def store_finding(self, session_id: int | str | None, finding: FindingRecord) -> str:
-        finding_id = finding.id or f"finding_{uuid.uuid4().hex[:10]}"
-        payload = finding.model_dump()
-        payload["id"] = finding_id
-        payload["session_id"] = session_id
-        with self._lock:
-            self.findings[finding_id] = payload
+    def store_finding(self, session_id: str, finding) -> str:
+        finding_id = f"finding-{uuid4().hex[:12]}"
+        payload = {"id": finding_id, "session_id": session_id, "finding": finding.model_dump(mode='json') if hasattr(finding, 'model_dump') else finding}
+        self.findings.append(payload)
+        self.findings_by_session[session_id].append(payload)
         return finding_id
 
 

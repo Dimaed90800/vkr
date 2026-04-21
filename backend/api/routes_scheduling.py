@@ -42,6 +42,7 @@ def schedule_next_task(request: NextTaskRequest) -> NextTaskResponse:
             request.pending_tasks,
             state=request.scheduler_state,
             fairness=request.fairness_config,
+            execution_context=request.execution_context,
         )
         logger.info(
             "Selected next task task_id=%s selected_class=%s should_stop=%s",
@@ -82,9 +83,11 @@ def update_queue(request: QueueUpdateRequest) -> QueueUpdateResponse:
             active_task=request.active_task,
             verdict=request.verdict,
             rework_hint=request.rework_hint,
+            evidence=request.evidence,
             max_retries=request.max_retries,
             state=request.scheduler_state,
             fairness=request.fairness_config,
+            execution_context=request.execution_context,
         )
         logger.info(
             "Queue update completed pending_tasks=%s reason=%s should_stop=%s",

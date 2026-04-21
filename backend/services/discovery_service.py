@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+import logging
 from urllib.parse import parse_qsl, urljoin, urlparse
 
 import httpx
@@ -26,9 +27,64 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.zap_client import ZapClient
 
 
+logger = logging.getLogger(__name__)
+
+
 class DiscoveryService:
+    DEFAULT_DISCOVERY_SEEDS = [
+        "/api",
+        "/v1",
+        "/v2",
+        "/v3",
+        "/auth",
+        "/login",
+        "/signin",
+        "/signup",
+        "/register",
+        "/identity",
+        "/community",
+        "/workshop",
+        "/admin",
+        "/user",
+        "/users",
+        "/account",
+        "/profile",
+        "/orders",
+        "/cart",
+        "/checkout",
+        "/payment",
+    ]
+
     def __init__(self) -> None:
         self.classifier = CandidateClassifier()
+        self.http_timeout_sec = 8.0
+
+    def zap_health_check(self, request: DiscoveryRequest):
+        logger.info(
+            "Running discovery ZAP diagnostics zap_base_url=%s target_url=%s",
+            request.zap_base_url,
+            request.target_url,
+        )
+        diagnostics = ZapClient(request.zap_base_url).health_check(
+            target_url=str(request.target_url),
+            max_duration_sec=min(max(int(request.max_duration_sec or 15), 10), 15),
+        )
+        diagnostics["target_reachable_from_backend"] = self._target_reachable_from_backend(
+            target_url=str(request.target_url),
+            allowed_hosts=request.allowed_hosts,
+        )
+        logger.info(
+            "Discovery ZAP diagnostics result zap_reachable=%s target_reachable_from_backend=%s target_reachable_from_zap=%s spider_status=%s error=%s",
+            diagnostics.get("zap_reachable"),
+            diagnostics.get("target_reachable_from_backend"),
+            diagnostics.get("target_reachable_from_zap"),
+            diagnostics.get("spider_status"),
+            diagnostics.get("error"),
+        )
+        if not diagnostics["target_reachable_from_backend"] and not diagnostics.get("error"):
+            diagnostics["stage"] = "reach_target_from_backend"
+            diagnostics["error"] = "backend_could_not_reach_target"
+        return diagnostics
 
     def discover(self, request: DiscoveryRequest) -> DiscoveryResponse:
         if not request.enable_discovery:
@@ -44,16 +100,50 @@ class DiscoveryService:
                     "ajax_spider_used": False,
                 },
             )
+        effective_seeds = self._effective_discovery_seeds(request.discovery_seeds)
         seed_urls = self._build_seed_urls(
             target_url=str(request.target_url),
-            discovery_seeds=request.discovery_seeds,
+            discovery_seeds=effective_seeds,
         )
         authenticated_headers, authenticated_cookies, auth_role_name = self._build_authenticated_seed_context(
             request.roles,
             request.use_authenticated_discovery,
         )
+        metadata = {
+            "source": request.discovery_mode,
+            "zap_base_url": str(request.zap_base_url),
+            "connection_attempted": True,
+            "connection_ok": False,
+            "spider_used": bool(request.use_spider),
+            "ajax_spider_used": bool(request.use_ajax_spider),
+            "seed_url_total": len(seed_urls),
+        }
+        zap_diagnostics = self.zap_health_check(request)
+        metadata["zap_diagnostics"] = dict(zap_diagnostics)
+        if not zap_diagnostics.get("zap_reachable"):
+            metadata["diagnosis"] = "zap_unreachable"
+            metadata["stage"] = str(zap_diagnostics.get("stage") or "connect_zap")
+            metadata["error"] = str(zap_diagnostics.get("error") or "")
+            return DiscoveryResponse(
+                target_url=request.target_url,
+                discovery_summary="Discovery aborted because ZAP is unreachable.",
+                raw_urls=[],
+                normalized_surface=NormalizedApiSurface(endpoints=[]),
+                raw_metadata=metadata,
+            )
+        if not zap_diagnostics.get("target_reachable_from_zap"):
+            metadata["diagnosis"] = "target_unreachable_from_zap"
+            metadata["stage"] = str(zap_diagnostics.get("stage") or "reach_target_from_zap")
+            metadata["error"] = str(zap_diagnostics.get("error") or "")
+            return DiscoveryResponse(
+                target_url=request.target_url,
+                discovery_summary="Discovery aborted because ZAP cannot reach the target.",
+                raw_urls=[],
+                normalized_surface=NormalizedApiSurface(endpoints=[]),
+                raw_metadata=metadata,
+            )
         try:
-            raw_urls, metadata = ZapClient(request.zap_base_url).discover_urls(
+            raw_urls, zap_metadata = ZapClient(request.zap_base_url).discover_urls(
                 str(request.target_url),
                 seed_urls=seed_urls,
                 use_spider=request.use_spider,
@@ -61,14 +151,10 @@ class DiscoveryService:
                 max_children=request.max_children,
                 max_duration_sec=request.max_duration_sec,
             )
+            metadata.update(zap_metadata)
         except Exception as exc:
             raw_urls = []
-            metadata = {
-                "source": request.discovery_mode,
-                "spider_used": bool(request.use_spider),
-                "ajax_spider_used": bool(request.use_ajax_spider),
-                "error": str(exc),
-            }
+            metadata["error"] = str(exc)
 
         seeded_urls, seed_metadata = self._run_seed_requests(
             seed_urls=seed_urls,
@@ -84,9 +170,20 @@ class DiscoveryService:
             raw_urls=[*raw_urls, *seeded_urls],
             target_url=str(request.target_url),
             allowed_hosts=request.allowed_hosts,
-            discovery_seeds=request.discovery_seeds,
+            discovery_seeds=effective_seeds,
         )
-        normalized_surface = self._normalize_urls(filtered_urls, discovery_seeds=request.discovery_seeds)
+        normalized_surface = self._normalize_urls(filtered_urls, discovery_seeds=effective_seeds)
+        metadata["seed_mode"] = "user_provided" if request.discovery_seeds else "auto_generated"
+        metadata["effective_discovery_seeds"] = effective_seeds
+        metadata["effective_seed_total"] = len(effective_seeds)
+        metadata["zap_diagnostics"] = {
+            **dict(zap_diagnostics),
+            "urls_discovered": int(zap_diagnostics.get("urls_discovered", 0) or 0),
+            "api_like_url_count": int(zap_diagnostics.get("api_like_urls", 0) or 0),
+            "spider_status": str(zap_diagnostics.get("spider_status") or ""),
+        }
+        if zap_diagnostics.get("urls_discovered", 0) and not zap_diagnostics.get("api_like_urls", 0):
+            metadata["diagnosis"] = "spa_or_js_heavy_app"
         summary = (
             f"ZAP discovered {len(raw_urls)} raw URLs and normalized "
             f"{len(normalized_surface.endpoints)} unique endpoints."
@@ -98,6 +195,24 @@ class DiscoveryService:
             normalized_surface=normalized_surface,
             raw_metadata=metadata,
         )
+
+    def _target_reachable_from_backend(self, *, target_url: str, allowed_hosts: list[str]) -> bool:
+        parsed = urlparse(target_url)
+        host = str(parsed.netloc or "").strip().lower()
+        allowed = {str(item or "").strip().lower() for item in (allowed_hosts or []) if str(item or "").strip()}
+        if allowed and host not in allowed:
+            return False
+        try:
+            response = httpx.get(target_url, timeout=self.http_timeout_sec, follow_redirects=True)
+            return response.status_code is not None
+        except Exception:
+            return False
+
+    def _effective_discovery_seeds(self, discovery_seeds: list[str]) -> list[str]:
+        seeds = [str(item or "").strip() for item in (discovery_seeds or []) if str(item or "").strip()]
+        if seeds:
+            return seeds
+        return list(self.DEFAULT_DISCOVERY_SEEDS)
 
     def _filter_urls(
         self,

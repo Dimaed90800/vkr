@@ -11,6 +11,33 @@ GUESSED_OBJECT_IDS = {
     "demo",
 }
 
+PLACEHOLDER_OBJECT_IDS = {
+    "id",
+    "{id}",
+    "video_id",
+    "{video_id}",
+    "vehicleid",
+    "{vehicleid}",
+    "vehicle_id",
+    "{vehicle_id}",
+    "orderid",
+    "{orderid}",
+    "order_id",
+    "{order_id}",
+    "postid",
+    "{postid}",
+    "post_id",
+    "{post_id}",
+    "reportid",
+    "{reportid}",
+    "report_id",
+    "{report_id}",
+    "userid",
+    "{userid}",
+    "user_id",
+    "{user_id}",
+}
+
 INVALID_OBJECT_MARKERS = (
     "failed to convert",
     "invalid",
@@ -30,7 +57,9 @@ OBJECT_PARAM_MARKERS = (
 class RejectionAnalyzer:
     def is_guessed_object_id(self, value: str | int | None) -> bool:
         normalized = str(value or "").strip().lower()
-        return normalized in GUESSED_OBJECT_IDS
+        if not normalized:
+            return True
+        return normalized in GUESSED_OBJECT_IDS or normalized in PLACEHOLDER_OBJECT_IDS
 
     def classify_auth_failure(
         self,

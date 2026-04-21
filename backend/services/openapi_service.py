@@ -1,165 +1,133 @@
+from __future__ import annotations
+
 import json
-from collections.abc import Mapping
 from typing import Any
 
+import requests
 import yaml
 
 try:
-    from backend.models.recon import EndpointSurface, OpenAPIReconRequest, OpenAPIReconResponse
+    from backend.models.recon import OpenAPIReconRequest, OpenAPIReconResponse
 except ModuleNotFoundError:  # pragma: no cover
-    from models.recon import EndpointSurface, OpenAPIReconRequest, OpenAPIReconResponse
+    from models.recon import OpenAPIReconRequest, OpenAPIReconResponse
 
 
 class OpenAPIService:
     def parse(self, request: OpenAPIReconRequest) -> OpenAPIReconResponse:
-        if request.openapi_spec_text:
-            parsed = self._parse_spec_text(request.openapi_spec_text)
-            endpoints = self._extract_endpoints(parsed)
-            auth_schemes = self._extract_auth_schemes(parsed)
-            schemas = sorted(list((parsed.get("components") or {}).get("schemas", {}).keys()))
-            return OpenAPIReconResponse(
-                target_url=request.target_url,
-                surface_summary=f"Parsed {len(endpoints)} endpoints from provided OpenAPI spec.",
-                endpoints=endpoints,
-                auth_schemes=auth_schemes,
-                schemas=schemas,
-                raw_metadata={"source": "openapi_spec_text"},
-            )
-
-        if request.openapi_url:
-            return OpenAPIReconResponse(
-                target_url=request.target_url,
-                surface_summary="OpenAPI URL was provided. Returning mocked parsed surface for MVP.",
-                endpoints=[
-                    EndpointSurface(
-                        path="/identity/api/v2/vehicle/{id}/location",
-                        methods=["GET"],
-                        auth_required=True,
-                        path_params=["id"],
-                        query_params=[],
-                        body_fields=[],
-                        auth_hints=["bearer"],
-                    ),
-                    EndpointSurface(
-                        path="/community/api/v2/community/posts/recent",
-                        methods=["GET"],
-                        auth_required=True,
-                        path_params=[],
-                        query_params=[],
-                        body_fields=[],
-                        auth_hints=["bearer"],
-                    ),
-                ],
-                auth_schemes=["bearerAuth"],
-                schemas=["VehicleLocation", "Post"],
-                raw_metadata={"source": "openapi_url_stub", "openapi_url": str(request.openapi_url)},
-            )
-
+        spec = self._load_spec(request)
+        endpoints = self._extract_endpoints(spec)
+        info = spec.get("info") if isinstance(spec.get("info"), dict) else {}
         return OpenAPIReconResponse(
             target_url=request.target_url,
-            surface_summary="No OpenAPI input provided. Returning empty surface.",
-            endpoints=[],
-            auth_schemes=[],
-            schemas=[],
-            raw_metadata={"source": "empty_openapi_input"},
+            openapi_url=str(request.openapi_url or ""),
+            title=str(info.get("title") or ""),
+            version=str(info.get("version") or ""),
+            endpoints=endpoints,
+            raw_metadata={
+                "spec_type": "openapi",
+                "openapi_version": str(spec.get("openapi") or spec.get("swagger") or ""),
+                "endpoint_count": len(endpoints),
+            },
         )
 
-    def _parse_spec_text(self, text: str) -> dict[str, Any]:
+    def _load_spec(self, request: OpenAPIReconRequest) -> dict[str, Any]:
+        raw = str(request.openapi_spec_text or "").strip()
+        if not raw:
+            url = str(request.openapi_url or "").strip()
+            if not url:
+                raise ValueError("Either openapi_url or openapi_spec_text must be provided.")
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            raw = response.text
+        parsed: Any
         try:
-            parsed = json.loads(text)
+            parsed = json.loads(raw)
         except json.JSONDecodeError:
-            parsed = yaml.safe_load(text)
-        if not isinstance(parsed, Mapping):
-            raise ValueError("OpenAPI document must parse to an object")
-        return dict(parsed)
+            parsed = yaml.safe_load(raw)
+        if not isinstance(parsed, dict):
+            raise ValueError("OpenAPI document must deserialize to an object.")
+        if not isinstance(parsed.get("paths"), dict):
+            raise ValueError("OpenAPI document does not contain a valid paths object.")
+        return parsed
 
-    def _extract_endpoints(self, parsed: dict[str, Any]) -> list[EndpointSurface]:
-        paths = parsed.get("paths") or {}
-        if not isinstance(paths, Mapping):
-            raise ValueError("OpenAPI paths must be an object")
-
-        endpoints: list[EndpointSurface] = []
-        for path, operations in paths.items():
-            if not isinstance(operations, Mapping):
+    def _extract_endpoints(self, spec: dict[str, Any]) -> list[dict[str, Any]]:
+        endpoints: list[dict[str, Any]] = []
+        methods = {"get", "post", "put", "patch", "delete", "options", "head"}
+        for path, path_item in (spec.get("paths") or {}).items():
+            if not isinstance(path_item, dict):
                 continue
-            methods: list[str] = []
-            path_params = self._extract_path_params(path)
-            query_params: list[str] = []
-            body_fields: list[str] = []
-            auth_hints: list[str] = []
-            auth_required = False
-
-            for method, operation in operations.items():
-                if str(method).lower() not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+            path_level_parameters = path_item.get("parameters") if isinstance(path_item.get("parameters"), list) else []
+            for method, operation in path_item.items():
+                if method.lower() not in methods or not isinstance(operation, dict):
                     continue
-                methods.append(str(method).upper())
-                if not isinstance(operation, Mapping):
-                    continue
-                for parameter in operation.get("parameters") or []:
-                    if not isinstance(parameter, Mapping):
-                        continue
-                    name = str(parameter.get("name") or "")
-                    location = str(parameter.get("in") or "")
-                    if location == "query" and name and name not in query_params:
-                        query_params.append(name)
-                request_body = operation.get("requestBody") or {}
-                if isinstance(request_body, Mapping):
-                    body_fields.extend(self._extract_body_fields(request_body))
-                if operation.get("security"):
-                    auth_required = True
-                    auth_hints.extend(self._extract_auth_names(operation.get("security")))
-
-            endpoints.append(
-                EndpointSurface(
-                    path=str(path),
-                    methods=methods,
-                    auth_required=auth_required,
-                    path_params=sorted(set(path_params)),
-                    query_params=sorted(set(query_params)),
-                    body_fields=sorted(set(body_fields)),
-                    auth_hints=sorted(set(auth_hints)),
+                parameters = list(path_level_parameters) + list(operation.get("parameters") or [])
+                path_params = self._parameter_names(parameters, "path")
+                query_params = self._parameter_names(parameters, "query")
+                body_fields = self._body_fields(operation.get("requestBody"))
+                security = operation.get("security")
+                endpoints.append(
+                    {
+                        "path": str(path),
+                        "method": method.upper(),
+                        "operation_id": str(operation.get("operationId") or ""),
+                        "summary": str(operation.get("summary") or operation.get("description") or ""),
+                        "path_params": path_params,
+                        "query_params": query_params,
+                        "body_fields": body_fields,
+                        "tags": [str(item) for item in list(operation.get("tags") or []) if str(item or "").strip()],
+                        "security_schemes": self._security_schemes(security),
+                        "auth_required": bool(security),
+                    }
                 )
-            )
         return endpoints
 
-    def _extract_path_params(self, path: str) -> list[str]:
-        params: list[str] = []
-        current = ""
-        in_param = False
-        for ch in path:
-            if ch == "{":
-                in_param = True
-                current = ""
-            elif ch == "}":
-                if current:
-                    params.append(current)
-                in_param = False
-            elif in_param:
-                current += ch
-        return params
-
-    def _extract_body_fields(self, request_body: Mapping[str, Any]) -> list[str]:
-        content = request_body.get("content") or {}
-        if not isinstance(content, Mapping):
-            return []
-        for media_type in ["application/json", "multipart/form-data", "application/x-www-form-urlencoded"]:
-            schema = (content.get(media_type) or {}).get("schema") if isinstance(content.get(media_type), Mapping) else None
-            if isinstance(schema, Mapping):
-                properties = schema.get("properties") or {}
-                if isinstance(properties, Mapping):
-                    return [str(name) for name in properties.keys()]
-        return []
-
-    def _extract_auth_names(self, security: Any) -> list[str]:
+    def _parameter_names(self, parameters: list[Any], location: str) -> list[str]:
         names: list[str] = []
-        if isinstance(security, list):
-            for item in security:
-                if isinstance(item, Mapping):
-                    names.extend(str(name) for name in item.keys())
+        for item in parameters:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("in") or "").lower() != location:
+                continue
+            name = str(item.get("name") or "").strip()
+            if name and name not in names:
+                names.append(name)
         return names
 
-    def _extract_auth_schemes(self, parsed: dict[str, Any]) -> list[str]:
-        security_schemes = ((parsed.get("components") or {}).get("securitySchemes") or {})
-        if not isinstance(security_schemes, Mapping):
+    def _body_fields(self, request_body: Any) -> list[str]:
+        if not isinstance(request_body, dict):
             return []
-        return sorted(str(name) for name in security_schemes.keys())
+        content = request_body.get("content")
+        if not isinstance(content, dict):
+            return []
+        for media in content.values():
+            if not isinstance(media, dict):
+                continue
+            schema = media.get("schema")
+            fields = self._schema_fields(schema)
+            if fields:
+                return fields
+        return []
+
+    def _schema_fields(self, schema: Any) -> list[str]:
+        if not isinstance(schema, dict):
+            return []
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            return [str(key) for key in properties.keys()]
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return self._schema_fields(items)
+        return []
+
+    def _security_schemes(self, security: Any) -> list[str]:
+        schemes: list[str] = []
+        if not isinstance(security, list):
+            return schemes
+        for item in security:
+            if not isinstance(item, dict):
+                continue
+            for key in item.keys():
+                name = str(key or "").strip()
+                if name and name not in schemes:
+                    schemes.append(name)
+        return schemes

@@ -3,16 +3,51 @@ import logging
 from fastapi import APIRouter, HTTPException, status
 
 try:
-    from backend.models.discovery import DiscoveryRequest, DiscoveryResponse
+    from backend.models.discovery import DiscoveryRequest, DiscoveryResponse, ZapHealthCheckRequest, ZapHealthCheckResponse
     from backend.services.discovery_service import DiscoveryService
 except ModuleNotFoundError:  # pragma: no cover
-    from models.discovery import DiscoveryRequest, DiscoveryResponse
+    from models.discovery import DiscoveryRequest, DiscoveryResponse, ZapHealthCheckRequest, ZapHealthCheckResponse
     from services.discovery_service import DiscoveryService
 
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["discovery"])
 discovery_service = DiscoveryService()
+
+
+@router.post(
+    "/recon/zap-health-check",
+    response_model=ZapHealthCheckResponse,
+    status_code=status.HTTP_200_OK,
+)
+def zap_health_check(request: ZapHealthCheckRequest) -> ZapHealthCheckResponse:
+    logger.info(
+        "Running ZAP health check target_url=%s zap_base_url=%s",
+        request.target_url,
+        request.zap_base_url,
+    )
+    try:
+        diagnostics = discovery_service.zap_health_check(
+            DiscoveryRequest(
+                target_url=request.target_url,
+                allowed_hosts=request.allowed_hosts,
+                zap_base_url=request.zap_base_url,
+                max_duration_sec=request.max_duration_sec,
+            )
+        )
+        return ZapHealthCheckResponse(**diagnostics)
+    except ValueError as exc:
+        logger.warning("ZAP health check rejected: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_zap_health_check_request", "message": str(exc)},
+        ) from exc
+    except Exception as exc:  # pragma: no cover
+        logger.exception("Unexpected ZAP health check failure")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "zap_health_check_failed", "message": str(exc)},
+        ) from exc
 
 
 @router.post(

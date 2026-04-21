@@ -3,8 +3,10 @@ from urllib.parse import urlparse
 
 try:
     from backend.models.testing import TaskModel
+    from backend.services.auth_finding_classifier import finding_type_label
 except ModuleNotFoundError:  # pragma: no cover
     from models.testing import TaskModel
+    from services.auth_finding_classifier import finding_type_label
 
 
 class TaskFingerprintService:
@@ -15,6 +17,14 @@ class TaskFingerprintService:
             "subtype": str(task.subtype or "").lower(),
             "method": str(task.method or "").upper(),
             "endpoint": self._normalize_endpoint(task.endpoint),
+            "readiness": str(task.readiness or "").lower(),
+            "test_strategy": str(task.test_strategy or "").lower(),
+            "strategy_family": str(task.strategy_family or "").lower(),
+            "payload_family": str(task.payload_family or "").lower(),
+            "resource_family": str(
+                task.resource_family or ((task.context_hints or {}).get("resource_family") if isinstance(task.context_hints, dict) else "") or ""
+            ).lower(),
+            "allowed_tools": sorted(str(item or "").lower() for item in (task.allowed_tools or [])),
         }
 
         if task_class == "authorization":
@@ -26,6 +36,7 @@ class TaskFingerprintService:
             payload["path_params"] = sorted(self._normalize_value(item) for item in task.params.path_params)
             payload["query_params"] = sorted(self._normalize_value(item) for item in task.params.query_params)
             payload["body_fields"] = sorted(self._normalize_value(item) for item in task.params.body_fields)
+            payload["selected_object_id"] = self._normalize_value(task.params.selected_object_id)
             payload["hypothesis"] = self._normalize_value(task.hypothesis)
 
         return self._serialize(payload)
@@ -36,18 +47,26 @@ class TaskFingerprintService:
         endpoint = self._materialized_endpoint(task)
         payload = {
             "vuln_type": vuln_type,
+            "subtype": str(task.subtype or "").lower(),
+            "hypothesis_family": str(task.hypothesis_family or "").lower(),
             "method": str(task.method or "").upper(),
             "endpoint": endpoint,
         }
         selected_object_id = self._normalize_value(task.params.selected_object_id)
         if selected_object_id:
             payload["selected_object_id"] = selected_object_id
+        owner_role = self._normalize_value(task.auth_context.owner_role)
+        other_role = self._normalize_value(task.auth_context.other_role)
+        if owner_role:
+            payload["owner_role"] = owner_role
+        if other_role:
+            payload["other_role"] = other_role
         return self._serialize(payload)
 
     def _finding_type(self, task: TaskModel, verdict: str) -> str:
         task_class = str(task.class_name or "").lower()
         if task_class == "authorization":
-            return "BOLA" if str(task.subtype or "").lower() == "bola" else "AUTHORIZATION"
+            return finding_type_label(str(task.subtype or "").lower())
         if task_class == "business_logic":
             return "BUSINESS_LOGIC"
         if task_class == "injection":
