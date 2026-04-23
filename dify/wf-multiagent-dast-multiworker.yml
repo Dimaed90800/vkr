@@ -3551,7 +3551,7 @@ workflow:
               dispatch_notes = [f'parser_rescue:{attempted_tool or "invalid_worker_payload"}->{tool_name}', f'parser_rescue_reason:{reason}']
               envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': tool_name, 'arguments': arguments}
               if tool_name in WRAPPER_TOOLS:
-                  envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
+                  envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'openapi_spec_text': execution_context.get('openapi_spec_text'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
               reasoning_summary = 'Parser rescue selected a normalized allowed tool after worker payload mismatch. Dispatch notes: ' + ', '.join(dispatch_notes)
               return {'selected_worker': worker_name, 'selected_template': template, 'tool_name': tool_name, 'tool_endpoint': _endpoint(tool_name), 'tool_arguments_json': json.dumps(arguments, ensure_ascii=False), 'success_criteria_json': '[]', 'dispatch_notes_json': json.dumps(dispatch_notes, ensure_ascii=False), 'worker_hypothesis': str(active_task.get('hypothesis') or reason), 'reasoning_summary': reasoning_summary, 'normalized_backend_request_json': json.dumps(envelope, ensure_ascii=False)}
 
@@ -3620,7 +3620,7 @@ workflow:
                   template = _wrapper_template(preferred_tool) if preferred_tool in WRAPPER_TOOLS else template
               envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': tool_name, 'arguments': arguments}
               if tool_name in WRAPPER_TOOLS:
-                  envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
+                  envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'openapi_spec_text': execution_context.get('openapi_spec_text'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
               reasoning_summary = 'Validated strict worker JSON and mapped it to a bounded executor wrapper or legacy tool request.'
               if dispatch_notes:
                   reasoning_summary = reasoning_summary + ' Dispatch notes: ' + ', '.join(dispatch_notes)
@@ -4032,6 +4032,35 @@ workflow:
               return {'classification': 'parser_validation_error', 'indicator': 'parser_validation_error'}
 
 
+          def _wrapper_strong_indicators(signals):
+              strong = {
+                  'no_rate_limit_detected',
+                  'rate_limit_detected',
+                  'repeated_success_without_throttle',
+                  'repeated_429_detected',
+                  'schema_violation',
+                  'server_error_signal',
+                  'workflow_state_bypass',
+                  'invalid_transition_accepted',
+                  'cross_role_workflow_access',
+                  'repeated_sensitive_action_allowed',
+                  'invariant_violation',
+              }
+              return [item for item in (signals or []) if str(item or '').strip() in strong]
+
+
+          def _wrapper_classification_hint(task, wrapper_evidence):
+              existing = str(wrapper_evidence.get('classification_hint') or '').strip()
+              if existing:
+                  return existing
+              task_text = ' '.join(str(task.get(key) or '') for key in ('class', 'subtype', 'hypothesis', 'test_strategy', 'strategy_family', 'hypothesis_family')).lower()
+              if any(needle in task_text for needle in ('rate', 'throttle', 'resource_abuse', 'resource abuse', 'burst')):
+                  return 'unrestricted_resource_consumption'
+              if any(item in set(wrapper_evidence.get('signals') or []) for item in ('workflow_state_bypass', 'invalid_transition_accepted', 'cross_role_workflow_access', 'repeated_sensitive_action_allowed', 'invariant_violation')):
+                  return 'workflow_abuse'
+              return str(task.get('subtype') or task.get('class') or '').strip()
+
+
           def main(active_task_json: str, body: str, worker_hypothesis: str, reasoning_summary: str, current_execution_context_json: str = '', selected_worker: str = '', selected_template: str = '', success_criteria_json: str = '', tool_name: str = '', tool_arguments_json: str = '{}') -> dict:
               try:
                   task = json.loads(active_task_json or '{}')
@@ -4053,10 +4082,34 @@ workflow:
 
               wrapper_evidence = result.get('judge_ready_evidence') if isinstance(result, dict) else None
               if isinstance(wrapper_evidence, dict) and wrapper_evidence:
+                  run_id = str(execution_context.get('run_id') or wrapper_evidence.get('run_id') or '').strip()
+                  root_trace_id = str(execution_context.get('root_trace_id') or run_id).strip()
                   wrapper_evidence.setdefault('task_id', task.get('id'))
                   wrapper_evidence.setdefault('worker_role', selected_worker or task.get('worker_role') or '')
                   wrapper_evidence.setdefault('tool_name', tool_name)
                   wrapper_evidence.setdefault('hypothesis', worker_hypothesis or task.get('hypothesis') or '')
+                  wrapper_evidence.setdefault('run_id', run_id)
+                  wrapper_evidence.setdefault('root_trace_id', root_trace_id)
+                  wrapper_evidence.setdefault('signals', [])
+                  signals = wrapper_evidence.get('signals') if isinstance(wrapper_evidence.get('signals'), list) else []
+                  strong_indicators = wrapper_evidence.get('strong_indicators') if isinstance(wrapper_evidence.get('strong_indicators'), list) else []
+                  if not strong_indicators:
+                      strong_indicators = _wrapper_strong_indicators(signals)
+                      wrapper_evidence['strong_indicators'] = strong_indicators
+                  indicators = wrapper_evidence.get('indicators') if isinstance(wrapper_evidence.get('indicators'), list) else []
+                  if not indicators:
+                      wrapper_evidence['indicators'] = list(dict.fromkeys([*strong_indicators, *signals]))
+                  classification_hint = _wrapper_classification_hint(task, wrapper_evidence)
+                  wrapper_evidence['classification_hint'] = classification_hint
+                  response_summary = wrapper_evidence.get('response_summary') if isinstance(wrapper_evidence.get('response_summary'), dict) else {}
+                  response_summary.setdefault('finding_type_hint', classification_hint)
+                  response_summary.setdefault('evidence_strength', 'sufficient_indicators' if strong_indicators else 'generic_wrapper_output')
+                  response_summary.setdefault('tool_name', wrapper_evidence.get('tool_name') or tool_name)
+                  response_summary.setdefault('signals', signals)
+                  response_summary.setdefault('strong_indicators', strong_indicators)
+                  if isinstance(wrapper_evidence.get('tool_summary'), dict):
+                      response_summary.setdefault('tool_summary', wrapper_evidence.get('tool_summary'))
+                  wrapper_evidence['response_summary'] = response_summary
                   wrapper_evidence.setdefault('notes', [])
                   if isinstance(wrapper_evidence['notes'], list):
                       wrapper_evidence['notes'].append('dify_wrapper_evidence_passthrough')
@@ -5173,6 +5226,11 @@ workflow:
               backend_execution_context = queue_update.get("updated_execution_context")
               backend_enrichment_present = isinstance(backend_execution_context, dict) and bool(backend_execution_context)
               if backend_enrichment_present:
+                  previous_context = state.get("execution_context") or {}
+                  if not str(backend_execution_context.get("openapi_url") or "").strip() and str(previous_context.get("openapi_url") or "").strip():
+                      backend_execution_context["openapi_url"] = previous_context.get("openapi_url")
+                  if not str(backend_execution_context.get("openapi_spec_text") or "").strip() and str(previous_context.get("openapi_spec_text") or "").strip():
+                      backend_execution_context["openapi_spec_text"] = previous_context.get("openapi_spec_text")
                   state["execution_context"] = backend_execution_context
 
               state["budget_used"] = int(state.get("budget_used", 0) or 0) + 1

@@ -53,6 +53,7 @@ class TaskExecutabilityService:
         self.graph_state.add_requirement_edges(context, task)
         resolved_object_id, available_object_ids = self.graph_state.resolve_object_id(task, context)
         auth_available = self.graph_state.auth_context_available(task, context)
+        owner_auth_available = self._role_auth_available(context, str(task.auth_context.owner_role or ""))
         baseline_valid = self._baseline_valid(task)
         success_path_feasibility = float(hints.get("spec_success_path_feasibility") or 0.0)
         workflow_state_available = self.graph_state.workflow_state_available(task, context, resolved_object_id)
@@ -96,7 +97,12 @@ class TaskExecutabilityService:
 
         if prerequisites.requires_auth_context and not auth_available:
             missing.append("missing_auth_context")
-            if not self._is_materialization_strategy(task):
+            if self._is_materialization_strategy(task):
+                if owner_auth_available:
+                    preferred_tool, preferred_strategy = self._object_materialization_path(task, creator_candidates, list_candidates)
+                else:
+                    preferred_tool, preferred_strategy = self._auth_preparation_path(task)
+            else:
                 preferred_tool, preferred_strategy = self._auth_preparation_path(task)
             prep_reason = prep_reason or "missing_auth_context"
 
@@ -106,6 +112,16 @@ class TaskExecutabilityService:
             missing.append("list_not_available")
 
         if prerequisites.requires_object_id and not resolved_object_id:
+            missing.append("object_id_missing")
+            object_tool, object_strategy = self._object_materialization_path(task, creator_candidates, list_candidates)
+            if object_tool:
+                preferred_tool = preferred_tool or object_tool
+                preferred_strategy = preferred_strategy or object_strategy
+                prep_reason = prep_reason or "object_materialization_required"
+            else:
+                prep_reason = prep_reason or "missing_object_materialization_path"
+
+        if self._is_materialization_strategy(task) and not resolved_object_id and "object_id_missing" not in missing:
             missing.append("object_id_missing")
             object_tool, object_strategy = self._object_materialization_path(task, creator_candidates, list_candidates)
             if object_tool:
@@ -145,6 +161,21 @@ class TaskExecutabilityService:
                 prep_reason = prep_reason or "missing_workflow_state"
             else:
                 prep_reason = prep_reason or "missing_workflow_state"
+
+        if self._is_materialization_strategy(task) and resolved_object_id and not missing:
+            return ExecutabilityDecision(
+                executable=True,
+                execution_mode="test",
+                block_reason="object_context_ready",
+                resolved_object_id=resolved_object_id,
+                available_object_ids_count=len(available_object_ids),
+                auth_context_available=auth_available,
+                baseline_valid=baseline_valid,
+                creator_candidate_count=len(creator_candidates),
+                list_candidate_count=len(list_candidates),
+                success_path_feasibility=success_path_feasibility,
+                next_best_followup_strategies=next_strategies,
+            )
 
         if missing:
             can_prepare = bool(preferred_tool and preferred_tool in self._preparation_tool_candidates(task))
@@ -236,7 +267,7 @@ class TaskExecutabilityService:
         )
 
     def prepare_task_for_execution(self, task: TaskModel, decision: ExecutabilityDecision) -> TaskModel:
-        updated = task.model_copy(deep=True)
+        updated = DEFAULT_TASK_TOOLING.mutable_task_copy(task)
         if decision.resolved_object_id and updated.params.selected_object_id in (None, "", "{id}"):
             updated.params.selected_object_id = decision.resolved_object_id
             updated.params.requires_object_id_enrichment = False
@@ -253,9 +284,23 @@ class TaskExecutabilityService:
                 updated.test_strategy = decision.preferred_strategy
                 updated.strategy_family = decision.preferred_strategy
             updated = DEFAULT_TASK_TOOLING.normalize_task(updated)
+            if decision.preferred_tool == "create_test_object" and self._is_materialization_strategy(updated):
+                updated.allowed_tools = ["create_test_object"]
+                updated.preparation_options = ["create_test_object"]
+                updated.recommended_next_step = "create_test_object"
         elif decision.execution_mode == "test":
             updated.readiness = "ready_to_test"
             updated = DEFAULT_TASK_TOOLING.normalize_task(updated)
+            if decision.resolved_object_id and self._is_materialization_strategy(updated):
+                updated.allowed_tools = ["auth_test_access"] if updated.class_name == "authorization" else updated.allowed_tools
+                updated.preparation_options = []
+                if updated.class_name == "authorization":
+                    updated.test_strategy = "object_specific_auth_probe"
+                    updated.strategy_family = "object_materialization"
+                updated = DEFAULT_TASK_TOOLING.normalize_task(updated, explicit_allowed_tools=updated.allowed_tools)
+                if updated.class_name == "authorization":
+                    updated.allowed_tools = ["auth_test_access"]
+                    updated.recommended_next_step = "auth_test_access"
         return updated
 
     def _resolve_object_id(self, task: TaskModel, context: ExecutionContext) -> tuple[str | None, list[str]]:
@@ -318,6 +363,9 @@ class TaskExecutabilityService:
     def _object_materialization_path(self, task: TaskModel, creator_candidates: list[dict[str, Any]], list_candidates: list[dict[str, Any]]) -> tuple[str | None, str | None]:
         tools = self._preparation_tool_candidates(task)
         if "create_test_object" in tools:
+            strategy = str(task.test_strategy or "").strip().lower()
+            if strategy == "list_then_select_object_then_replay":
+                return "create_test_object", "list_then_select_object_then_replay"
             if creator_candidates:
                 return "create_test_object", "create_object_then_replay"
             if list_candidates:
@@ -370,7 +418,14 @@ class TaskExecutabilityService:
     def _preparation_tool_candidates(self, task: TaskModel) -> list[str]:
         values: list[str] = []
         sources: list[str] = []
-        if self._is_materialization_strategy(task):
+        strategy = str(task.test_strategy or "").strip().lower()
+        strategy_family = str(task.strategy_family or "").strip().lower()
+        is_materialization_strategy = (
+            strategy in self.MATERIALIZATION_STRATEGIES
+            or strategy_family in self.MATERIALIZATION_STRATEGIES
+            or (strategy == "object_specific_auth_probe" and not self._real_object_id(task.params.selected_object_id))
+        )
+        if is_materialization_strategy:
             sources.extend([*(task.allowed_tools or []), *(task.preparation_options or [])])
         else:
             sources.extend([*(task.preparation_options or []), *(task.allowed_tools or [])])
@@ -420,13 +475,21 @@ class TaskExecutabilityService:
 
     def _is_materialization_strategy(self, task: TaskModel) -> bool:
         strategy = str(task.test_strategy or "").strip().lower()
+        strategy_family = str(task.strategy_family or "").strip().lower()
         if strategy in self.MATERIALIZATION_STRATEGIES:
+            return True
+        if strategy_family in self.MATERIALIZATION_STRATEGIES:
             return True
         if strategy == "object_specific_auth_probe" and not self._real_object_id(task.params.selected_object_id):
             return True
+        tool_candidates = {
+            str(item or "").strip()
+            for item in [*(task.allowed_tools or []), *(task.preparation_options or [])]
+            if str(item or "").strip()
+        }
         return (
             bool(task.params.requires_object_id_enrichment)
-            and "create_test_object" in self._preparation_tool_candidates(task)
+            and "create_test_object" in tool_candidates
         )
 
     def _is_auth_bootstrap_strategy(self, task: TaskModel) -> bool:
@@ -468,6 +531,43 @@ class TaskExecutabilityService:
         if self.rejection_analyzer.is_guessed_object_id(normalized):
             return None
         return normalized
+
+    def _role_auth_available(self, context: ExecutionContext, role_name: str) -> bool:
+        target = str(role_name or "").strip().lower()
+        if not target:
+            return any(self._has_auth_material(item) for item in (context.roles or []) if isinstance(item, dict))
+        for item in context.roles or []:
+            if not isinstance(item, dict) or not self._has_auth_material(item):
+                continue
+            aliases = self._identity_aliases(item)
+            if target in aliases:
+                return True
+        graph = self.graph_state.ensure_graph(context)
+        for node in graph.get("nodes", {}).values():
+            if not isinstance(node, dict):
+                continue
+            if str(node.get("kind") or "").strip() != "auth_context":
+                continue
+            if not bool(node.get("has_auth_material")):
+                continue
+            aliases = {str(alias or "").strip().lower() for alias in (node.get("aliases") or [])}
+            if target in aliases:
+                return True
+        return False
+
+    def _identity_aliases(self, role: dict[str, Any]) -> set[str]:
+        values: set[str] = set()
+        for key in ("name", "role", "username", "email", "owner_role", "other_role", "label"):
+            value = str(role.get(key) or "").strip().lower()
+            if value:
+                values.add(value)
+        aliases = role.get("aliases")
+        if isinstance(aliases, list):
+            for item in aliases:
+                value = str(item or "").strip().lower()
+                if value:
+                    values.add(value)
+        return values
 
     def _has_auth_material(self, role: dict[str, Any]) -> bool:
         return bool(role.get("token") or role.get("auth_headers") or role.get("cookies"))

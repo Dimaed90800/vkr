@@ -196,6 +196,196 @@ The Dify dispatcher now records scheduler stop context and resolves a final stop
 ```
 
 The reporter also emits a diagnostic `final_stop_reason_resolved` event so one run can show how the final value was chosen. If timeout is truly the final reason and no later scheduler reason exists, the resolved final reason remains `timeout`.
+
+## Auth Bootstrap And Materialization Hardening
+
+The latest bottleneck was not wrapper dispatch. Schemathesis and legacy preparation paths were reachable, but tasks still stalled because auth bootstrap did not reliably produce two reusable identities and object materialization rarely got a usable owner identity.
+
+Auth `auto_provision` now selects register/login operations from OpenAPI first. For each auth candidate it records:
+
+- actual HTTP method
+- supported request content type
+- request body keys
+- required request body keys
+- whether the operation came from OpenAPI, explicit input, discovered endpoints, or fallback path guessing
+
+Fallback path guessing is still present, but OpenAPI-derived operations are ranked first.
+
+Register/login request bodies are now schema-aware. The bootstrapper maps common auth aliases only when compatible with the operation schema:
+
+- `email`
+- `username`
+- `name`
+- `password`
+- `firstName`
+- `lastName`
+- `fullName`
+- `role`
+
+If OpenAPI marks fields as required, the request body is the smallest deterministic body that satisfies those required fields. Unsupported fields are not added to schema-grounded payloads.
+
+Auth `auto_provision` treats an identity as provisioned only when it has reusable auth material:
+
+- bearer token
+- auth headers
+- session cookies
+
+It extracts usable auth from:
+
+- JSON body keys: `token`, `access_token`, `jwt`, `authToken`, nested `data.*`, nested `result.*`, and equivalent nested token fields.
+- Response headers: `Authorization`, `X-Auth-Token`.
+- Cookies from `Set-Cookie`.
+
+It also normalizes aliases so `user_a` and `user_b` can be matched through `name`, `role`, `alias`, `username`, `email`, `owner_role`, or `other_role`. Successful identities are returned in both `provisioned_identities` and `auth_profiles`, so the existing Dify and scheduler context merge paths can reuse them across the run.
+
+Expected auth bootstrap events:
+
+- `auth_provision_start`
+- `auth_provision_register_attempt`
+- `auth_provision_register_result`
+- `auth_provision_identity_created`
+- `auth_provision_login_attempt`
+- `auth_provision_login_result`
+- `auth_provision_token_extracted`
+- `auth_provision_login_success`
+- `auth_provision_finish`
+- `auth_provision_failed`
+
+Stable auth failure reasons:
+
+- `no_register_endpoint`
+- `no_login_endpoint`
+- `registration_failed`
+- `login_failed`
+- `token_missing`
+
+Object materialization now emits explicit start/selection/success/failure events while preserving legacy preparation behavior:
+
+- `object_materialization_start`
+- `object_materialization_creator_selected`
+- `object_materialization_create_success`
+- `object_materialization_list_success`
+- `object_materialization_id_harvested`
+- `object_materialization_finish`
+- `object_materialization_failed`
+
+Stable object materialization failure reasons:
+
+- `no_creator_candidate`
+- `no_list_candidate`
+- `create_failed`
+- `id_not_harvested`
+- `object_not_reusable`
+
+Verify auth bootstrap happened:
+
+```bash
+jq 'select(.event_type | startswith("auth_provision_")) | {event: .event_type, status, reason, counters, artifacts}' logs/dast_runs/<run_id>/events.jsonl
+```
+
+Check that request bodies are schema-compatible without exposing secrets:
+
+```bash
+jq 'select(.event_type=="auth_provision_register_attempt" or .event_type=="auth_provision_login_attempt") | {event: .event_type, endpoint: .artifacts.endpoint, method: .artifacts.method, content_type: .artifacts.content_type, request_body_keys: .artifacts.request_body_keys}' logs/dast_runs/<run_id>/events.jsonl
+```
+
+Every attempted register/login operation now emits an `*_attempt` event before URL validation and HTTP execution, and an `*_result` event after any outcome. Non-2xx responses, request construction errors, execution errors, and token extraction errors are converted into structured result events instead of only surfacing as aggregate `auth_provision_failed`.
+
+Useful failure details in per-attempt logs:
+
+- `unsupported_content_type`
+- `invalid_required_fields`
+- `unexpected_status_code`
+- `request_construction_failed`
+- `request_execution_failed`
+- `token_extraction_failed`
+
+Check where auth was extracted from:
+
+```bash
+jq 'select(.event_type=="auth_provision_token_extracted" or .event_type=="auth_provision_login_result") | {event: .event_type, status, extraction: .artifacts.auth_extraction, reason: .reason}' logs/dast_runs/<run_id>/events.jsonl
+```
+
+Verify `missing_auth_context` should drop:
+
+```bash
+jq '.top_dead_end_reasons.missing_auth_context // 0' logs/dast_runs/<run_id>/summary.json
+jq '.has_multi_role_auth // empty' logs/dast_runs/<run_id>/summary.json
+```
+
+Verify materialization started and succeeded:
+
+```bash
+jq '._materialization_attempts, ._materialization_successes, .object_materialization_success_rate' logs/dast_runs/<run_id>/summary.json
+jq 'select(.event_type | startswith("object_materialization_")) | {event: .event_type, status, reason, counters, artifacts}' logs/dast_runs/<run_id>/events.jsonl
+```
+
+## Auth/Object Bottleneck Tightening (Current Pass)
+
+This pass stayed scoped to auth bootstrap reliability + object-materialization start conditions.
+
+### Why tasks were stalling
+
+- The latest real run (`run-564060d9947d`) had OpenAPI-aware auth selection and per-attempt logs, but still no usable identities:
+  - canonical signup: HTTP 500 duplicate-key error
+  - canonical login: HTTP 401 not registered
+  - `auth_provision_token_extracted=0`
+- Object follow-up tasks then remained blocked by `missing_auth_context`.
+- `_materialization_attempts` / `_materialization_successes` stayed `0`.
+
+### What changed
+
+1. `backend/services/auth_preparation_service.py`
+   - OpenAPI auth operation selection now applies compatibility filtering:
+     - generic bootstrap skips token-only login operations
+     - generic bootstrap skips register operations with unsupported required fields (for example `mechanic_code`)
+   - Auth payload generation now supports multiple schema-aware variants, including OpenAPI example-derived payloads when available.
+
+2. `backend/services/task_executability_service.py`
+   - Materialization strategies no longer dead-end as bare `missing_auth_context`.
+   - If owner auth is missing: preparation prefers `auto_provision`.
+   - If owner auth exists but object id is missing: preparation prefers `create_test_object`.
+   - Materialization strategies now explicitly add `object_id_missing` when unresolved.
+
+### Expected log signals after rerun
+
+- Fewer `invalid_required_fields` auth failures.
+- If OpenAPI includes valid login examples: `auth_provision_token_extracted > 0`.
+- Object-preparation tasks should be routed into preparation tools instead of stalling:
+  - `dispatch_preparation_path_selected` with `delegated_tool=auto_provision` or `create_test_object`
+  - `object_materialization_start` events appearing when owner auth is available
+- Run summary should move off zero materialization metrics on supported targets:
+  - `_materialization_attempts > 0`
+  - `_materialization_successes > 0`
+
+## Schedule Endpoint Hardening
+
+After auth bootstrap began producing usable identities, Dify hit max retries on `POST /v1/schedule/next-task`. The run showed that the scheduler request emitted executability diagnostics but did not reach the next `scheduler_selection`.
+
+The schedule endpoint now emits API-level events:
+
+- `schedule_next_task_start`
+- `schedule_next_task_finish`
+- `schedule_next_task_error`
+
+`TaskScheduler.select_next_task` also no longer calls full `order_queue()` just to return `remaining_tasks`. That repeated full queue evaluation inside a single HTTP request and made the Dify scheduling node fragile. The response now uses a lightweight deterministic sort for remaining tasks; the next loop iteration still performs normal executability checks before selecting a task.
+
+Verify:
+
+```bash
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.event_type=="schedule_next_task_start" or .event_type=="schedule_next_task_finish" or .event_type=="schedule_next_task_error")'
+```
+
+Rate-abuse evidence now emits explicit structured events in addition to `evidence_build_finish`:
+
+- `rate_abuse_signal_derivation`
+- `evidence_strength_assessed`
+
+Verify the judge receives concrete rate-abuse evidence:
+
+```bash
+jq 'select(.event_type=="rate_abuse_signal_derivation" or .event_type=="evidence_strength_assessed") | {event: .event_type, tool: .trace_context.tool_name, extra}' logs/dast_runs/<run_id>/events.jsonl
+```
 - signals include at least one Schemathesis-derived signal such as `5xx`, `schema_violation`, or `negative_test_completed`
 - artifacts include deterministic `stdout.log`, `stderr.log`, and `replay_pack.json`
 
@@ -660,3 +850,117 @@ Why this helps:
 - reduces `missing_auth_context` caused by alias / role lookup drift
 - gives scheduler/executability a real dependency memory for auth/object/workflow state
 - makes object-authorization tasks progress through `auto_provision -> create_test_object -> replay/test` instead of losing one half of the preparation path
+
+
+## Wrapper evidence to judge handoff pass
+
+Diagnosis from `run-086f0da40946` showed Schemathesis wrapper evidence was strong inside `evidence_build_finish`, but judge events still logged `indicators: []` and `classification: null`.
+
+Root cause:
+- `JudgeReadyEvidence` preserved `signals` and `tool_summary`, but did not expose the judge-facing fields used by the Dify judge handoff and scheduler diagnostics:
+  - `strong_indicators`
+  - `indicators`
+  - `classification_hint`
+  - `response_summary.evidence_strength`
+- The Dify wrapper passthrough returned `judge_ready_evidence` as-is, so those missing fields stayed missing.
+
+What changed:
+- `backend/models/tool_wrappers.py`
+  - `JudgeReadyEvidence` now includes `run_id`, `derived_signals`, `strong_indicators`, `indicators`, `classification_hint`, and `response_summary`.
+- `backend/services/evidence_builder_service.py`
+  - Schemathesis rate-abuse evidence now serializes the same strong indicators and tool summary that were already logged.
+  - Rate-abuse wrapper evidence gets `classification_hint=unrestricted_resource_consumption`.
+- `dify/wf-multiagent-dast-multiworker.yml`
+  - wrapper passthrough backfills judge-facing fields if an older backend response lacks them.
+- `backend/services/task_scheduler.py`
+  - queue update now emits judge handoff diagnostics:
+    - `judge_input_source_selected`
+    - `judge_input_built`
+    - `judge_input_wrapper_fields_present`
+    - `judge_input_wrapper_fields_missing`
+- `JUDGE_HANDOFF_DIAGNOSIS.md`
+  - captures the traced field loss and fix.
+
+This does not auto-confirm findings or weaken judge policy. It only makes wrapper-derived evidence visible to the existing judge.
+
+Verification after a Dify run:
+```bash
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.event_type | startswith("judge_input_"))'
+cat logs/dast_runs/<run_id>/judge_events.jsonl | jq 'select(.task_id=="task_business_logic_006")'
+```
+
+
+## Schedule endpoint hardening
+
+Diagnosis from `run-40ea606e08db` showed the current Dify failure was a backend scheduler error:
+
+- Dify reached `/v1/schedule/next-task`.
+- The backend emitted `schedule_next_task_start`.
+- The first two scheduling calls emitted `schedule_next_task_finish`.
+- The third and retried calls emitted `schedule_next_task_error` with `RecursionError`.
+
+What changed:
+
+- `backend/services/task_scheduler.py`
+  - `select_next_task` keeps the lightweight remaining-task ordering introduced for the Dify HTTP path.
+  - `update_queue_after_verdict` now also uses lightweight ordering instead of calling `order_queue()` and re-simulating the full scheduler after every verdict.
+  - scheduler task enrichment and replay construction use bounded mutable task copies.
+- `backend/services/task_tooling_service.py`
+  - added `mutable_task_copy()` to copy only scheduler-mutated fields and avoid recursive deep-copy of arbitrary metadata.
+- `backend/services/task_executability_service.py`
+  - task preparation now uses the bounded mutable copy.
+- `backend/services/followup_task_generation_service.py`
+  - follow-up task cloning now uses the bounded mutable copy.
+- `backend/api/routes_scheduling.py`
+  - `schedule_next_task_error` now includes a secret-safe, bounded `traceback_preview`.
+
+How to verify after restarting/rebuilding toolbox:
+
+```bash
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.event_name=="schedule_next_task_error")'
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.event_name=="schedule_next_task_finish")'
+```
+
+If `schedule_next_task_error` appears again, inspect `artifacts.traceback_preview` in that event.
+
+
+## Object materialization scheduler pass
+
+Diagnosis is captured in `MATERIALIZATION_DIAGNOSIS.md` from run `run-f16b1f041240`.
+
+What the run showed:
+
+- Auth bootstrap worked and produced two usable identities.
+- Materialization follow-up tasks were generated.
+- `_materialization_attempts` and `_materialization_successes` stayed at `0`.
+- No `object_materialization_*` events appeared, so `create_test_object` / list-select execution never started.
+
+Root causes:
+
+- Some materialization follow-ups could lose the hard object-id prerequisite and be treated as direct replay tests before an object id existed.
+- Valid materialization preparation candidates could be skipped after the authorization class test budget was exhausted, even though they were preparation work rather than another authorization test.
+
+What changed:
+
+- `backend/services/followup_task_generation_service.py`
+  - object materialization follow-ups now always keep `requires_object_id_enrichment=true`, `prerequisites.requires_object_id=true`, `readiness=needs_preparation`, and `create_test_object` as the delegated preparation tool.
+- `backend/services/task_executability_service.py`
+  - materialization tasks keep their requested strategy (`create_object_then_replay` vs `list_then_select_object_then_replay`).
+  - if a prepared object id already exists, the task converts to replay-ready auth testing instead of staying in preparation.
+- `backend/services/task_scheduler.py`
+  - executable `create_test_object` materialization preparation can be selected even when the class test budget is exhausted.
+  - that materialization preparation selection does not increment the authorization class test budget.
+
+How to verify after a Dify run:
+
+```bash
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.event_name=="object_materialization_start" or .event_type=="object_materialization_start")'
+cat logs/dast_runs/<run_id>/run_summary.json | jq '{attempts: ._materialization_attempts, successes: ._materialization_successes, stop_reason}'
+cat logs/dast_runs/<run_id>/events.jsonl | jq 'select(.reason.selection_reason=="selected_materialization_preparation_despite_class_budget")'
+```
+
+Expected improvement:
+
+- `object_materialization_start` should appear once a materialization follow-up is selected.
+- `_materialization_attempts` should become non-zero.
+- `_materialization_successes` should become non-zero when the target exposes a usable create or list/select path.

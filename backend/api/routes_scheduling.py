@@ -1,4 +1,5 @@
 import logging
+import traceback
 
 from fastapi import APIRouter, HTTPException, status
 
@@ -31,6 +32,26 @@ task_scheduler = TaskScheduler()
     status_code=status.HTTP_200_OK,
 )
 def schedule_next_task(request: NextTaskRequest) -> NextTaskResponse:
+    run_id = request.scheduler_state.run_id or (request.execution_context.run_id if request.execution_context else None)
+    root_trace_id = request.scheduler_state.root_trace_id or (request.execution_context.root_trace_id if request.execution_context else None) or run_id
+    task_scheduler.diagnostics.emit(
+        event_type="schedule_next_task_start",
+        component="scheduler_api",
+        status="started",
+        summary="Received next-task scheduling request.",
+        run_id=run_id,
+        trace_context=task_scheduler.diagnostics.trace_context(run_id=run_id, root_trace_id=root_trace_id),
+        counters={
+            "pending_task_count": len(request.pending_tasks or []),
+            "class_budget_used_total": sum(int(value or 0) for value in (request.scheduler_state.class_budget_used or {}).values()),
+            "preparation_budget_used": int(request.scheduler_state.preparation_budget_used or 0),
+            "exploration_budget_used": int(request.scheduler_state.exploration_budget_used or 0),
+        },
+        artifacts={
+            "last_executed_class": request.scheduler_state.last_executed_class,
+            "consecutive_class_count": request.scheduler_state.consecutive_class_count,
+        },
+    )
     logger.info(
         "Selecting next task pending_tasks=%s last_class=%s consecutive=%s",
         len(request.pending_tasks),
@@ -50,15 +71,52 @@ def schedule_next_task(request: NextTaskRequest) -> NextTaskResponse:
             response.next_task.class_name if response.next_task else None,
             response.should_stop,
         )
+        task_scheduler.diagnostics.emit(
+            event_type="schedule_next_task_finish",
+            component="scheduler_api",
+            status="ok",
+            summary="Finished next-task scheduling request.",
+            run_id=run_id,
+            trace_context=task_scheduler.diagnostics.trace_context(run_id=run_id, root_trace_id=root_trace_id),
+            reason={"selection_reason": response.selection_reason, "should_stop": response.should_stop},
+            counters={
+                "remaining_task_count": len(response.remaining_tasks or []),
+                "executable_test_task_count": response.executable_test_task_count,
+                "executable_preparation_task_count": response.executable_preparation_task_count,
+            },
+            artifacts={
+                "selected_task_id": response.next_task.id if response.next_task else None,
+                "selected_class": response.next_task.class_name if response.next_task else None,
+            },
+        )
         return response
     except ValueError as exc:
         logger.warning("Next-task scheduling rejected: %s", exc)
+        task_scheduler.diagnostics.emit(
+            event_type="schedule_next_task_error",
+            component="scheduler_api",
+            status="failed",
+            summary="Rejected next-task scheduling request.",
+            run_id=run_id,
+            trace_context=task_scheduler.diagnostics.trace_context(run_id=run_id, root_trace_id=root_trace_id),
+            reason={"error": "invalid_next_task_request", "message": str(exc)},
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_next_task_request", "message": str(exc)},
         ) from exc
     except Exception as exc:  # pragma: no cover
         logger.exception("Unexpected next-task scheduling failure")
+        task_scheduler.diagnostics.emit(
+            event_type="schedule_next_task_error",
+            component="scheduler_api",
+            status="failed",
+            summary="Unexpected next-task scheduling failure.",
+            run_id=run_id,
+            trace_context=task_scheduler.diagnostics.trace_context(run_id=run_id, root_trace_id=root_trace_id),
+            reason={"error": "next_task_failed", "message": str(exc), "exception_type": type(exc).__name__},
+            artifacts={"traceback_preview": "".join(traceback.format_exception(type(exc), exc, exc.__traceback__, limit=8))},
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "next_task_failed", "message": str(exc)},

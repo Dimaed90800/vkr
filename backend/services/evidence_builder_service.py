@@ -41,13 +41,53 @@ class EvidenceBuilderService:
         candidate = self._dedupe_candidate_findings(tool_result.candidate_findings)[0] if tool_result.candidate_findings else {}
         raw_signals = list(dict.fromkeys(tool_result.signals or []))
         schemathesis_enrichment = self._schemathesis_enrichment(task=task, tool_result=tool_result)
+        if schemathesis_enrichment["is_rate_abuse"]:
+            append_run_event(
+                event_name="rate_abuse_signal_derivation",
+                run_id=run_id,
+                task_id=task_id,
+                worker_role=worker_role,
+                tool_name=tool_result.tool_name,
+                status="ok",
+                summary="Derived rate-abuse signals from Schemathesis wrapper output.",
+                counters={
+                    "bounded_burst_count": schemathesis_enrichment["tool_summary"].get("bounded_burst_count", 0),
+                    "success_count": schemathesis_enrichment["tool_summary"].get("success_count", 0),
+                    "client_error_count": schemathesis_enrichment["tool_summary"].get("client_error_count", 0),
+                    "server_error_count": schemathesis_enrichment["tool_summary"].get("server_error_count", 0),
+                },
+                extra={
+                    "derived_signals": schemathesis_enrichment["derived_signals"],
+                    "tool_summary": schemathesis_enrichment["tool_summary"],
+                },
+            )
         signals = list(dict.fromkeys([*raw_signals, *schemathesis_enrichment["derived_signals"]]))
         notes_out = list(notes or [])
         notes_out.extend(schemathesis_enrichment["notes"])
         if candidate and schemathesis_enrichment["tool_summary"]:
             candidate = dict(candidate)
             candidate.setdefault("tool_summary", schemathesis_enrichment["tool_summary"])
+        strong_indicators = self._strong_security_indicators(signals)
+        evidence_strength = self._evidence_strength(
+            wrapper_status=tool_result.status,
+            derived_signals=schemathesis_enrichment["derived_signals"],
+            strong_indicators=strong_indicators,
+        )
+        classification_hint = self._classification_hint(task=task, signals=signals, strong_indicators=strong_indicators)
+        response_summary = {
+            "finding_type_hint": classification_hint,
+            "evidence_strength": evidence_strength,
+            "wrapper_status": tool_result.status,
+            "termination_reason": tool_result.termination_reason,
+            "tool_name": tool_result.tool_name,
+            "signals": signals,
+            "derived_signals": schemathesis_enrichment["derived_signals"],
+            "strong_indicators": strong_indicators,
+            "tool_summary": schemathesis_enrichment["tool_summary"],
+        }
+        indicators = list(dict.fromkeys([*strong_indicators, *signals]))
         evidence = JudgeReadyEvidence(
+            run_id=run_id or "",
             task_id=task.id if task else "",
             source_task_id=tool_result.source_task_id or (task.id if task else ""),
             worker_role=worker_role,
@@ -55,6 +95,11 @@ class EvidenceBuilderService:
             auth_context_name=tool_result.auth_context_name,
             hypothesis=task.hypothesis if task else "",
             signals=signals,
+            derived_signals=schemathesis_enrichment["derived_signals"],
+            strong_indicators=strong_indicators,
+            indicators=indicators,
+            classification_hint=classification_hint,
+            response_summary=response_summary,
             candidate_finding=candidate,
             tool_summary=schemathesis_enrichment["tool_summary"],
             reproduction=tool_result.reproduction.model_dump(mode="json"),
@@ -63,7 +108,21 @@ class EvidenceBuilderService:
             termination_reason=tool_result.termination_reason,
             notes=notes_out,
         )
-        strong_indicators = self._strong_security_indicators(evidence.signals)
+        append_run_event(
+            event_name="evidence_strength_assessed",
+            run_id=run_id,
+            task_id=evidence.task_id or evidence.source_task_id,
+            worker_role=worker_role,
+            tool_name=tool_result.tool_name,
+            status="ok",
+            summary="Assessed judge-ready evidence strength.",
+            extra={
+                "evidence_strength": evidence_strength,
+                "strong_indicators": strong_indicators,
+                "signals_count": len(evidence.signals or []),
+                "is_rate_abuse": schemathesis_enrichment["is_rate_abuse"],
+            },
+        )
         append_run_event(
             event_name="evidence_build_finish",
             run_id=run_id,
@@ -83,12 +142,9 @@ class EvidenceBuilderService:
                 "signals_count": len(evidence.signals or []),
                 "candidate_findings_count": len(tool_result.candidate_findings or []),
                 "derived_signals": schemathesis_enrichment["derived_signals"],
-                "evidence_strength": self._evidence_strength(
-                    wrapper_status=tool_result.status,
-                    derived_signals=schemathesis_enrichment["derived_signals"],
-                    strong_indicators=strong_indicators,
-                ),
+                "evidence_strength": evidence_strength,
                 "strong_indicators": strong_indicators,
+                "classification_hint": classification_hint,
                 "tool_summary": evidence.tool_summary,
             },
         )
@@ -116,7 +172,7 @@ class EvidenceBuilderService:
         tool_result: ToolWrapperResult,
     ) -> dict[str, Any]:
         if not str(tool_result.tool_name or "").startswith("schemathesis_"):
-            return {"derived_signals": [], "tool_summary": {}, "notes": []}
+            return {"derived_signals": [], "tool_summary": {}, "notes": [], "is_rate_abuse": False}
 
         text = self._read_tool_text(tool_result)
         status_counts = self._status_counts(text)
@@ -154,7 +210,8 @@ class EvidenceBuilderService:
         if status_counts["rate_limit_response_count"] >= 2:
             derived.append("repeated_429_detected")
 
-        if self._is_rate_abuse_task(task):
+        is_rate_abuse = self._is_rate_abuse_task(task)
+        if is_rate_abuse:
             repeated_success = status_counts["success_count"] >= 2
             bounded_burst = budget_used >= 2
             if repeated_success and bounded_burst and not status_counts["saw_429"]:
@@ -175,7 +232,7 @@ class EvidenceBuilderService:
         notes = ["schemathesis_evidence_enriched"]
         if not self._strong_security_indicators(derived):
             notes.append("schemathesis_evidence_weak")
-        return {"derived_signals": derived, "tool_summary": tool_summary, "notes": notes}
+        return {"derived_signals": derived, "tool_summary": tool_summary, "notes": notes, "is_rate_abuse": is_rate_abuse}
 
     def _read_tool_text(self, tool_result: ToolWrapperResult) -> str:
         chunks: list[str] = []
@@ -231,6 +288,22 @@ class EvidenceBuilderService:
             "invariant_violation",
         }
         return [signal for signal in signals or [] if signal in strong]
+
+    def _classification_hint(
+        self,
+        *,
+        task: TaskModel | None,
+        signals: list[str],
+        strong_indicators: list[str],
+    ) -> str:
+        if task is not None and self._is_rate_abuse_task(task):
+            return "unrestricted_resource_consumption"
+        signal_set = {str(item or "").strip() for item in [*signals, *strong_indicators] if str(item or "").strip()}
+        if signal_set.intersection({"workflow_state_bypass", "invalid_transition_accepted", "cross_role_workflow_access", "repeated_sensitive_action_allowed", "invariant_violation"}):
+            return "workflow_abuse"
+        if task is not None:
+            return str(task.subtype or task.class_name or "").strip()
+        return ""
 
     def _evidence_strength(
         self,

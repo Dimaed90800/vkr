@@ -254,11 +254,17 @@ class DiagnosticLoggingService:
                 summary[key] = counters.get(key)
         if "top_non_executable_tasks" in (event.get("artifacts") or {}):
             summary["top_non_executable_tasks"] = (event.get("artifacts") or {}).get("top_non_executable_tasks") or []
-        if event_type in {"prep_object_materialization_result", "object_materialization_attempted"}:
+        if event_type in {"prep_object_materialization_result", "object_materialization_attempted", "object_materialization_start"}:
             summary["_materialization_attempts"] = int(summary.get("_materialization_attempts", 0) or 0) + 1
-        if event_type in {"prep_object_materialization_result", "object_materialization_succeeded"}:
+        if event_type in {
+            "prep_object_materialization_result",
+            "object_materialization_succeeded",
+            "object_materialization_create_success",
+            "object_materialization_list_success",
+            "object_materialization_finish",
+        }:
             harvested = int((counters or {}).get("total_materialized_objects") or 0)
-            if event_type == "object_materialization_succeeded" or harvested > 0:
+            if event_type in {"object_materialization_succeeded", "object_materialization_create_success", "object_materialization_list_success"} or harvested > 0:
                 summary["_materialization_successes"] = int(summary.get("_materialization_successes", 0) or 0) + 1
         if event_type == "baseline_validation_result":
             summary["_baseline_validation_total"] = int(summary.get("_baseline_validation_total", 0) or 0) + 1

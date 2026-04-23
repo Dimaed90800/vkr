@@ -246,3 +246,6 @@ def test_schemathesis_rate_abuse_evidence_adds_concrete_indicators(tmp_path: Pat
     assert evidence.tool_summary["saw_429"] is False
     assert evidence.tool_summary["bounded_burst_count"] == 3
     assert evidence.candidate_finding["tool_summary"]["success_count"] == 3
+    events = (tmp_path / "diagnostic_logs" / "run-rate-abuse" / "events.jsonl").read_text(encoding="utf-8")
+    assert "rate_abuse_signal_derivation" in events
+    assert "evidence_strength_assessed" in events

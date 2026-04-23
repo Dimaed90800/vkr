@@ -1,8 +1,10 @@
 import ipaddress
 import json
 import os
+import re
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 from urllib.request import urlopen
@@ -116,39 +118,106 @@ class AuthPreparationService:
         identity_count = max(1, min(int(args.get("identity_count") or 2), 2))
         register_method = str(args.get("register_method") or "POST").upper()
         login_method = str(args.get("login_method") or "POST").upper()
-        register_endpoints = self._best_auth_endpoint_candidates(
+        register_operations = self._best_auth_operations(
             request=request,
             endpoint_type="register",
             explicit_endpoint=args.get("register_endpoint"),
+            explicit_method=register_method,
         )
-        login_endpoints = self._best_auth_endpoint_candidates(
+        login_operations = self._best_auth_operations(
             request=request,
             endpoint_type="login",
             explicit_endpoint=args.get("login_endpoint"),
+            explicit_method=login_method,
         )
+        openapi_spec_text = self._spec_text_for_request(request)
+        openapi_context = {
+            "has_openapi_url": bool(str(request.execution_context.openapi_url or "").strip()),
+            "has_openapi_spec_text": bool(str(request.execution_context.openapi_spec_text or "").strip()),
+            "has_resolved_openapi_spec_text": bool(str(openapi_spec_text or "").strip()),
+        }
+        if openapi_context["has_openapi_spec_text"]:
+            openapi_context["source_of_openapi_context"] = "execution_context.openapi_spec_text"
+        elif openapi_context["has_openapi_url"] and openapi_context["has_resolved_openapi_spec_text"]:
+            openapi_context["source_of_openapi_context"] = "execution_context.openapi_url"
+        elif openapi_context["has_openapi_url"]:
+            openapi_context["source_of_openapi_context"] = "execution_context.openapi_url_unreadable"
+        else:
+            openapi_context["source_of_openapi_context"] = "missing"
+        self._emit_prep_event(
+            request=request,
+            event_type="auth_openapi_context_received" if openapi_context["has_resolved_openapi_spec_text"] else "auth_openapi_context_missing",
+            status="ok" if openapi_context["has_resolved_openapi_spec_text"] else "partial",
+            summary="Auth preparation inspected OpenAPI context.",
+            artifacts=openapi_context,
+        )
+        register_endpoints = [str(item.get("path") or "") for item in register_operations if str(item.get("path") or "")]
+        login_endpoints = [str(item.get("path") or "") for item in login_operations if str(item.get("path") or "")]
         identities = [self._build_identity_seed(request, index) for index in range(identity_count)]
 
+        self._emit_prep_event(
+            request=request,
+            event_type="auth_provision_start",
+            status="ok",
+            summary="Starting auth auto-provision bootstrap.",
+            counters={"identity_count": identity_count},
+            artifacts={
+                **openapi_context,
+                "register_endpoint_candidates": self._operation_log_items(register_operations[:5]),
+                "login_endpoint_candidates": self._operation_log_items(login_operations[:5]),
+            },
+        )
         register_attempts: list[dict[str, Any]] = []
         login_attempts: list[dict[str, Any]] = []
         provisioned: list[dict[str, Any]] = []
         register_success_total = 0
         login_success_total = 0
+        usable_identity_total = 0
+        failure_reasons: list[str] = []
 
         register_endpoint_used = ""
         login_endpoint_used = ""
-        registration_available = bool(register_endpoints)
-        registration_unavailable_reason = None if registration_available else "register_endpoint_unavailable"
+        registration_available = bool(register_operations)
+        login_available = bool(login_operations)
+        registration_unavailable_reason = None if registration_available else "no_register_endpoint"
+        login_unavailable_reason = None if login_available else "no_login_endpoint"
+        if registration_unavailable_reason:
+            failure_reasons.append(registration_unavailable_reason)
+        if login_unavailable_reason:
+            failure_reasons.append(login_unavailable_reason)
 
         for identity in identities:
             if registration_available:
                 register_result, register_endpoint_used = await self._attempt_registration(
                     request=request,
                     identity=identity,
-                    method=register_method,
-                    endpoint_candidates=register_endpoints,
+                    endpoint_type="register",
+                    operations=register_operations,
                 )
                 if self._is_success(register_result.status_code):
                     register_success_total += 1
+                    registration_identity = self._authenticated_identity_from_result(
+                        identity,
+                        register_result,
+                        fallback_cookies={},
+                    )
+                    self._emit_prep_event(
+                        request=request,
+                        event_type="auth_provision_identity_created",
+                        status="success",
+                        summary=f"Created auth identity {identity['name']}.",
+                        artifacts={
+                            "identity_name": identity["name"],
+                            "role": identity.get("role"),
+                            "aliases": identity.get("aliases") or [],
+                            "endpoint": register_endpoint_used,
+                            "status_code": register_result.status_code,
+                        },
+                    )
+                else:
+                    registration_identity = dict(identity)
+                    if register_result.error or register_result.status_code is not None:
+                        failure_reasons.append("registration_failed")
             else:
                 register_result = HttpExecutionResult(
                     method=register_method,
@@ -157,8 +226,9 @@ class AuthPreparationService:
                     headers={},
                     body_text="",
                     elapsed_ms=None,
-                    error="register_endpoint_unavailable",
+                    error="no_register_endpoint",
                 )
+                registration_identity = dict(identity)
             register_attempts.append(
                 {
                     "identity_name": identity["name"],
@@ -168,13 +238,25 @@ class AuthPreparationService:
                 }
             )
 
-            login_result, login_endpoint_used, authenticated_identity = await self._attempt_login(
-                request=request,
-                identity=identity,
-                method=login_method,
-                endpoint_candidates=login_endpoints,
-                fallback_cookies=self._extract_cookies(register_result.headers),
-            )
+            if login_available:
+                login_result, login_endpoint_used, authenticated_identity = await self._attempt_login(
+                    request=request,
+                    identity=identity,
+                    endpoint_type="login",
+                    operations=login_operations,
+                    fallback_cookies=self._extract_cookies(register_result.headers),
+                )
+            else:
+                login_result = HttpExecutionResult(
+                    method=login_method,
+                    url="",
+                    status_code=None,
+                    headers={},
+                    body_text="",
+                    elapsed_ms=None,
+                    error="no_login_endpoint",
+                )
+                authenticated_identity = registration_identity
             login_attempts.append(
                 {
                     "identity_name": identity["name"],
@@ -183,28 +265,83 @@ class AuthPreparationService:
                     "error": login_result.error,
                 }
             )
-            if self._is_success(login_result.status_code):
+            login_succeeded = self._is_success(login_result.status_code)
+            if login_succeeded and self._has_auth_material(authenticated_identity):
                 login_success_total += 1
+                self._emit_prep_event(
+                    request=request,
+                    event_type="auth_provision_login_success",
+                    status="success",
+                    summary=f"Authenticated provisioned identity {identity['name']}.",
+                    artifacts={
+                        "identity_name": identity["name"],
+                        "role": authenticated_identity.get("role"),
+                        "aliases": authenticated_identity.get("aliases") or [],
+                        "endpoint": login_endpoint_used,
+                        "status_code": login_result.status_code,
+                        "auth_material": self._auth_material_summary(authenticated_identity),
+                    },
+                )
+            elif login_succeeded and not self._has_auth_material(authenticated_identity):
+                failure_reasons.append("token_missing")
+            elif login_available and (login_result.error or login_result.status_code is not None):
+                failure_reasons.append("login_failed")
 
-            if self._is_success(register_result.status_code) or self._is_success(login_result.status_code):
+            if not self._has_auth_material(authenticated_identity) and self._has_auth_material(registration_identity):
+                authenticated_identity = registration_identity
+
+            if self._has_auth_material(authenticated_identity):
+                authenticated_identity = self._normalize_provisioned_identity(authenticated_identity, identity)
                 provisioned.append(authenticated_identity)
+                usable_identity_total += 1
 
         raw_status = self._aggregate_status(
             expected_total=identity_count,
             register_success_total=register_success_total,
-            login_success_total=login_success_total,
+            login_success_total=usable_identity_total,
         )
         indicators = []
-        if login_success_total >= 2:
+        if usable_identity_total >= 2:
             indicators.append("auto_provision_success")
         elif provisioned:
             indicators.append("auto_provision_partial")
         else:
             indicators.append("auto_provision_failed")
         if not registration_available:
-            indicators.append("register_endpoint_unavailable")
+            indicators.append("no_register_endpoint")
+        if not login_available:
+            indicators.append("no_login_endpoint")
+        for reason in dict.fromkeys(failure_reasons):
+            if reason and reason not in indicators:
+                indicators.append(reason)
         if self.playwright_runner_url:
             indicators.append("playwright_runner_available")
+        finish_status = "success" if usable_identity_total >= identity_count else "partial" if usable_identity_total else "failed"
+        finish_event = "auth_provision_finish" if usable_identity_total else "auth_provision_failed"
+        self._emit_prep_event(
+            request=request,
+            event_type=finish_event,
+            status=finish_status,
+            summary=f"Auth auto-provision finished with {usable_identity_total}/{identity_count} usable identities.",
+            reason={"failure_reasons": list(dict.fromkeys(failure_reasons))},
+            counters={
+                "identity_count": identity_count,
+                "usable_identity_total": usable_identity_total,
+                "login_success_total": login_success_total,
+                "register_success_total": register_success_total,
+            },
+            artifacts={
+                "provisioned_roles": [
+                    {
+                        "name": item.get("name"),
+                        "role": item.get("role"),
+                        "aliases": item.get("aliases") or [],
+                        "auth_material": self._auth_material_summary(item),
+                    }
+                    for item in provisioned
+                ],
+            },
+        )
 
         return ToolTestResponse(
             request_summary={
@@ -219,16 +356,21 @@ class AuthPreparationService:
                 "provisioned_identity_total": len(provisioned),
                 "login_success_total": login_success_total,
                 "register_success_total": register_success_total,
+                "usable_identity_total": usable_identity_total,
                 "registration_available": registration_available,
+                "login_available": login_available,
                 "registration_unavailable_reason": registration_unavailable_reason,
-                "register_endpoint_candidates": register_endpoints[:5],
-                "login_endpoint_candidates": login_endpoints[:5],
+                "login_unavailable_reason": login_unavailable_reason,
+                "failure_reasons": list(dict.fromkeys(failure_reasons)),
+                "register_endpoint_candidates": self._operation_log_items(register_operations[:5]),
+                "login_endpoint_candidates": self._operation_log_items(login_operations[:5]),
             },
             raw_status=raw_status,
             indicators=indicators,
             identities=provisioned,
             artifacts=[
                 Artifact(type="provisioned_identities", value=provisioned),
+                Artifact(type="auth_profiles", value=provisioned),
                 Artifact(
                     type="preparation_context",
                     value={
@@ -249,13 +391,31 @@ class AuthPreparationService:
         create_method = str(args.get("create_method") or "POST").upper()
         create_endpoint = str(args.get("create_endpoint") or "").strip()
         fallback_body = args.get("fallback_body")
+        self._emit_prep_event(
+            request=request,
+            event_type="object_materialization_start",
+            status="ok",
+            summary="Starting object materialization.",
+            artifacts={
+                "create_endpoint": create_endpoint,
+                "create_method": create_method,
+                "resource_family": self._object_type(request.task.endpoint),
+            },
+        )
 
         if not owner_identity:
             self._emit_prep_event(
                 request=request,
-                event_type="prep_object_materialization_failed",
+                event_type="object_materialization_failed",
                 status="failed",
                 summary="Object materialization failed because no owner identity was available.",
+                reason={"failure_reason": "missing_owner_identity"},
+            )
+            self._emit_prep_event(
+                request=request,
+                event_type="object_materialization_finish",
+                status="failed",
+                summary="Object materialization finished without a reusable owner identity.",
                 reason={"failure_reason": "missing_owner_identity"},
             )
             return ToolTestResponse(
@@ -286,9 +446,27 @@ class AuthPreparationService:
         failure_reason = str(materialized.get("failure_reason") or "")
         self._emit_prep_event(
             request=request,
-            event_type="prep_object_materialization_result",
+            event_type="object_materialization_finish",
             status="success" if object_id else "partial" if getattr(result, "status_code", None) else "failed",
             summary=f"Object materialization finished for family={materialized.get('resource_family') or ''}.",
+            reason={"failure_reason": failure_reason or None},
+            counters={
+                "harvested_object_id_count": len(harvested_ids),
+                "harvested_link_count": len(harvested_links),
+                "total_materialized_objects": 1 if object_id else 0,
+            },
+            artifacts={
+                "resource_family": materialized.get("resource_family"),
+                "create_endpoint": create_endpoint,
+                "harvested_object_ids": harvested_ids[:5],
+                "harvested_links": harvested_links[:5],
+            },
+        )
+        self._emit_prep_event(
+            request=request,
+            event_type="prep_object_materialization_result",
+            status="success" if object_id else "partial" if getattr(result, "status_code", None) else "failed",
+            summary=f"Object materialization legacy result for family={materialized.get('resource_family') or ''}.",
             reason={"failure_reason": failure_reason or None},
             counters={
                 "harvested_object_id_count": len(harvested_ids),
@@ -326,7 +504,7 @@ class AuthPreparationService:
                 "action": "create_test_object",
                 "create_endpoint": request_url,
                 "create_method": create_method,
-                "owner_identity_name": created_object["owner_identity_name"],
+                "owner_identity_name": str(owner_identity.get("name") or "owner"),
             },
             response_summary={
                 "status_code": getattr(result, "status_code", None),
@@ -388,6 +566,17 @@ class AuthPreparationService:
         )
         self._emit_prep_event(
             request=request,
+            event_type="object_materialization_start",
+            status="ok",
+            summary="Starting deterministic object materialization path.",
+            artifacts={
+                "target_endpoint": target_endpoint,
+                "target_method": request.task.method,
+                "resource_family": support.get("resource_family") or self._object_type(target_endpoint),
+            },
+        )
+        self._emit_prep_event(
+            request=request,
             event_type="prep_baseline_synthesized",
             status="ok",
             summary="Generated spec-driven baseline/materialization support.",
@@ -414,6 +603,22 @@ class AuthPreparationService:
                     "candidate_paths": [],
                     "selected_candidate": reused["source"],
                 },
+            )
+            self._emit_prep_event(
+                request=request,
+                event_type="object_materialization_id_harvested",
+                status="success",
+                summary=f"Object materialization reused existing object id for family={resource_family}.",
+                counters={"total_materialized_objects": 1, "total_harvested_ids": len(reused['harvested_object_ids'])},
+                artifacts={"resource_family": resource_family, "object_id": reused["object_id"], "source": reused["source"]},
+            )
+            self._emit_prep_event(
+                request=request,
+                event_type="object_materialization_finish",
+                status="success",
+                summary=f"Object materialization reused existing object id for family={resource_family}.",
+                counters={"total_materialized_objects": 1, "total_harvested_ids": len(reused['harvested_object_ids'])},
+                artifacts={"resource_family": resource_family, "object_id": reused["object_id"], "source": reused["source"]},
             )
             self._emit_prep_event(
                 request=request,
@@ -475,6 +680,22 @@ class AuthPreparationService:
             if harvested_from_list["object_id"]:
                 self._emit_prep_event(
                     request=request,
+                    event_type="object_materialization_list_success",
+                    status="success",
+                    summary=f"List-based object materialization succeeded for family={resource_family}.",
+                    counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested_from_list['harvested_object_ids'])},
+                    artifacts={"resource_family": resource_family, "object_id": harvested_from_list["object_id"], "source": "harvested_from_list"},
+                )
+                self._emit_prep_event(
+                    request=request,
+                    event_type="object_materialization_finish",
+                    status="success",
+                    summary=f"List-based object materialization finished for family={resource_family}.",
+                    counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested_from_list['harvested_object_ids'])},
+                    artifacts={"resource_family": resource_family, "object_id": harvested_from_list["object_id"], "source": "harvested_from_list"},
+                )
+                self._emit_prep_event(
+                    request=request,
                     event_type="object_materialization_succeeded",
                     status="success",
                     summary=f"List-based object materialization succeeded for family={resource_family}.",
@@ -521,6 +742,13 @@ class AuthPreparationService:
         for candidate in create_candidates[:3]:
             candidate_path = str(candidate.get("path") or "").strip()
             candidate_method = str(candidate.get("method") or explicit_create_method or "POST").upper()
+            self._emit_prep_event(
+                request=request,
+                event_type="object_materialization_creator_selected",
+                status="ok",
+                summary=f"Selected creator candidate {candidate_method} {candidate_path}.",
+                artifacts={"resource_family": resource_family, "candidate_path": candidate_path, "candidate_method": candidate_method},
+            )
             self._emit_prep_event(
                 request=request,
                 event_type="creator_candidate_selected",
@@ -577,11 +805,35 @@ class AuthPreparationService:
                 replay_path_params = self._replay_path_params(request, target_endpoint, object_id)
                 self._emit_prep_event(
                     request=request,
+                    event_type="object_materialization_id_harvested",
+                    status="success",
+                    summary=f"Materialized object id for family={resource_family}.",
+                    counters={"harvested_object_id_count": len(harvested["harvested_object_ids"])},
+                    artifacts={"resource_family": resource_family, "harvested_object_ids": harvested["harvested_object_ids"][:5]},
+                )
+                self._emit_prep_event(
+                    request=request,
                     event_type="harvested_object_id_propagated",
                     status="success",
                     summary=f"Materialized object id for family={resource_family}.",
                     counters={"harvested_object_id_count": len(harvested["harvested_object_ids"])},
                     artifacts={"resource_family": resource_family, "harvested_object_ids": harvested["harvested_object_ids"][:5]},
+                )
+                self._emit_prep_event(
+                    request=request,
+                    event_type="object_materialization_create_success",
+                    status="success",
+                    summary=f"Create-based object materialization succeeded for family={resource_family}.",
+                    counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested['harvested_object_ids'])},
+                    artifacts={"resource_family": resource_family, "object_id": object_id, "source": "harvested_from_create"},
+                )
+                self._emit_prep_event(
+                    request=request,
+                    event_type="object_materialization_finish",
+                    status="success",
+                    summary=f"Object materialization finished for family={resource_family}.",
+                    counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested['harvested_object_ids'])},
+                    artifacts={"resource_family": resource_family, "object_id": object_id, "source": "harvested_from_create"},
                 )
                 self._emit_prep_event(
                     request=request,
@@ -607,25 +859,37 @@ class AuthPreparationService:
                     "source": "harvested_from_create",
                 }
             if last_result.status_code in {400, 422}:
-                failure_reason = synthesis.get("structured_failure_reason") or "success_path_not_reachable"
+                failure_reason = self._stable_materialization_failure(synthesis.get("structured_failure_reason") or "success_path_not_reachable")
             elif not self._is_success(last_result.status_code):
-                failure_reason = "object_creation_failed" if create_candidates else "creator_not_available"
+                failure_reason = "create_failed" if create_candidates else "no_creator_candidate"
             elif self._is_success(last_result.status_code):
-                failure_reason = "object_harvest_failed" if list_candidates else "list_not_available"
+                failure_reason = "id_not_harvested" if list_candidates else "no_list_candidate"
 
         harvested = self.baseline_synthesis.harvest_response(last_result.json_body(), last_result.headers)
         harvested = self._merge_harvested_candidates(harvested, last_result.json_body())
         if not create_candidates and not list_candidates:
-            failure_reason = "materialization_failed"
+            failure_reason = "object_not_reusable"
         elif not create_candidates:
-            failure_reason = "creator_not_available"
+            failure_reason = "no_creator_candidate"
         elif self._is_success(last_result.status_code) and not harvested["harvested_object_ids"]:
-            failure_reason = "object_id_missing" if list_candidates else "list_not_available"
+            failure_reason = "id_not_harvested" if list_candidates else "no_list_candidate"
         self._emit_prep_event(
             request=request,
             event_type="object_materialization_failed",
             status="failed",
             summary=f"Object materialization failed for family={resource_family}.",
+            reason={"failure_reason": failure_reason},
+            artifacts={
+                "resource_family": resource_family,
+                "strategy": "create_then_harvest" if create_candidates else "list_then_select" if list_candidates else "reuse_harvested",
+                "create_endpoint": create_candidates[0]['path'] if create_candidates else "",
+            },
+        )
+        self._emit_prep_event(
+            request=request,
+            event_type="object_materialization_finish",
+            status="failed",
+            summary=f"Object materialization finished without reusable object for family={resource_family}.",
             reason={"failure_reason": failure_reason},
             artifacts={
                 "resource_family": resource_family,
@@ -690,6 +954,14 @@ class AuthPreparationService:
                 if value and value not in harvested_links:
                     harvested_links.append(value)
             if harvested_object_ids:
+                self._emit_prep_event(
+                    request=request,
+                    event_type="object_materialization_id_harvested",
+                    status="success",
+                    summary=f"Harvested object ids from list candidate for family={resource_family}.",
+                    counters={"harvested_object_id_count": len(harvested_object_ids)},
+                    artifacts={"resource_family": resource_family, "harvested_object_ids": harvested_object_ids[:5], "harvested_links": harvested_links[:5]},
+                )
                 self._emit_prep_event(
                     request=request,
                     event_type="harvested_object_id_propagated",
@@ -764,6 +1036,208 @@ class AuthPreparationService:
                     values.append(path)
         return values
 
+    def _best_auth_operations(
+        self,
+        *,
+        request: ToolTestRequest,
+        endpoint_type: str,
+        explicit_endpoint: Any = None,
+        explicit_method: str = "POST",
+    ) -> list[dict[str, Any]]:
+        operations: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        openapi_operations = self._openapi_auth_operations(request, endpoint_type)
+        for item in openapi_operations:
+            key = (str(item.get("path") or ""), str(item.get("method") or "").upper())
+            if key not in seen:
+                seen.add(key)
+                operations.append(item)
+        explicit = str(explicit_endpoint or "").strip()
+        if explicit:
+            item = self._operation_from_path(
+                request=request,
+                endpoint_type=endpoint_type,
+                path=explicit,
+                method=str(explicit_method or "POST").upper(),
+                source="explicit",
+            )
+            key = (str(item.get("path") or ""), str(item.get("method") or "").upper())
+            if key not in seen:
+                seen.add(key)
+                operations.append(item)
+        # If we have canonical OpenAPI operations, keep auth bootstrap bounded to those.
+        if openapi_operations:
+            selected = self._compatible_auth_operations(operations, endpoint_type=endpoint_type)[:5]
+            if not selected:
+                selected = operations[:5]
+            for item in selected:
+                self._emit_auth_operation_selected(request, endpoint_type=endpoint_type, operation=item)
+            return selected
+        for path in [
+            *self._discovered_endpoints(request, endpoint_type),
+            *self._backend_known_auth_endpoints(request, endpoint_type),
+            *(self.COMMON_REGISTER_ENDPOINTS if endpoint_type == "register" else self.COMMON_LOGIN_ENDPOINTS),
+        ]:
+            item = self._operation_from_path(
+                request=request,
+                endpoint_type=endpoint_type,
+                path=path,
+                method=str(explicit_method or "POST").upper(),
+                source="fallback",
+            )
+            key = (str(item.get("path") or ""), str(item.get("method") or "").upper())
+            if key not in seen:
+                seen.add(key)
+                operations.append(item)
+        selected = self._compatible_auth_operations(operations, endpoint_type=endpoint_type)[:5]
+        if not selected:
+            selected = operations[:5]
+        if selected:
+            for item in selected:
+                self._emit_auth_operation_selected(request, endpoint_type=endpoint_type, operation=item)
+        else:
+            self._emit_prep_event(
+                request=request,
+                event_type="auth_operation_selection_failed",
+                status="failed",
+                summary=f"Auth operation selection failed for {endpoint_type}.",
+                reason={"failure_reason": f"no_{endpoint_type}_operation_selected"},
+                artifacts={"endpoint_type": endpoint_type},
+            )
+        return selected
+
+    def _compatible_auth_operations(
+        self,
+        operations: list[dict[str, Any]],
+        *,
+        endpoint_type: str,
+    ) -> list[dict[str, Any]]:
+        compatible: list[dict[str, Any]] = []
+        for item in operations:
+            if self._is_auth_operation_compatible(item, endpoint_type=endpoint_type):
+                compatible.append(item)
+        return compatible
+
+    def _is_auth_operation_compatible(self, operation: Mapping[str, Any], *, endpoint_type: str) -> bool:
+        required_fields = [str(item or "").strip() for item in (operation.get("required_body_keys") or []) if str(item or "").strip()]
+        body_fields = [str(item or "").strip() for item in (operation.get("request_body_keys") or []) if str(item or "").strip()]
+        if endpoint_type == "register":
+            if any(not self._is_supported_register_field(item) for item in required_fields):
+                return False
+            normalized_all = {self._normalize_auth_field_name(item) for item in [*required_fields, *body_fields] if item}
+            has_password = any("password" in item for item in normalized_all)
+            has_principal = any(item in {"email", "username", "user", "login"} or "email" in item or "username" in item for item in normalized_all)
+            return has_password and has_principal
+        normalized_required = {self._normalize_auth_field_name(item) for item in required_fields}
+        normalized_all = {self._normalize_auth_field_name(item) for item in [*required_fields, *body_fields] if item}
+        has_token_only = bool(normalized_required) and all("token" in item for item in normalized_required)
+        if has_token_only:
+            return False
+        has_password = any("password" in item for item in normalized_all)
+        has_principal = any(item in {"email", "username", "user", "login"} or "email" in item or "username" in item for item in normalized_all)
+        return has_password and has_principal
+
+    def _is_supported_register_field(self, field_name: str) -> bool:
+        normalized = self._normalize_auth_field_name(field_name)
+        if normalized in {
+            "email",
+            "username",
+            "password",
+            "name",
+            "firstname",
+            "lastname",
+            "fullname",
+            "role",
+            "number",
+            "phone",
+            "mobile",
+        }:
+            return True
+        return normalized.endswith("_name")
+
+    def _normalize_auth_field_name(self, value: str) -> str:
+        return str(value or "").strip().lower().replace("-", "_")
+
+    def _openapi_auth_operations(self, request: ToolTestRequest, endpoint_type: str) -> list[dict[str, Any]]:
+        spec_text = str(self._spec_text_for_request(request) or "").strip()
+        if not spec_text:
+            return []
+        document = self.baseline_synthesis._parse_spec_text(spec_text)
+        paths = document.get("paths") or {}
+        if not isinstance(paths, Mapping):
+            return []
+        ranked: list[tuple[int, dict[str, Any]]] = []
+        for path, path_item in paths.items():
+            if not isinstance(path_item, Mapping):
+                continue
+            path_value = str(path or "").strip()
+            if not path_value or self._endpoint_type_from_path(path_value) != endpoint_type:
+                continue
+            for method, operation in path_item.items():
+                method_upper = str(method or "").upper()
+                if method_upper not in {"POST", "PUT", "PATCH"} or not isinstance(operation, Mapping):
+                    continue
+                item = self._operation_from_path(
+                    request=request,
+                    endpoint_type=endpoint_type,
+                    path=path_value,
+                    method=method_upper,
+                    source="openapi",
+                    operation=operation,
+                    document=document,
+                )
+                ranked.append((self._auth_path_score(path_value) + (5 if item.get("request_body_keys") else 0), item))
+        ranked.sort(key=lambda pair: (-pair[0], len(str(pair[1].get("path") or ""))))
+        return [item for _, item in ranked[:5]]
+
+    def _operation_from_path(
+        self,
+        *,
+        request: ToolTestRequest,
+        endpoint_type: str,
+        path: str,
+        method: str,
+        source: str,
+        operation: Mapping[str, Any] | None = None,
+        document: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        spec_text = self._spec_text_for_request(request)
+        operation_obj = operation or self.baseline_synthesis.find_operation(spec_text, path, method)
+        document_obj = document or (operation_obj or {}).get("_document") or self.baseline_synthesis._parse_spec_text(spec_text)
+        schema: Mapping[str, Any] = {}
+        media_type = "application/json"
+        required: list[str] = []
+        request_body_keys: list[str] = []
+        if isinstance(operation_obj, Mapping):
+            schema_raw, media = self.baseline_synthesis._request_schema(operation_obj, document_obj, include_media=True)
+            schema = schema_raw if isinstance(schema_raw, Mapping) else {}
+            media_type = str(media or "application/json")
+            required = [str(item) for item in (schema.get("required") or []) if str(item).strip()]
+            request_body_keys = self.baseline_synthesis._schema_property_names(schema)
+        return {
+            "path": str(path or "").strip(),
+            "method": str(method or "POST").upper(),
+            "content_type": media_type,
+            "request_schema": dict(schema),
+            "request_body_keys": request_body_keys,
+            "required_body_keys": required,
+            "source": source,
+            "endpoint_type": endpoint_type,
+        }
+
+    def _operation_log_items(self, operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "path": item.get("path"),
+                "method": item.get("method"),
+                "content_type": item.get("content_type"),
+                "source": item.get("source"),
+                "request_body_keys": list(item.get("request_body_keys") or [])[:12],
+                "required_body_keys": list(item.get("required_body_keys") or [])[:12],
+            }
+            for item in operations or []
+        ]
+
     def _discovered_endpoints(self, request: ToolTestRequest, endpoint_type: str) -> list[str]:
         values: list[str] = []
         for item in request.execution_context.discovered_auth_endpoints or []:
@@ -784,7 +1258,7 @@ class AuthPreparationService:
         return values
 
     def _openapi_auth_endpoints(self, request: ToolTestRequest, endpoint_type: str) -> list[str]:
-        spec_text = str(request.execution_context.openapi_spec_text or "").strip()
+        spec_text = str(self._spec_text_for_request(request) or "").strip()
         if not spec_text:
             return []
         document = self.baseline_synthesis._parse_spec_text(spec_text)
@@ -838,9 +1312,14 @@ class AuthPreparationService:
         default_roles = ["user_a", "user_b"]
         role_name = configured_roles[index] if index < len(configured_roles) else default_roles[index] if index < len(default_roles) else f"user_{index}"
         label = role_name.split("_", 1)[-1] if "_" in role_name else role_name
-        suffix = uuid.uuid5(uuid.NAMESPACE_URL, f"{request.execution_context.target_url}|{request.task.id}|{role_name}|{index}").hex[:10]
+        run_scope = str(request.execution_context.run_id or request.execution_context.root_trace_id or "manual").strip()
+        suffix = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"{run_scope}|{request.execution_context.target_url}|{request.task.id}|{role_name}|{index}",
+        ).hex[:10]
         username = f"auto_{suffix}_{label}"
-        aliases = [role_name]
+        phone_suffix = str(int(suffix[:8], 16)).zfill(7)[-7:]
+        aliases = list(dict.fromkeys([role_name, default_roles[index] if index < len(default_roles) else f"user_{index}", username]))
         display_name = role_name
         return {
             "name": display_name,
@@ -849,7 +1328,7 @@ class AuthPreparationService:
             "username": username,
             "email": f"{username}@example.test",
             "password": f"AutoPass!{suffix[:6]}A1",
-            "number": f"555{suffix[:7]}",
+            "number": f"555{phone_suffix}",
             "cookies": {},
             "auth_headers": {},
             "token": None,
@@ -860,44 +1339,146 @@ class AuthPreparationService:
         *,
         request: ToolTestRequest,
         identity: dict[str, Any],
-        method: str,
-        endpoint_candidates: list[str],
+        endpoint_type: str,
+        operations: list[dict[str, Any]],
     ) -> tuple[HttpExecutionResult, str]:
-        last_result = HttpExecutionResult(method=method, url="", status_code=None, headers={}, body_text="", elapsed_ms=None, error="registration_not_attempted")
+        last_result = HttpExecutionResult(method="POST", url="", status_code=None, headers={}, body_text="", elapsed_ms=None, error="registration_not_attempted")
         last_endpoint = ""
-        payload_variants = [
-            {
-                "name": identity["name"],
-                "email": identity["email"],
-                "password": identity["password"],
-                "number": identity["number"],
-            },
-            {
-                "username": identity["username"],
-                "email": identity["email"],
-                "password": identity["password"],
-                "name": identity["name"],
-            },
-        ]
-        for endpoint in endpoint_candidates:
-            request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
-            self._validate_scope(request, request_url)
-            synthesized = self.baseline_synthesis.synthesize_request(
-                spec_text=self._spec_text_for_request(request),
-                endpoint_path=endpoint,
-                method=method,
-                known_values=identity,
-            )
+        for operation in operations:
+            endpoint = str(operation.get("path") or "").strip()
+            method = str(operation.get("method") or "POST").upper()
+            content_type = str(operation.get("content_type") or "application/json").lower()
+            if content_type not in {"application/json", "application/x-www-form-urlencoded", "multipart/form-data"}:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                )
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="unsupported_content_type",
+                )
+                continue
+            try:
+                payload_variants = self._auth_payload_variants(request, identity, operation, endpoint_type=endpoint_type)
+            except Exception as exc:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                )
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="request_construction_failed",
+                    error_detail=type(exc).__name__,
+                )
+                continue
+            if not payload_variants:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                )
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="invalid_required_fields",
+                )
             for payload in payload_variants:
-                merged_payload = dict(synthesized.get("baseline_body") or {})
-                merged_payload.update(payload)
-                last_endpoint = request_url
-                last_result = await self.http_client.execute(
-                    method=method,
-                    url=request_url,
-                    headers={"Content-Type": "application/json"},
-                    query_params=synthesized.get("baseline_query") or None,
-                    json_body=merged_payload,
+                request_body_keys = sorted(str(key) for key in payload.keys())
+                if not payload:
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_register_result",
+                        status="failed",
+                        identity=identity,
+                        operation=operation,
+                        status_code=None,
+                        request_body_keys=[],
+                        failure_reason="invalid_required_fields",
+                    )
+                    continue
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=request_body_keys,
+                )
+                try:
+                    request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
+                    self._validate_scope(request, request_url)
+                    last_endpoint = request_url
+                    last_result = await self.http_client.execute(
+                        method=method,
+                        url=request_url,
+                        headers={"Content-Type": content_type},
+                        json_body=payload,
+                    )
+                except Exception as exc:
+                    last_result = HttpExecutionResult(
+                        method=method,
+                        url=last_endpoint,
+                        status_code=None,
+                        headers={},
+                        body_text="",
+                        elapsed_ms=None,
+                        error=str(exc),
+                    )
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_register_result",
+                        status="failed",
+                        identity=identity,
+                        operation=operation,
+                        status_code=None,
+                        request_body_keys=request_body_keys,
+                        failure_reason="request_execution_failed",
+                        error_detail=type(exc).__name__,
+                    )
+                    continue
+                failure_reason = "" if self._is_success(last_result.status_code) else "unexpected_status_code"
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_register_result",
+                    status="success" if self._is_success(last_result.status_code) else "failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=last_result.status_code,
+                    request_body_keys=request_body_keys,
+                    failure_reason=failure_reason,
+                    response_body_preview=self._safe_response_preview(last_result.body_text),
                 )
                 if self._is_success(last_result.status_code):
                     return last_result, last_endpoint
@@ -908,53 +1489,511 @@ class AuthPreparationService:
         *,
         request: ToolTestRequest,
         identity: dict[str, Any],
-        method: str,
-        endpoint_candidates: list[str],
+        endpoint_type: str,
+        operations: list[dict[str, Any]],
         fallback_cookies: dict[str, str],
     ) -> tuple[HttpExecutionResult, str, dict[str, Any]]:
-        last_result = HttpExecutionResult(method=method, url="", status_code=None, headers={}, body_text="", elapsed_ms=None, error="login_not_attempted")
+        last_result = HttpExecutionResult(method="POST", url="", status_code=None, headers={}, body_text="", elapsed_ms=None, error="login_not_attempted")
         last_endpoint = ""
-        payload_variants = [
-            {"email": identity["email"], "password": identity["password"]},
-            {"username": identity["username"], "password": identity["password"]},
-        ]
         authenticated_identity = dict(identity)
-        for endpoint in endpoint_candidates:
-            request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
-            self._validate_scope(request, request_url)
-            synthesized = self.baseline_synthesis.synthesize_request(
-                spec_text=self._spec_text_for_request(request),
-                endpoint_path=endpoint,
-                method=method,
-                known_values=identity,
-            )
-            for payload in payload_variants:
-                merged_payload = dict(synthesized.get("baseline_body") or {})
-                merged_payload.update(payload)
-                last_endpoint = request_url
-                last_result = await self.http_client.execute(
-                    method=method,
-                    url=request_url,
-                    headers={"Content-Type": "application/json"},
-                    query_params=synthesized.get("baseline_query") or None,
-                    json_body=merged_payload,
+        for operation in operations:
+            endpoint = str(operation.get("path") or "").strip()
+            method = str(operation.get("method") or "POST").upper()
+            content_type = str(operation.get("content_type") or "application/json").lower()
+            if content_type not in {"application/json", "application/x-www-form-urlencoded", "multipart/form-data"}:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
                 )
-                if self._is_success(last_result.status_code):
-                    token = self._extract_token(last_result)
-                    cookies = self._extract_cookies(last_result.headers) or dict(fallback_cookies)
-                    auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
-                    authenticated_identity.update(
-                        {
-                            "token": token,
-                            "auth_headers": auth_headers,
-                            "cookies": cookies,
-                            "authenticated": True,
-                        }
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="unsupported_content_type",
+                )
+                continue
+            try:
+                payload_variants = self._auth_payload_variants(request, identity, operation, endpoint_type=endpoint_type)
+            except Exception as exc:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                )
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="request_construction_failed",
+                    error_detail=type(exc).__name__,
+                )
+                continue
+            if not payload_variants:
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                )
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_result",
+                    status="failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=[],
+                    failure_reason="invalid_required_fields",
+                )
+            for payload in payload_variants:
+                request_body_keys = sorted(str(key) for key in payload.keys())
+                if not payload:
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_login_result",
+                        status="failed",
+                        identity=identity,
+                        operation=operation,
+                        status_code=None,
+                        request_body_keys=[],
+                        failure_reason="invalid_required_fields",
                     )
+                    continue
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_attempt",
+                    status="ok",
+                    identity=identity,
+                    operation=operation,
+                    status_code=None,
+                    request_body_keys=request_body_keys,
+                )
+                try:
+                    request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
+                    self._validate_scope(request, request_url)
+                    last_endpoint = request_url
+                    last_result = await self.http_client.execute(
+                        method=method,
+                        url=request_url,
+                        headers={"Content-Type": content_type},
+                        json_body=payload,
+                    )
+                except Exception as exc:
+                    last_result = HttpExecutionResult(
+                        method=method,
+                        url=last_endpoint,
+                        status_code=None,
+                        headers={},
+                        body_text="",
+                        elapsed_ms=None,
+                        error=str(exc),
+                    )
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_login_result",
+                        status="failed",
+                        identity=identity,
+                        operation=operation,
+                        status_code=None,
+                        request_body_keys=request_body_keys,
+                        failure_reason="request_execution_failed",
+                        error_detail=type(exc).__name__,
+                    )
+                    continue
+                try:
+                    extracted = self._authenticated_identity_from_result(identity, last_result, fallback_cookies=fallback_cookies)
+                    extraction_summary = self._auth_extraction_summary(extracted)
+                except Exception as exc:
+                    extracted = dict(identity)
+                    extracted.update({"cookies": {}, "auth_headers": {}, "token": None, "authenticated": False})
+                    extraction_summary = {}
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_login_result",
+                        status="failed",
+                        identity=identity,
+                        operation=operation,
+                        status_code=last_result.status_code,
+                        request_body_keys=request_body_keys,
+                        failure_reason="token_extraction_failed",
+                        auth_extraction=extraction_summary,
+                        error_detail=type(exc).__name__,
+                    )
+                    continue
+                failure_reason = "" if self._is_success(last_result.status_code) else "unexpected_status_code"
+                if self._is_success(last_result.status_code) and not self._has_auth_material(extracted):
+                    failure_reason = "token_missing"
+                self._emit_auth_attempt_event(
+                    request=request,
+                    event_type="auth_provision_login_result",
+                    status="success" if self._is_success(last_result.status_code) and self._has_auth_material(extracted) else "failed",
+                    identity=identity,
+                    operation=operation,
+                    status_code=last_result.status_code,
+                    request_body_keys=request_body_keys,
+                    failure_reason=failure_reason,
+                    auth_extraction=extraction_summary,
+                    response_body_preview=self._safe_response_preview(last_result.body_text),
+                )
+                if self._has_auth_material(extracted):
+                    self._emit_auth_attempt_event(
+                        request=request,
+                        event_type="auth_provision_token_extracted",
+                        status="success",
+                        identity=identity,
+                        operation=operation,
+                        status_code=last_result.status_code,
+                        request_body_keys=request_body_keys,
+                        auth_extraction=extraction_summary,
+                    )
+                if self._is_success(last_result.status_code):
+                    authenticated_identity.update(extracted)
                     return last_result, last_endpoint, authenticated_identity
 
         authenticated_identity.update({"cookies": dict(fallback_cookies), "auth_headers": {}, "token": None, "authenticated": False})
         return last_result, last_endpoint, authenticated_identity
+
+    def _authenticated_identity_from_result(
+        self,
+        identity: dict[str, Any],
+        result: HttpExecutionResult,
+        *,
+        fallback_cookies: dict[str, str],
+    ) -> dict[str, Any]:
+        authenticated = dict(identity)
+        token, token_source = self._extract_token_with_source(result)
+        cookies = self._extract_cookies(result.headers) or dict(fallback_cookies)
+        auth_headers = self._extract_auth_headers(result, token)
+        sources = {
+            "body": token_source == "body",
+            "header": token_source == "header"
+            or bool(self._header_value(result.headers, "authorization") or self._header_value(result.headers, "x-auth-token")),
+            "cookie": bool(cookies),
+        }
+        authenticated.update(
+            {
+                "token": token,
+                "auth_headers": auth_headers,
+                "cookies": cookies,
+                "authenticated": bool(token or cookies),
+                "auth_sources": sources,
+            }
+        )
+        return authenticated
+
+    def _auth_payload_variants(
+        self,
+        request: ToolTestRequest,
+        identity: dict[str, Any],
+        operation: dict[str, Any],
+        *,
+        endpoint_type: str,
+    ) -> list[dict[str, Any]]:
+        fields = [str(item) for item in (operation.get("request_body_keys") or []) if str(item).strip()]
+        required = [str(item) for item in (operation.get("required_body_keys") or []) if str(item).strip()]
+        known = self._auth_known_values(identity)
+        variants: list[dict[str, Any]] = []
+        if fields:
+            payload = self._schema_auth_payload(fields=fields, required=required, known=known, endpoint_type=endpoint_type)
+            self._append_payload_variant(variants, payload, required=required, endpoint_type=endpoint_type)
+            synthesized = self.baseline_synthesis.synthesize_request(
+                spec_text=self._spec_text_for_request(request),
+                endpoint_path=str(operation.get("path") or ""),
+                method=str(operation.get("method") or "POST"),
+                known_values={},
+            )
+            baseline = synthesized.get("baseline_body") if isinstance(synthesized, dict) else {}
+            self._append_payload_variant(variants, baseline if isinstance(baseline, dict) else {}, required=required, endpoint_type=endpoint_type)
+            if variants:
+                return variants
+
+        synthesized = self.baseline_synthesis.synthesize_request(
+            spec_text=self._spec_text_for_request(request),
+            endpoint_path=str(operation.get("path") or ""),
+            method=str(operation.get("method") or "POST"),
+            known_values=known,
+        )
+        baseline = synthesized.get("baseline_body") if isinstance(synthesized, dict) else {}
+        if isinstance(baseline, dict) and baseline:
+            self._append_payload_variant(variants, baseline, required=required, endpoint_type=endpoint_type)
+            if variants:
+                return variants
+
+        if endpoint_type == "login":
+            fallback = [
+                {"email": identity["email"], "password": identity["password"]},
+                {"username": identity["username"], "password": identity["password"]},
+            ]
+        else:
+            fallback = [
+                {"email": identity["email"], "password": identity["password"], "name": identity["name"]},
+                {"username": identity["username"], "password": identity["password"], "name": identity["name"]},
+            ]
+        for payload in fallback:
+            self._append_payload_variant(variants, payload, required=required, endpoint_type=endpoint_type)
+        return variants
+
+    def _append_payload_variant(
+        self,
+        variants: list[dict[str, Any]],
+        payload: Mapping[str, Any] | None,
+        *,
+        required: list[str],
+        endpoint_type: str,
+    ) -> None:
+        if not isinstance(payload, Mapping) or not payload:
+            return
+        candidate = {str(key): value for key, value in payload.items() if str(key).strip() and value not in (None, "")}
+        if not candidate:
+            return
+        normalized_keys = {self._normalize_auth_field_name(key) for key in candidate.keys()}
+        if required:
+            normalized_required = {self._normalize_auth_field_name(item) for item in required}
+            if not normalized_required.issubset(normalized_keys):
+                return
+        if endpoint_type == "login":
+            has_password = any("password" in key for key in normalized_keys)
+            has_principal = any(key in {"email", "username", "user", "login"} or "email" in key or "username" in key for key in normalized_keys)
+            if not (has_password and has_principal):
+                return
+        else:
+            has_password = any("password" in key for key in normalized_keys)
+            has_principal = any(key in {"email", "username", "user", "login"} or "email" in key or "username" in key for key in normalized_keys)
+            if not (has_password and has_principal):
+                return
+        fingerprint = json.dumps(candidate, sort_keys=True, ensure_ascii=True)
+        if any(json.dumps(item, sort_keys=True, ensure_ascii=True) == fingerprint for item in variants):
+            return
+        variants.append(candidate)
+
+    def _schema_auth_payload(
+        self,
+        *,
+        fields: list[str],
+        required: list[str],
+        known: dict[str, Any],
+        endpoint_type: str,
+    ) -> dict[str, Any]:
+        field_lookup = {field.lower().replace("-", "_"): field for field in fields}
+        payload: dict[str, Any] = {}
+        required_set = set(required)
+        for field in required:
+            value = self._auth_value_for_field(field, known)
+            if value in (None, ""):
+                return {}
+            payload[field] = value
+        if endpoint_type == "login":
+            preferred = ("email", "username", "password")
+        else:
+            preferred = ("email", "username", "password", "name", "firstName", "lastName", "fullName", "role")
+        for alias in preferred:
+            normalized = alias.lower().replace("-", "_")
+            field = field_lookup.get(normalized)
+            if not field or field in payload:
+                continue
+            if required_set and field not in required_set and endpoint_type == "login" and alias not in {"email", "username", "password"}:
+                continue
+            value = self._auth_value_for_field(field, known)
+            if value not in (None, ""):
+                payload[field] = value
+        if endpoint_type == "login" and not any(str(key).lower() in {"email", "username"} for key in payload.keys()):
+            for alias in ("email", "username"):
+                field = field_lookup.get(alias)
+                if field:
+                    payload[field] = self._auth_value_for_field(field, known)
+                    break
+        if endpoint_type == "login" and not any("password" in str(key).lower() for key in payload.keys()):
+            field = field_lookup.get("password")
+            if field:
+                payload[field] = known["password"]
+        return payload
+
+    def _auth_known_values(self, identity: dict[str, Any]) -> dict[str, Any]:
+        full_name = str(identity.get("name") or identity.get("username") or "Auto User").strip()
+        parts = [item for item in full_name.replace("_", " ").split() if item]
+        first_name = parts[0] if parts else "Auto"
+        last_name = parts[-1] if len(parts) > 1 else "User"
+        return {
+            **identity,
+            "email": identity.get("email"),
+            "username": identity.get("username"),
+            "name": identity.get("name"),
+            "password": identity.get("password"),
+            "firstName": first_name,
+            "firstname": first_name,
+            "first_name": first_name,
+            "lastName": last_name,
+            "lastname": last_name,
+            "last_name": last_name,
+            "fullName": full_name,
+            "fullname": full_name,
+            "full_name": full_name,
+            "role": identity.get("role") or "user",
+        }
+
+    def _auth_value_for_field(self, field: str, known: dict[str, Any]) -> Any:
+        normalized = str(field or "").strip()
+        lowered = normalized.lower()
+        candidates = [
+            normalized,
+            lowered,
+            lowered.replace("-", "_"),
+            lowered.replace("_", ""),
+        ]
+        alias_map = {
+            "user": "username",
+            "login": "username",
+            "mail": "email",
+            "e_mail": "email",
+            "passwd": "password",
+            "pass": "password",
+            "firstname": "firstName",
+            "lastname": "lastName",
+            "fullname": "fullName",
+        }
+        if lowered in alias_map:
+            candidates.append(alias_map[lowered])
+        for key in candidates:
+            if key in known and known[key] not in (None, ""):
+                return known[key]
+        if "password" in lowered:
+            return known.get("password")
+        if "email" in lowered or "mail" in lowered:
+            return known.get("email")
+        if "user" in lowered or "login" in lowered:
+            return known.get("username")
+        if lowered in {"name", "fullname", "full_name"}:
+            return known.get("fullName") or known.get("name")
+        if "firstname" in lowered or "first_name" in lowered:
+            return known.get("firstName")
+        if "lastname" in lowered or "last_name" in lowered:
+            return known.get("lastName")
+        if lowered == "role":
+            return known.get("role")
+        return None
+
+    def _emit_auth_attempt_event(
+        self,
+        *,
+        request: ToolTestRequest,
+        event_type: str,
+        status: str,
+        identity: dict[str, Any],
+        operation: dict[str, Any],
+        status_code: int | None,
+        request_body_keys: list[str],
+        failure_reason: str = "",
+        auth_extraction: dict[str, bool] | None = None,
+        error_detail: str = "",
+        response_body_preview: str = "",
+    ) -> None:
+        self._emit_prep_event(
+            request=request,
+            event_type=event_type,
+            status=status,
+            summary=f"Auth provisioning {event_type} for {identity.get('name') or identity.get('role')}.",
+            reason={"failure_reason": failure_reason or None},
+            artifacts={
+                "identity_name": identity.get("name"),
+                "role": identity.get("role"),
+                "endpoint": operation.get("path"),
+                "method": operation.get("method"),
+                "content_type": operation.get("content_type"),
+                "source": operation.get("source"),
+                "request_body_keys": request_body_keys,
+                "status_code": status_code,
+                "auth_extraction": auth_extraction or {},
+                "error_detail": error_detail,
+                "response_body_preview": response_body_preview,
+            },
+        )
+
+    def _emit_auth_operation_selected(
+        self,
+        request: ToolTestRequest,
+        *,
+        endpoint_type: str,
+        operation: dict[str, Any],
+    ) -> None:
+        source = str(operation.get("source") or "").strip() or "fallback"
+        confidence = 0.95 if source == "openapi" else 0.9 if source == "explicit" else 0.45
+        self._emit_prep_event(
+            request=request,
+            event_type="auth_operation_selected",
+            status="ok",
+            summary=f"Selected {endpoint_type} auth operation.",
+            artifacts={
+                "endpoint_type": endpoint_type,
+                "endpoint": operation.get("path"),
+                "method": operation.get("method"),
+                "content_type": operation.get("content_type"),
+                "source": source,
+                "required_fields": list(operation.get("required_body_keys") or []),
+                "request_body_keys": list(operation.get("request_body_keys") or []),
+                "confidence": confidence,
+            },
+        )
+
+    def _safe_response_preview(self, body_text: str, limit: int = 320) -> str:
+        text = str(body_text or "").strip()
+        if not text:
+            return ""
+        redacted = re.sub(r"(?i)(\"?(?:access_?token|id_?token|refresh_?token|token|password|authorization|cookie|set-cookie|session(?:id)?|x-?api-?key)\"?\s*[:=]\s*\")([^\"]+)(\")", r"\1***REDACTED***\3", text)
+        redacted = re.sub(r"(?i)\bbearer\s+[A-Za-z0-9._\\-]+=*", "Bearer ***REDACTED***", redacted)
+        collapsed = " ".join(redacted.split())
+        return collapsed[:limit]
+
+    def _normalize_provisioned_identity(
+        self,
+        authenticated_identity: dict[str, Any],
+        seed_identity: dict[str, Any],
+    ) -> dict[str, Any]:
+        normalized = dict(authenticated_identity)
+        aliases: list[str] = []
+        for source in (seed_identity, authenticated_identity):
+            for key in ("name", "role", "username", "email", "owner_role", "other_role"):
+                value = str(source.get(key) or "").strip()
+                if value and value not in aliases:
+                    aliases.append(value)
+            for item in source.get("aliases") or []:
+                value = str(item or "").strip()
+                if value and value not in aliases:
+                    aliases.append(value)
+        normalized["aliases"] = aliases
+        normalized["name"] = str(normalized.get("name") or seed_identity.get("name") or seed_identity.get("role") or "").strip()
+        normalized["role"] = str(normalized.get("role") or seed_identity.get("role") or normalized.get("name") or "").strip()
+        normalized["provisioned"] = True
+        normalized["auth_material"] = self._auth_material_summary(normalized)
+        return normalized
+
+    def _auth_material_summary(self, identity: dict[str, Any]) -> dict[str, bool]:
+        auth_headers = identity.get("auth_headers")
+        cookies = identity.get("cookies")
+        return {
+            "has_token": bool(str(identity.get("token") or "").strip()),
+            "has_auth_headers": bool(auth_headers) if isinstance(auth_headers, dict) else False,
+            "has_cookies": bool(cookies) if isinstance(cookies, dict) else False,
+        }
 
     def _aggregate_status(self, *, expected_total: int, register_success_total: int, login_success_total: int) -> str:
         if expected_total > 0 and register_success_total >= expected_total and login_success_total >= expected_total:
@@ -964,38 +2003,69 @@ class AuthPreparationService:
         return "failed"
 
     def _extract_token(self, result: HttpExecutionResult) -> str | None:
+        token, _ = self._extract_token_with_source(result)
+        return token
+
+    def _extract_token_with_source(self, result: HttpExecutionResult) -> tuple[str | None, str]:
         json_body = result.json_body()
-        candidates: list[Any] = []
         if isinstance(json_body, dict):
-            candidates.extend(
-                [
-                    json_body.get("access_token"),
-                    json_body.get("accessToken"),
-                    json_body.get("token"),
-                    json_body.get("jwt"),
-                ]
-            )
-            data = json_body.get("data")
-            if isinstance(data, dict):
-                candidates.extend(
-                    [
-                        data.get("access_token"),
-                        data.get("accessToken"),
-                        data.get("token"),
-                        data.get("jwt"),
-                    ]
-                )
-        auth_header = result.headers.get("authorization")
+            for item in self._extract_token_candidates(json_body):
+                value = str(item or "").strip()
+                if value:
+                    return value, "body"
+        auth_header = self._header_value(result.headers, "authorization")
         if auth_header and auth_header.lower().startswith("bearer "):
-            candidates.append(auth_header.split(" ", 1)[1])
-        for item in candidates:
-            value = str(item or "").strip()
-            if value:
-                return value
-        return None
+            return auth_header.split(" ", 1)[1].strip(), "header"
+        for header_name in ("x-auth-token", "x_api_token", "x-api-key"):
+            header_value = str(self._header_value(result.headers, header_name) or "").strip()
+            if header_value:
+                return header_value, "header"
+        return None, ""
+
+    def _extract_token_candidates(self, value: Any) -> list[Any]:
+        candidates: list[Any] = []
+        token_keys = {"access_token", "accessToken", "token", "jwt", "authToken", "auth_token", "id_token"}
+        if isinstance(value, Mapping):
+            for key, item in value.items():
+                if str(key) in token_keys or str(key).lower() in {item.lower() for item in token_keys}:
+                    candidates.append(item)
+                if isinstance(item, (Mapping, list)):
+                    candidates.extend(self._extract_token_candidates(item))
+        elif isinstance(value, list):
+            for item in value[:6]:
+                candidates.extend(self._extract_token_candidates(item))
+        return candidates
+
+    def _extract_auth_headers(self, result: HttpExecutionResult, token: str | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        auth_header = str(self._header_value(result.headers, "authorization") or "").strip()
+        if auth_header:
+            headers["Authorization"] = auth_header
+        x_auth_token = str(self._header_value(result.headers, "x-auth-token") or "").strip()
+        if x_auth_token:
+            headers["X-Auth-Token"] = x_auth_token
+        if token and "Authorization" not in headers and "X-Auth-Token" not in headers:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+    def _auth_extraction_summary(self, identity: dict[str, Any]) -> dict[str, bool]:
+        sources = identity.get("auth_sources")
+        if isinstance(sources, dict):
+            return {
+                "from_body": bool(sources.get("body")),
+                "from_header": bool(sources.get("header")),
+                "from_cookie": bool(sources.get("cookie")),
+            }
+        auth_headers = identity.get("auth_headers")
+        cookies = identity.get("cookies")
+        return {
+            "from_body": bool(str(identity.get("token") or "").strip()),
+            "from_header": bool(auth_headers) and any(str(key).lower() in {"authorization", "x-auth-token"} for key in auth_headers.keys()),
+            "from_cookie": bool(cookies) if isinstance(cookies, dict) else False,
+        }
 
     def _extract_cookies(self, headers: dict[str, str]) -> dict[str, str]:
-        raw = str(headers.get("set-cookie") or "").strip()
+        raw = str(self._header_value(headers, "set-cookie") or "").strip()
         if not raw:
             return {}
         cookies: dict[str, str] = {}
@@ -1007,6 +2077,13 @@ class AuthPreparationService:
             if name.strip():
                 cookies[name.strip()] = value.strip()
         return cookies
+
+    def _header_value(self, headers: dict[str, str], name: str) -> str:
+        target = str(name or "").strip().lower()
+        for key, value in (headers or {}).items():
+            if str(key or "").strip().lower() == target:
+                return str(value or "")
+        return ""
 
     def _owner_identity(self, request: ToolTestRequest, explicit_identity: Any) -> dict[str, Any] | None:
         if isinstance(explicit_identity, dict) and explicit_identity:
@@ -1053,6 +2130,9 @@ class AuthPreparationService:
             str(role.get("role") or "").strip().lower(),
             str(role.get("username") or "").strip().lower(),
             str(role.get("email") or "").strip().lower(),
+            str(role.get("owner_role") or "").strip().lower(),
+            str(role.get("other_role") or "").strip().lower(),
+            str(role.get("label") or "").strip().lower(),
         }
         aliases = role.get("aliases")
         if isinstance(aliases, list):
@@ -1299,6 +2379,22 @@ class AuthPreparationService:
             params["id"] = object_id
         return params
 
+    def _extract_placeholders(self, endpoint: str) -> list[str]:
+        placeholders: list[str] = []
+        current = ""
+        in_placeholder = False
+        for char in str(endpoint or ""):
+            if char == "{":
+                current = ""
+                in_placeholder = True
+            elif char == "}":
+                if current:
+                    placeholders.append(current)
+                in_placeholder = False
+            elif in_placeholder:
+                current += char
+        return placeholders
+
     def _replay_ready_endpoint(self, request: ToolTestRequest, endpoint: str, path_params: Mapping[str, Any] | None) -> str:
         materialized = self._materialize_from_values(endpoint, path_params)
         return self._resolve_url(str(request.execution_context.target_url), materialized)
@@ -1393,6 +2489,19 @@ class AuthPreparationService:
 
     def _has_auth_material(self, role: dict[str, Any]) -> bool:
         return bool(role.get("token") or role.get("auth_headers") or role.get("cookies"))
+
+    def _stable_materialization_failure(self, reason: Any) -> str:
+        value = str(reason or "").strip().lower()
+        mapping = {
+            "creator_not_available": "no_creator_candidate",
+            "object_creation_failed": "create_failed",
+            "object_harvest_failed": "id_not_harvested",
+            "object_id_missing": "id_not_harvested",
+            "list_not_available": "no_list_candidate",
+            "materialization_failed": "object_not_reusable",
+            "success_path_not_reachable": "create_failed",
+        }
+        return mapping.get(value, value or "object_not_reusable")
 
     def _is_success(self, status_code: int | None) -> bool:
         return status_code is not None and 200 <= status_code < 300

@@ -93,11 +93,31 @@ class TaskToolingService:
     """Keeps agent-facing tool assignments consistent across generation, follow-ups and scheduling."""
 
     def normalize_task(self, task: TaskModel, *, explicit_allowed_tools: list[str] | None = None) -> TaskModel:
-        updated = task.model_copy(deep=True)
+        updated = self.mutable_task_copy(task)
         updated.allowed_tools = self.normalized_allowed_tools(updated, explicit_allowed_tools=explicit_allowed_tools)
         updated.preparation_options = self.normalized_preparation_options(updated)
         updated.recommended_next_step = self.recommended_next_step(updated)
         return updated
+
+    def mutable_task_copy(self, task: TaskModel) -> TaskModel:
+        """Copy fields the scheduler mutates without recursively copying arbitrary metadata."""
+        return task.model_copy(
+            deep=False,
+            update={
+                "params": task.params.model_copy(deep=True),
+                "auth_context": task.auth_context.model_copy(deep=True),
+                "prerequisites": task.prerequisites.model_copy(deep=True),
+                "tool_preference": task.tool_preference.model_copy(deep=True),
+                "allowed_tools": list(task.allowed_tools or []),
+                "required_capabilities": list(task.required_capabilities or []),
+                "preparation_options": list(task.preparation_options or []),
+                "capability_state": dict(task.capability_state or {}),
+                "context_hints": dict(task.context_hints or {}),
+                "expected_evidence": list(task.expected_evidence or []),
+                "fallback_tools": list(task.fallback_tools or []),
+                "artifact_requirements": list(task.artifact_requirements or []),
+            },
+        )
 
     def normalized_allowed_tools(self, task: TaskModel, *, explicit_allowed_tools: list[str] | None = None) -> list[str]:
         class_name = str(task.class_name or "").strip().lower()

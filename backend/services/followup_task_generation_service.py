@@ -387,9 +387,40 @@ class FollowupTaskGenerationService:
 
     def _object_materialization_followups(self, active_task: TaskModel) -> list[TaskModel]:
         return [
-            self._clone_task(active_task, "create_object_then_replay", allowed_tools=["create_test_object"], readiness="needs_preparation", priority_boost=12),
-            self._clone_task(active_task, "list_then_select_object_then_replay", allowed_tools=["create_test_object"], readiness="needs_preparation", priority_boost=10),
+            self._materialization_followup(active_task, "create_object_then_replay", priority_boost=12),
+            self._materialization_followup(active_task, "list_then_select_object_then_replay", priority_boost=10),
         ]
+
+    def _materialization_followup(
+        self,
+        active_task: TaskModel,
+        strategy: str,
+        *,
+        priority_boost: int,
+    ) -> TaskModel:
+        candidate = self._clone_task(
+            active_task,
+            strategy,
+            allowed_tools=["create_test_object"],
+            readiness="needs_preparation",
+            priority_boost=priority_boost,
+        )
+        candidate.params.requires_object_id_enrichment = True
+        candidate.prerequisites.requires_object_id = True
+        candidate.readiness = "needs_preparation"
+        candidate.allowed_tools = ["create_test_object"]
+        candidate.preparation_options = ["create_test_object"]
+        candidate.preferred_tool = "create_test_object"
+        if getattr(candidate, "tool_preference", None):
+            candidate.tool_preference.preferred_tool = "create_test_object"
+            candidate.tool_preference.fallback_tools = []
+        candidate.strategy_family = "object_materialization"
+        candidate.recommended_next_step = "create_test_object"
+        candidate = DEFAULT_TASK_TOOLING.normalize_task(candidate, explicit_allowed_tools=["create_test_object"])
+        candidate.allowed_tools = ["create_test_object"]
+        candidate.preparation_options = ["create_test_object"]
+        candidate.recommended_next_step = "create_test_object"
+        return candidate
 
     def _business_logic_followups(
         self,
@@ -432,7 +463,7 @@ class FollowupTaskGenerationService:
         generation = int(task.followup_generation or 0) + 1
         suffix = re.sub(r"[^a-z0-9]+", "_", strategy.lower()).strip("_")[:32]
         new_id = f"{task.id}__{suffix}_{generation}"
-        cloned = task.model_copy(deep=True)
+        cloned = DEFAULT_TASK_TOOLING.mutable_task_copy(task)
         cloned.id = new_id
         cloned.parent_task_id = str(task.parent_task_id or task.id)
         cloned.origin_reason = "rework_followup"

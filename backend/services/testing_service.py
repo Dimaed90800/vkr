@@ -1745,7 +1745,7 @@ class TestingService:
             if not isinstance(item, dict):
                 continue
             candidate_names: list[str] = []
-            for key in ("name", "role", "username", "email"):
+            for key in ("name", "role", "username", "email", "owner_role", "other_role", "label"):
                 value = str(item.get(key) or "").strip()
                 if value and value not in candidate_names:
                     candidate_names.append(value)

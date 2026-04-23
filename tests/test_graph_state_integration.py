@@ -98,3 +98,69 @@ def test_generator_keeps_auth_and_materialization_tools_for_object_authorization
     preparation = generator._preparation_options("authorization", "object_authorization", endpoint, capabilities)
     assert allowed_tools[:2] == ["auto_provision", "create_test_object"]
     assert preparation[:2] == ["auto_provision", "create_test_object"]
+
+
+def test_materialization_strategy_prefers_auto_provision_when_owner_identity_missing() -> None:
+    service = TaskExecutabilityService()
+    task = TaskModel.model_validate(
+        {
+            "id": "task_authorization_materialization_001",
+            "class": "authorization",
+            "subtype": "bola",
+            "endpoint": "/identity/api/v2/admin/videos/{video_id}",
+            "method": "DELETE",
+            "hypothesis": "Materialization should run after bootstrap.",
+            "readiness": "needs_preparation",
+            "test_strategy": "create_object_then_replay",
+            "allowed_tools": ["create_test_object", "auto_provision"],
+            "preparation_options": ["create_test_object", "auto_provision"],
+            "auth_context": {"owner_role": "user_a", "other_role": "user_b"},
+            "params": {"requires_object_id_enrichment": True},
+            "prerequisites": {"requires_auth_context": True},
+            "resource_family": "video",
+        }
+    )
+    decision = service.evaluate(
+        task,
+        execution_context=ExecutionContext(target_url="http://example.test", roles=[]),
+        scheduler_state=SchedulerState(),
+    )
+
+    assert decision.executable is True
+    assert decision.execution_mode == "preparation"
+    assert decision.preferred_tool == "auto_provision"
+    assert "missing_auth_context" in decision.missing_prerequisites
+    assert "object_id_missing" in decision.missing_prerequisites
+
+
+def test_materialization_strategy_prefers_create_test_object_with_owner_identity() -> None:
+    service = TaskExecutabilityService()
+    task = TaskModel.model_validate(
+        {
+            "id": "task_authorization_materialization_002",
+            "class": "authorization",
+            "subtype": "bola",
+            "endpoint": "/identity/api/v2/admin/videos/{video_id}",
+            "method": "DELETE",
+            "hypothesis": "Materialization should continue with owner auth.",
+            "readiness": "needs_preparation",
+            "test_strategy": "create_object_then_replay",
+            "allowed_tools": ["create_test_object", "auto_provision"],
+            "preparation_options": ["create_test_object", "auto_provision"],
+            "auth_context": {"owner_role": "user_a", "other_role": "user_b"},
+            "params": {"requires_object_id_enrichment": True},
+            "prerequisites": {"requires_auth_context": True},
+            "resource_family": "video",
+        }
+    )
+    context = ExecutionContext(
+        target_url="http://example.test",
+        roles=[{"name": "user_a", "role": "user_a", "aliases": ["user_a"], "token": "tok-a"}],
+    )
+    decision = service.evaluate(task, execution_context=context, scheduler_state=SchedulerState())
+
+    assert decision.executable is True
+    assert decision.execution_mode == "preparation"
+    assert decision.preferred_tool == "create_test_object"
+    assert "missing_auth_context" in decision.missing_prerequisites
+    assert "object_id_missing" in decision.missing_prerequisites

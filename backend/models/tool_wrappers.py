@@ -73,6 +73,7 @@ class ToolWrapperResult(BaseModel):
 
 class JudgeReadyEvidence(BaseModel):
     schema_version: str = "judge-ready-evidence/v1"
+    run_id: str = ""
     task_id: str = ""
     source_task_id: str = ""
     worker_role: str = ""
@@ -80,6 +81,11 @@ class JudgeReadyEvidence(BaseModel):
     auth_context_name: str | None = None
     hypothesis: str = ""
     signals: list[str] = Field(default_factory=list)
+    derived_signals: list[str] = Field(default_factory=list)
+    strong_indicators: list[str] = Field(default_factory=list)
+    indicators: list[str] = Field(default_factory=list)
+    classification_hint: str = ""
+    response_summary: dict[str, Any] = Field(default_factory=dict)
     candidate_finding: dict[str, Any] = Field(default_factory=dict)
     tool_summary: dict[str, Any] = Field(default_factory=dict)
     reproduction: dict[str, Any] = Field(default_factory=dict)

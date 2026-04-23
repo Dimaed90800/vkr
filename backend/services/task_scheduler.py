@@ -71,7 +71,11 @@ class TaskScheduler:
             skipped_task_ids=[],
             updated_state=scheduler_state,
         )
-        if selection.selected_task_id is not None and prioritizing_preparation:
+        if (
+            selection.selected_task_id is not None
+            and prioritizing_preparation
+            and selection.reason != "selected_materialization_preparation_despite_class_budget"
+        ):
             selection = selection.model_copy(update={"reason": "selected_highest_priority_preparation_task"})
         self._log_scheduler_selection(
             original_tasks=tasks,
@@ -132,12 +136,7 @@ class TaskScheduler:
             if task.id != selected_task.id
             and self.fingerprints.task_fingerprint(task) != selected_fingerprint
         ]
-        ordered_remaining, _ = self.order_queue(
-            remaining_tasks,
-            state=selection.updated_state,
-            fairness=fairness_config,
-            execution_context=execution_context,
-        )
+        ordered_remaining = self._order_remaining_lightweight(remaining_tasks)
         return NextTaskResponse(
             next_task=selected_task,
             remaining_tasks=ordered_remaining,
@@ -150,6 +149,17 @@ class TaskScheduler:
             executable_preparation_task_count=len(executable_preparation),
             blocked_by_reason=self._blocked_by_reason(decisions),
             top_non_executable_tasks=self._top_non_executable_tasks(cleaned_tasks, decisions),
+        )
+
+    def _order_remaining_lightweight(self, tasks: list[TaskModel]) -> list[TaskModel]:
+        return sorted(
+            tasks,
+            key=lambda item: (
+                0 if str(item.readiness or "").lower() == "needs_preparation" else 1,
+                -int(item.priority or 0),
+                int(item.followup_generation or 0),
+                str(item.id or ""),
+            ),
         )
 
     def update_queue_after_verdict(
@@ -190,6 +200,12 @@ class TaskScheduler:
                 requeued_task_id=None,
                 generated_followup_task_ids=[],
             )
+
+        self._log_judge_input_handoff(
+            active_task=active_task,
+            scheduler_state=scheduler_state,
+            evidence=evidence or {},
+        )
 
         task_fingerprint = self.fingerprints.task_fingerprint(active_task)
         finding_fingerprint = self.fingerprints.finding_fingerprint(active_task, normalized_verdict)
@@ -393,12 +409,7 @@ class TaskScheduler:
             execution_context=execution_context,
             scheduler_state=scheduler_state,
         )
-        ordered_pending, _ = self.order_queue(
-            enriched_pending,
-            scheduler_state,
-            fairness_config,
-            execution_context=updated_context,
-        )
+        ordered_pending = self._order_remaining_lightweight(self._semantic_cleanup(enriched_pending, scheduler_state))
         return QueueUpdateResponse(
             pending_tasks=ordered_pending,
             scheduler_state=scheduler_state,
@@ -569,6 +580,18 @@ class TaskScheduler:
                 reason="selected_highest_priority_eligible_task",
                 deferred_classes=sorted(set(deferred_classes)),
                 skipped_task_ids=skipped_task_ids,
+                updated_state=updated_state,
+            )
+
+        materialization_task = self._materialization_preparation_fallback(ordered_tasks)
+        if materialization_task is not None:
+            updated_state = self._advance_state(materialization_task, scheduler_state, count_class_budget=False)
+            return SchedulerSelection(
+                selected_task_id=materialization_task.id,
+                selected_class=str(materialization_task.class_name or "").lower(),
+                reason="selected_materialization_preparation_despite_class_budget",
+                deferred_classes=sorted(set(deferred_classes)),
+                skipped_task_ids=[task_id for task_id in skipped_task_ids if task_id != materialization_task.id],
                 updated_state=updated_state,
             )
 
@@ -877,7 +900,7 @@ class TaskScheduler:
         enriched: list[TaskModel] = []
         enriched_ids: list[str] = []
         for task in tasks:
-            updated = task.model_copy(deep=True)
+            updated = DEFAULT_TASK_TOOLING.mutable_task_copy(task)
             if not self._task_accepts_family(updated, resource_family):
                 enriched.append(updated)
                 continue
@@ -907,7 +930,7 @@ class TaskScheduler:
     ) -> TaskModel | None:
         if active_task is None or active_task.class_name not in {"authorization", "business_logic"}:
             return None
-        replay = active_task.model_copy(deep=True)
+        replay = DEFAULT_TASK_TOOLING.mutable_task_copy(active_task)
         replay.id = f"{active_task.id}__prepared_replay"
         replay.parent_task_id = str(active_task.parent_task_id or active_task.id)
         replay.followup_generation = int(active_task.followup_generation or 0) + 1
@@ -986,13 +1009,14 @@ class TaskScheduler:
             for task in tasks
         )
 
-    def _advance_state(self, task: TaskModel, state: SchedulerState) -> SchedulerState:
+    def _advance_state(self, task: TaskModel, state: SchedulerState, *, count_class_budget: bool = True) -> SchedulerState:
         task_class = str(task.class_name or "").lower()
         budget_used = dict(state.class_budget_used)
         tasks_completed = dict(state.class_tasks_completed)
         retries_used = dict(state.class_retries_used)
 
-        budget_used[task_class] = int(budget_used.get(task_class, 0) or 0) + 1
+        if count_class_budget:
+            budget_used[task_class] = int(budget_used.get(task_class, 0) or 0) + 1
         tasks_completed[task_class] = int(tasks_completed.get(task_class, 0) or 0) + 1
         if int(task.retry_count or 0) > 0:
             retries_used[task_class] = int(retries_used.get(task_class, 0) or 0) + 1
@@ -1013,6 +1037,31 @@ class TaskScheduler:
                 "deepening_budget_used": int(state.deepening_budget_used or 0) + (1 if int(task.followup_generation or 0) > 0 else 0),
             }
         )
+
+    def _materialization_preparation_fallback(self, ordered_tasks: list[TaskModel]) -> TaskModel | None:
+        for task in ordered_tasks:
+            if self._is_materialization_preparation_task(task):
+                return task
+        return None
+
+    def _is_materialization_preparation_task(self, task: TaskModel) -> bool:
+        if str(task.readiness or "").lower() != "needs_preparation":
+            return False
+        strategy = str(task.test_strategy or "").strip().lower()
+        strategy_family = str(task.strategy_family or "").strip().lower()
+        if strategy not in {"create_object_then_replay", "list_then_select_object_then_replay"} and strategy_family != "object_materialization":
+            return False
+        tools = {
+            str(item or "").strip()
+            for item in [
+                *(task.allowed_tools or []),
+                *(task.preparation_options or []),
+                task.preferred_tool,
+                task.recommended_next_step,
+            ]
+            if str(item or "").strip()
+        }
+        return "create_test_object" in tools and not self._normalize_object_id(task.params.selected_object_id)
 
     def _selection_candidates(
         self,
@@ -1211,6 +1260,87 @@ class TaskScheduler:
             extra={
                 "removed_task": removed_task,
                 "removed_siblings": removed_task and pending_after < pending_before,
+            },
+        )
+
+    def _log_judge_input_handoff(
+        self,
+        *,
+        active_task: TaskModel,
+        scheduler_state: SchedulerState,
+        evidence: dict,
+    ) -> None:
+        summary = evidence.get("response_summary") if isinstance(evidence.get("response_summary"), dict) else {}
+        signals = evidence.get("signals") if isinstance(evidence.get("signals"), list) else []
+        strong = evidence.get("strong_indicators") if isinstance(evidence.get("strong_indicators"), list) else []
+        indicators = evidence.get("indicators") if isinstance(evidence.get("indicators"), list) else []
+        tool_summary = evidence.get("tool_summary") if isinstance(evidence.get("tool_summary"), dict) else {}
+        tool_name = str(evidence.get("tool_name") or summary.get("tool_name") or "").strip()
+        wrapper_evidence_present = bool(str(evidence.get("schema_version") or "").startswith("judge-ready-evidence/") or tool_name.startswith("schemathesis_"))
+        missing_fields = []
+        if wrapper_evidence_present:
+            for field_name, value in {
+                "signals": signals,
+                "strong_indicators": strong,
+                "tool_summary": tool_summary,
+                "classification_hint": evidence.get("classification_hint") or summary.get("finding_type_hint"),
+            }.items():
+                if not value:
+                    missing_fields.append(field_name)
+        trace_context = self.diagnostics.trace_context(
+            run_id=scheduler_state.run_id,
+            root_trace_id=scheduler_state.root_trace_id,
+            task=active_task,
+        )
+        self.diagnostics.emit(
+            event_type="judge_input_source_selected",
+            component="judge_handoff",
+            status="ok",
+            summary="Selected evidence source for judge handoff.",
+            run_id=scheduler_state.run_id,
+            trace_context=trace_context,
+            reason={
+                "source": "wrapper" if wrapper_evidence_present else "legacy",
+                "legacy_overwrite_detected": False,
+            },
+            artifacts={
+                "tool_name": tool_name,
+                "wrapper_evidence_present": wrapper_evidence_present,
+            },
+        )
+        self.diagnostics.emit(
+            event_type="judge_input_built",
+            component="judge_handoff",
+            status="ok",
+            summary="Built judge input for queue update.",
+            run_id=scheduler_state.run_id,
+            trace_context=trace_context,
+            counters={
+                "signals_count": len(signals),
+                "strong_indicators_count": len(strong),
+                "indicators_count": len(indicators),
+            },
+            artifacts={
+                "tool_name": tool_name,
+                "classification_hint": evidence.get("classification_hint") or summary.get("finding_type_hint"),
+                "tool_summary_present": bool(tool_summary),
+                "evidence_strength": summary.get("evidence_strength"),
+            },
+        )
+        self.diagnostics.emit(
+            event_type="judge_input_wrapper_fields_present" if wrapper_evidence_present and not missing_fields else "judge_input_wrapper_fields_missing",
+            component="judge_handoff",
+            status="ok" if not missing_fields else "partial",
+            summary="Checked wrapper fields in judge input.",
+            run_id=scheduler_state.run_id,
+            trace_context=trace_context,
+            reason={"missing_fields": missing_fields},
+            artifacts={
+                "tool_name": tool_name,
+                "signals_count": len(signals),
+                "strong_indicators_count": len(strong),
+                "tool_summary_present": bool(tool_summary),
+                "legacy_overwrite_detected": False,
             },
         )
 
