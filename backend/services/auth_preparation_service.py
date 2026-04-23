@@ -196,11 +196,14 @@ class AuthPreparationService:
                 )
                 if self._is_success(register_result.status_code):
                     register_success_total += 1
-                    registration_identity = self._authenticated_identity_from_result(
-                        identity,
-                        register_result,
-                        fallback_cookies={},
-                    )
+                    try:
+                        registration_identity = self._authenticated_identity_from_result(
+                            identity,
+                            register_result,
+                            fallback_cookies={},
+                        )
+                    except Exception:
+                        registration_identity = dict(identity)
                     self._emit_prep_event(
                         request=request,
                         event_type="auth_provision_identity_created",
@@ -643,20 +646,17 @@ class AuthPreparationService:
                 "failure_reason": "",
                 "source": reused["source"],
             }
-        create_candidates = []
-        if explicit_create_endpoint:
-            create_candidates.append({"path": explicit_create_endpoint, "method": str(explicit_create_method or "POST").upper()})
-        create_candidates.extend(support.get("creator_candidates") or [])
-        inferred_create_endpoint = ""
-        if not create_candidates:
-            inferred_create_endpoint = self._infer_create_endpoint(target_endpoint)
-            if inferred_create_endpoint:
-                create_candidates.append({"path": inferred_create_endpoint, "method": str(explicit_create_method or "POST").upper()})
-        list_candidates = list(support.get("list_candidates") or [])
-        if not list_candidates:
-            inferred_list_endpoint = self._infer_list_endpoint(target_endpoint)
-            if inferred_list_endpoint:
-                list_candidates.append({"path": inferred_list_endpoint, "method": "GET"})
+        create_candidates = self._materialization_create_candidates(
+            target_endpoint=target_endpoint,
+            explicit_create_endpoint=explicit_create_endpoint,
+            explicit_create_method=explicit_create_method,
+            support_candidates=support.get("creator_candidates") or [],
+        )
+        list_candidates = self._materialization_list_candidates(
+            target_endpoint=target_endpoint,
+            support_candidates=support.get("list_candidates") or [],
+            target_method=str(request.task.method or "GET"),
+        )
 
         if list_candidates:
             self._emit_prep_event(
@@ -2192,6 +2192,153 @@ class AuthPreparationService:
         if "/mechanic/" in lowered and ("report" in lowered or "service_requests" in lowered):
             return "/workshop/api/mechanic/mechanic_report"
         return ""
+
+    def _materialization_create_candidates(
+        self,
+        *,
+        target_endpoint: str,
+        explicit_create_endpoint: str | None,
+        explicit_create_method: str,
+        support_candidates: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        inferred_create_endpoint = self._infer_create_endpoint(target_endpoint)
+        explicit_method = str(explicit_create_method or "POST").upper()
+        seen: set[tuple[str, str]] = set()
+        candidates: list[dict[str, Any]] = []
+        for raw in [
+            *([{"path": explicit_create_endpoint, "method": explicit_method, "source": "explicit"}] if explicit_create_endpoint else []),
+            *(support_candidates or []),
+            *([{"path": inferred_create_endpoint, "method": explicit_method, "source": "inferred"}] if inferred_create_endpoint else []),
+        ]:
+            if not isinstance(raw, Mapping):
+                continue
+            path = str(raw.get("path") or "").strip()
+            method = str(raw.get("method") or explicit_method or "POST").upper()
+            if not path or method not in {"POST", "PUT", "PATCH"}:
+                continue
+            if self._looks_action_like_path(path) and path not in {str(explicit_create_endpoint or "").strip(), inferred_create_endpoint}:
+                continue
+            key = (path, method)
+            if key in seen:
+                continue
+            seen.add(key)
+            item = dict(raw)
+            item["path"] = path
+            item["method"] = method
+            item["source"] = str(raw.get("source") or ("inferred" if path == inferred_create_endpoint else "support")).strip() or "support"
+            candidates.append(item)
+        candidates.sort(
+            key=lambda item: (
+                0 if str(item.get("path") or "") == inferred_create_endpoint else 1,
+                0 if str(item.get("source") or "") == "explicit" else 1,
+                len(str(item.get("path") or "")),
+            )
+        )
+        return candidates[:5]
+
+    def _materialization_list_candidates(
+        self,
+        *,
+        target_endpoint: str,
+        support_candidates: list[dict[str, Any]],
+        target_method: str,
+    ) -> list[dict[str, Any]]:
+        inferred_list_endpoint = self._infer_list_endpoint(target_endpoint)
+        collection_self_endpoint = target_endpoint if self._looks_collection_endpoint(target_endpoint, target_method) else ""
+        seen: set[tuple[str, str]] = set()
+        candidates: list[dict[str, Any]] = []
+        for raw in [
+            *([{"path": inferred_list_endpoint, "method": "GET", "source": "inferred"}] if inferred_list_endpoint else []),
+            *([{"path": collection_self_endpoint, "method": "GET", "source": "target"}] if collection_self_endpoint else []),
+            *(support_candidates or []),
+        ]:
+            if not isinstance(raw, Mapping):
+                continue
+            path = str(raw.get("path") or "").strip()
+            method = str(raw.get("method") or "GET").upper()
+            if not path or method not in {"GET", "HEAD"}:
+                continue
+            if self._looks_action_like_path(path) and path not in {inferred_list_endpoint, collection_self_endpoint}:
+                continue
+            if self._path_requires_object_id(path):
+                continue
+            key = (path, method)
+            if key in seen:
+                continue
+            seen.add(key)
+            item = dict(raw)
+            item["path"] = path
+            item["method"] = method
+            item["source"] = str(raw.get("source") or ("inferred" if path == inferred_list_endpoint else "target" if path == collection_self_endpoint else "support")).strip() or "support"
+            candidates.append(item)
+        candidates.sort(
+            key=lambda item: (
+                0 if str(item.get("path") or "") == inferred_list_endpoint else 1,
+                0 if str(item.get("path") or "") == collection_self_endpoint else 1,
+                0 if str(item.get("source") or "") in {"inferred", "target"} else 1,
+                len(str(item.get("path") or "")),
+            )
+        )
+        return candidates[:5]
+
+    def _looks_action_like_path(self, path: str) -> bool:
+        segments = [segment for segment in str(path or "").strip().lower().split("/") if segment]
+        if not segments:
+            return False
+        action_hints = {
+            "convert",
+            "upload",
+            "download",
+            "receive",
+            "contact",
+            "return",
+            "approve",
+            "reject",
+            "delete",
+            "update",
+            "change",
+            "reset",
+            "confirm",
+            "search",
+            "verify",
+            "login",
+            "signin",
+            "signup",
+            "register",
+        }
+        terminal = segments[-1]
+        if terminal in {"all", "list", "recent", "mine", "vehicles", "orders", "videos", "posts", "users"}:
+            return False
+        if "{" in terminal or "}" in terminal:
+            return False
+        for hint in action_hints:
+            if terminal == hint or terminal.startswith(hint + "_") or terminal.endswith("_" + hint) or terminal.startswith(hint + "-") or terminal.endswith("-" + hint):
+                return True
+        return False
+
+    def _looks_collection_endpoint(self, path: str, method: str) -> bool:
+        normalized_path = str(path or "").strip()
+        if str(method or "GET").upper() not in {"GET", "HEAD"}:
+            return False
+        if not normalized_path:
+            return False
+        if self._path_requires_object_id(normalized_path):
+            return False
+        if normalized_path.lower().endswith("/all"):
+            return True
+        terminal = normalized_path.rstrip("/").split("/")[-1].lower()
+        if terminal in {"vehicles", "orders", "videos", "posts", "users", "all", "recent", "mine"}:
+            return True
+        return terminal.endswith("s") and terminal not in {"status"}
+
+    def _path_requires_object_id(self, path: str) -> bool:
+        lowered = str(path or "").strip().lower()
+        if not lowered:
+            return False
+        dynamic_segments = re.findall(r"\{([^}]+)\}", lowered)
+        if any(segment for segment in dynamic_segments if segment not in {"version"}):
+            return True
+        return bool(re.search(r"/(?:\d+|[0-9a-f]{8}-[0-9a-f-]{4,})$", lowered))
 
     def _reuse_materialized_context(self, request: ToolTestRequest, resource_family: str) -> dict[str, Any]:
         family = str(resource_family or "").strip().lower()
