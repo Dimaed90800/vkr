@@ -649,6 +649,7 @@ class AuthPreparationService:
                 "source": reused["source"],
             }
         create_candidates = self._materialization_create_candidates(
+            request=request,
             target_endpoint=target_endpoint,
             explicit_create_endpoint=explicit_create_endpoint,
             explicit_create_method=explicit_create_method,
@@ -778,6 +779,7 @@ class AuthPreparationService:
             request_url = self._resolve_url(str(request.execution_context.target_url), materialized_path)
             self._validate_scope(request, request_url)
             synthesis_metadata = synthesis.get("synthesis_metadata") or {}
+            candidate_content_type = str(candidate.get("content_type") or synthesis.get("media_type") or "application/json").strip().lower()
             body_variants = self._create_body_variants(
                 candidate_path=candidate_path,
                 baseline_body=baseline_body,
@@ -785,25 +787,30 @@ class AuthPreparationService:
                 request=request,
                 fallback_body=fallback_body,
             )
+            media_type_variants = self._materialization_media_type_variants(candidate_path, candidate_content_type)
             harvested = {"harvested_object_ids": [], "harvested_links": []}
             object_id = None
-            for variant_index, body in enumerate(body_variants, start=1):
-                last_result = await self.http_client.execute(
-                    method=candidate_method,
-                    url=request_url,
-                    headers=headers,
-                    query_params=query_params,
-                    json_body=body or None,
-                )
-                harvested = self.baseline_synthesis.harvest_response(last_result.json_body(), last_result.headers)
+            attempt_index = 0
+            for body in body_variants:
+                for content_type in media_type_variants:
+                    attempt_index += 1
+                    last_result = await self._execute_materialization_request(
+                        method=candidate_method,
+                        url=request_url,
+                        headers=headers,
+                        query_params=query_params,
+                        body=body,
+                        content_type=content_type,
+                    )
+                    harvested = self.baseline_synthesis.harvest_response(last_result.json_body(), last_result.headers)
                 harvested = self._merge_harvested_candidates(harvested, last_result.json_body())
                 object_id = self._extract_object_id(last_result)
                 self._emit_prep_event(
                     request=request,
                     event_type="object_materialization_attempted",
                     status="success" if self._is_success(last_result.status_code) else "partial",
-                    summary=f"Create/list materialization attempt {variant_index} for family={resource_family}.",
-                    counters={"body_variant_index": variant_index},
+                    summary=f"Create/list materialization attempt {attempt_index} for family={resource_family}.",
+                    counters={"body_variant_index": attempt_index},
                     reason={"failure_reason": None if self._is_success(last_result.status_code) else "unexpected_status_code"},
                     artifacts={
                         "resource_family": resource_family,
@@ -811,7 +818,8 @@ class AuthPreparationService:
                         "candidate_method": candidate_method,
                         "request_body_keys": sorted(list((body or {}).keys())) if isinstance(body, dict) else [],
                         "status_code": last_result.status_code,
-                        "response_body_preview": (last_result.body_text or "")[:200],
+                        "content_type": content_type,
+                        "response_body_preview": self._safe_response_preview(last_result.body_text),
                     },
                 )
                 if object_id is None and self._looks_like_vehicle_create(candidate_path):
@@ -2242,9 +2250,20 @@ class AuthPreparationService:
             return "/workshop/api/mechanic/mechanic_report"
         return ""
 
+    def _operation_request_media_type(self, request: ToolTestRequest | None, path: str, method: str) -> str | None:
+        if request is None:
+            return None
+        spec_text = self._spec_text_for_request(request)
+        operation = self.baseline_synthesis.find_operation(spec_text, path, method)
+        if not isinstance(operation, Mapping):
+            return None
+        media_type = str(operation.get("_request_media_type") or "").strip()
+        return media_type or None
+
     def _materialization_create_candidates(
         self,
         *,
+        request: ToolTestRequest | None = None,
         target_endpoint: str,
         explicit_create_endpoint: str | None,
         explicit_create_method: str,
@@ -2275,6 +2294,11 @@ class AuthPreparationService:
             item["path"] = path
             item["method"] = method
             item["source"] = str(raw.get("source") or ("inferred" if path == inferred_create_endpoint else "support")).strip() or "support"
+            item["content_type"] = str(
+                raw.get("content_type")
+                or self._operation_request_media_type(request, path, method)
+                or "application/json"
+            ).strip() or "application/json"
             candidates.append(item)
         candidates.sort(
             key=lambda item: (
@@ -2503,6 +2527,63 @@ class AuthPreparationService:
             "description": "Created by bounded auth preparation tool.",
         }
 
+    def _materialization_media_type_variants(self, candidate_path: str, candidate_content_type: str) -> list[str]:
+        values: list[str] = []
+        base = str(candidate_content_type or "application/json").strip().lower() or "application/json"
+        for item in [base]:
+            if item not in values:
+                values.append(item)
+        lowered = str(candidate_path or "").lower()
+        if "/videos" in lowered:
+            for item in ("multipart/form-data", "application/json"):
+                if item not in values:
+                    values.append(item)
+        elif base == "application/json":
+            for item in ("application/x-www-form-urlencoded",):
+                if item not in values:
+                    values.append(item)
+        elif base in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+            if "application/json" not in values:
+                values.append("application/json")
+        return values[:3]
+
+    async def _execute_materialization_request(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: Mapping[str, Any] | None,
+        query_params: Mapping[str, Any] | None,
+        body: dict[str, Any] | None,
+        content_type: str,
+    ) -> HttpExecutionResult:
+        request_headers = dict(headers or {})
+        request_headers["Content-Type"] = content_type
+        normalized_body = dict(body or {}) if isinstance(body, dict) else {}
+        if content_type == "application/x-www-form-urlencoded":
+            return await self.http_client.execute(
+                method=method,
+                url=url,
+                headers=request_headers,
+                query_params=dict(query_params or {}),
+                form_data=normalized_body,
+            )
+        if content_type == "multipart/form-data":
+            return await self.http_client.execute(
+                method=method,
+                url=url,
+                headers=request_headers,
+                query_params=dict(query_params or {}),
+                multipart_data=normalized_body,
+            )
+        return await self.http_client.execute(
+            method=method,
+            url=url,
+            headers=request_headers,
+            query_params=dict(query_params or {}),
+            json_body=normalized_body or None,
+        )
+
     def _create_body_variants(
         self,
         *,
@@ -2555,7 +2636,9 @@ class AuthPreparationService:
             return {
                 'videoName': f'autodast-{suffix}.mp4',
                 'video_url': f'http://example.test/{suffix}.mp4',
+                'videoUrl': f'http://example.test/{suffix}.mp4',
                 'conversion_params': '-v codec h264',
+                'conversionParams': '-v codec h264',
             }
         if '/workshop/api/shop/orders' in lowered:
             return {'product_id': 1, 'quantity': 1}

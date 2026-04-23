@@ -47,6 +47,8 @@ class HttpClient:
         headers: dict[str, str] | None = None,
         query_params: dict[str, Any] | None = None,
         json_body: Any | None = None,
+        form_data: dict[str, Any] | None = None,
+        multipart_data: dict[str, Any] | None = None,
     ) -> HttpExecutionResult:
         headers = dict(headers or {})
         query_params = dict(query_params or {})
@@ -60,13 +62,31 @@ class HttpClient:
             self.timeout_sec,
         )
 
+        request_kwargs: dict[str, Any] = {"headers": headers}
+        if multipart_data is not None:
+            content_type_key = next((key for key in list(headers.keys()) if key.lower() == "content-type"), None)
+            if content_type_key and str(headers.get(content_type_key) or "").lower().startswith("multipart/form-data"):
+                headers.pop(content_type_key, None)
+            request_kwargs["files"] = {
+                str(key): (None, "" if value is None else str(value))
+                for key, value in multipart_data.items()
+                if str(key).strip()
+            }
+        elif form_data is not None:
+            request_kwargs["data"] = {
+                str(key): "" if value is None else str(value)
+                for key, value in form_data.items()
+                if str(key).strip()
+            }
+        else:
+            request_kwargs["json"] = json_body
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec, follow_redirects=True) as client:
                 response = await client.request(
                     method_norm,
                     request_url,
-                    headers=headers,
-                    json=json_body,
+                    **request_kwargs,
                 )
         except httpx.RequestError as exc:
             logger.warning("HTTP request failed method=%s url=%s error=%s", method_norm, request_url, exc)

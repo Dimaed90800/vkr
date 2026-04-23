@@ -262,7 +262,13 @@ class OpenApiBaselineSynthesisService:
                 lowered_path = str(path).lower()
                 op_id = str(operation.get("operationId") or "").lower()
                 summary = str(operation.get("summary") or operation.get("description") or "").lower()
-                item = {"path": str(path), "method": method_upper}
+                request_schema, request_media_type = self._request_schema(operation, document, include_media=True)
+                item = {
+                    "path": str(path),
+                    "method": method_upper,
+                    "content_type": request_media_type,
+                    "request_body_keys": list(self._schema_property_names(request_schema)) if request_schema else [],
+                }
                 response_fields = self._response_schema_property_names(operation, document)
                 if self._is_creator_candidate(
                     method_upper=method_upper,
