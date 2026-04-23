@@ -1342,18 +1342,31 @@ class TaskScheduler:
     ) -> None:
         summary = evidence.get("response_summary") if isinstance(evidence.get("response_summary"), dict) else {}
         signals = evidence.get("signals") if isinstance(evidence.get("signals"), list) else []
+        if not signals:
+            signals = summary.get("signals") if isinstance(summary.get("signals"), list) else []
         strong = evidence.get("strong_indicators") if isinstance(evidence.get("strong_indicators"), list) else []
+        if not strong:
+            strong = summary.get("strong_indicators") if isinstance(summary.get("strong_indicators"), list) else []
         indicators = evidence.get("indicators") if isinstance(evidence.get("indicators"), list) else []
+        if not indicators:
+            indicators = summary.get("indicators") if isinstance(summary.get("indicators"), list) else []
         tool_summary = evidence.get("tool_summary") if isinstance(evidence.get("tool_summary"), dict) else {}
+        if not tool_summary:
+            tool_summary = summary.get("tool_summary") if isinstance(summary.get("tool_summary"), dict) else {}
         tool_name = str(evidence.get("tool_name") or summary.get("tool_name") or "").strip()
-        wrapper_evidence_present = bool(str(evidence.get("schema_version") or "").startswith("judge-ready-evidence/") or tool_name.startswith("schemathesis_"))
+        evidence_strength = str(summary.get("evidence_strength") or evidence.get("evidence_strength") or "").strip()
+        wrapper_evidence_present = bool(
+            str(evidence.get("schema_version") or "").startswith("judge-ready-evidence/")
+            or tool_name.startswith(("schemathesis_", "restler_", "akto_", "cats_", "astf_"))
+            or evidence_strength in {"sufficient_indicators", "generic_wrapper_output"}
+        )
         missing_fields = []
         if wrapper_evidence_present:
             for field_name, value in {
                 "signals": signals,
                 "strong_indicators": strong,
                 "tool_summary": tool_summary,
-                "classification_hint": evidence.get("classification_hint") or summary.get("finding_type_hint"),
+                "classification_hint": evidence.get("classification_hint") or summary.get("classification_hint") or summary.get("finding_type_hint"),
             }.items():
                 if not value:
                     missing_fields.append(field_name)
@@ -1392,15 +1405,20 @@ class TaskScheduler:
             },
             artifacts={
                 "tool_name": tool_name,
-                "classification_hint": evidence.get("classification_hint") or summary.get("finding_type_hint"),
+                "classification_hint": evidence.get("classification_hint") or summary.get("classification_hint") or summary.get("finding_type_hint"),
                 "tool_summary_present": bool(tool_summary),
                 "evidence_strength": summary.get("evidence_strength"),
             },
         )
+        wrapper_event_type = "judge_input_wrapper_fields_not_applicable"
+        wrapper_status = "ok"
+        if wrapper_evidence_present:
+            wrapper_event_type = "judge_input_wrapper_fields_present" if not missing_fields else "judge_input_wrapper_fields_missing"
+            wrapper_status = "ok" if not missing_fields else "partial"
         self.diagnostics.emit(
-            event_type="judge_input_wrapper_fields_present" if wrapper_evidence_present and not missing_fields else "judge_input_wrapper_fields_missing",
+            event_type=wrapper_event_type,
             component="judge_handoff",
-            status="ok" if not missing_fields else "partial",
+            status=wrapper_status,
             summary="Checked wrapper fields in judge input.",
             run_id=scheduler_state.run_id,
             trace_context=trace_context,
@@ -1411,6 +1429,7 @@ class TaskScheduler:
                 "strong_indicators_count": len(strong),
                 "tool_summary_present": bool(tool_summary),
                 "legacy_overwrite_detected": False,
+                "wrapper_evidence_present": wrapper_evidence_present,
             },
         )
 

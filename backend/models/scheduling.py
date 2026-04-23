@@ -12,12 +12,12 @@ TaskClass = Literal["authorization", "injection", "business_logic"]
 
 
 class FairnessConfig(BaseModel):
-    max_consecutive_tasks_per_class: int = 2
+    max_consecutive_tasks_per_class: int = 3
     max_tasks_per_class_per_run: dict[str, int] = Field(
         default_factory=lambda: {
-            "authorization": 4,
-            "injection": 4,
-            "business_logic": 4,
+            "authorization": 8,
+            "injection": 5,
+            "business_logic": 6,
         }
     )
 

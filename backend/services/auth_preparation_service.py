@@ -772,42 +772,71 @@ class AuthPreparationService:
                     "name": owner_identity.get("name"),
                 },
             )
-            body = fallback_body if isinstance(fallback_body, dict) else synthesis.get("baseline_body")
+            baseline_body = fallback_body if isinstance(fallback_body, dict) else synthesis.get("baseline_body")
             query_params = synthesis.get("baseline_query") or None
             materialized_path = self._materialize_from_values(candidate_path, synthesis.get("baseline_path") or {})
             request_url = self._resolve_url(str(request.execution_context.target_url), materialized_path)
             self._validate_scope(request, request_url)
-            last_result = await self.http_client.execute(
-                method=candidate_method,
-                url=request_url,
-                headers=headers,
-                query_params=query_params,
-                json_body=body or None,
-            )
             synthesis_metadata = synthesis.get("synthesis_metadata") or {}
-            harvested = self.baseline_synthesis.harvest_response(last_result.json_body(), last_result.headers)
-            harvested = self._merge_harvested_candidates(harvested, last_result.json_body())
-            object_id = self._extract_object_id(last_result)
-            if object_id is None and self._looks_like_vehicle_create(candidate_path):
-                object_id = await self._fetch_latest_vehicle_id(request, owner_identity)
-                if object_id and object_id not in harvested["harvested_object_ids"]:
-                    harvested["harvested_object_ids"].insert(0, object_id)
-            if object_id is None and self._is_success(last_result.status_code):
-                harvested_from_list = await self._harvest_from_list_candidates(
-                    request=request,
-                    owner_identity=owner_identity,
-                    list_candidates=list_candidates,
-                    resource_family=resource_family,
+            body_variants = self._create_body_variants(
+                candidate_path=candidate_path,
+                baseline_body=baseline_body,
+                owner_identity=owner_identity,
+                request=request,
+                fallback_body=fallback_body,
+            )
+            harvested = {"harvested_object_ids": [], "harvested_links": []}
+            object_id = None
+            for variant_index, body in enumerate(body_variants, start=1):
+                last_result = await self.http_client.execute(
+                    method=candidate_method,
+                    url=request_url,
+                    headers=headers,
+                    query_params=query_params,
+                    json_body=body or None,
                 )
-                if harvested_from_list["object_id"]:
-                    object_id = harvested_from_list["object_id"]
-                    for harvested_id in harvested_from_list["harvested_object_ids"]:
-                        if harvested_id not in harvested["harvested_object_ids"]:
-                            harvested["harvested_object_ids"].append(harvested_id)
-                    for harvested_link in harvested_from_list["harvested_links"]:
-                        if harvested_link not in harvested["harvested_links"]:
-                            harvested["harvested_links"].append(harvested_link)
-            if self._is_success(last_result.status_code) and object_id:
+                harvested = self.baseline_synthesis.harvest_response(last_result.json_body(), last_result.headers)
+                harvested = self._merge_harvested_candidates(harvested, last_result.json_body())
+                object_id = self._extract_object_id(last_result)
+                self._emit_prep_event(
+                    request=request,
+                    event_type="object_materialization_attempted",
+                    status="success" if self._is_success(last_result.status_code) else "partial",
+                    summary=f"Create/list materialization attempt {variant_index} for family={resource_family}.",
+                    counters={"body_variant_index": variant_index},
+                    reason={"failure_reason": None if self._is_success(last_result.status_code) else "unexpected_status_code"},
+                    artifacts={
+                        "resource_family": resource_family,
+                        "candidate_path": candidate_path,
+                        "candidate_method": candidate_method,
+                        "request_body_keys": sorted(list((body or {}).keys())) if isinstance(body, dict) else [],
+                        "status_code": last_result.status_code,
+                        "response_body_preview": (last_result.body_text or "")[:200],
+                    },
+                )
+                if object_id is None and self._looks_like_vehicle_create(candidate_path):
+                    object_id = await self._fetch_latest_vehicle_id(request, owner_identity)
+                    if object_id and object_id not in harvested["harvested_object_ids"]:
+                        harvested["harvested_object_ids"].insert(0, object_id)
+                harvested_from_list: dict[str, Any] | None = None
+                if object_id is None and list_candidates and (self._is_success(last_result.status_code) or last_result.status_code in {400, 403, 404, 409, 422, 500}):
+                    harvested_from_list = await self._harvest_from_list_candidates(
+                        request=request,
+                        owner_identity=owner_identity,
+                        list_candidates=list_candidates,
+                        resource_family=resource_family,
+                    )
+                    if harvested_from_list["object_id"]:
+                        object_id = harvested_from_list["object_id"]
+                        for harvested_id in harvested_from_list["harvested_object_ids"]:
+                            if harvested_id not in harvested["harvested_object_ids"]:
+                                harvested["harvested_object_ids"].append(harvested_id)
+                        for harvested_link in harvested_from_list["harvested_links"]:
+                            if harvested_link not in harvested["harvested_links"]:
+                                harvested["harvested_links"].append(harvested_link)
+                if object_id is not None or self._is_success(last_result.status_code):
+                    break
+            if object_id:
                 replay_endpoint_template = self._select_object_replay_endpoint(
                     request,
                     target_endpoint,
@@ -831,13 +860,20 @@ class AuthPreparationService:
                     counters={"harvested_object_id_count": len(harvested["harvested_object_ids"])},
                     artifacts={"resource_family": resource_family, "harvested_object_ids": harvested["harvested_object_ids"][:5]},
                 )
+                success_source = "harvested_from_create" if self._is_success(last_result.status_code) else "harvested_after_create_failure"
+                success_event = "object_materialization_create_success" if self._is_success(last_result.status_code) else "object_materialization_list_success"
+                success_summary = (
+                    f"Create-based object materialization succeeded for family={resource_family}."
+                    if self._is_success(last_result.status_code)
+                    else f"List fallback materialization succeeded after create failure for family={resource_family}."
+                )
                 self._emit_prep_event(
                     request=request,
-                    event_type="object_materialization_create_success",
+                    event_type=success_event,
                     status="success",
-                    summary=f"Create-based object materialization succeeded for family={resource_family}.",
+                    summary=success_summary,
                     counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested['harvested_object_ids'])},
-                    artifacts={"resource_family": resource_family, "object_id": object_id, "source": "harvested_from_create"},
+                    artifacts={"resource_family": resource_family, "object_id": object_id, "source": success_source},
                 )
                 self._emit_prep_event(
                     request=request,
@@ -869,7 +905,7 @@ class AuthPreparationService:
                     "replay_path_params": replay_path_params,
                     "synthesis_metadata": synthesis_metadata,
                     "failure_reason": "",
-                    "source": "harvested_from_create",
+                    "source": success_source,
                 }
             if last_result.status_code in {400, 422}:
                 failure_reason = self._stable_materialization_failure(synthesis.get("structured_failure_reason") or "success_path_not_reachable")
@@ -2447,7 +2483,7 @@ class AuthPreparationService:
                 "title": f"autodast-post-{suffix}",
                 "content": "Created by bounded auth preparation tool.",
             }
-        if "/user/videos/" in endpoint:
+        if "/user/videos" in endpoint:
             suffix = uuid.uuid4().hex[:6]
             return {
                 "id": 1,
@@ -2466,6 +2502,82 @@ class AuthPreparationService:
             "title": f"autodast-{uuid.uuid4().hex[:6]}",
             "description": "Created by bounded auth preparation tool.",
         }
+
+    def _create_body_variants(
+        self,
+        *,
+        candidate_path: str,
+        baseline_body: Any,
+        owner_identity: dict[str, Any],
+        request: ToolTestRequest,
+        fallback_body: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any] | None]:
+        inferred_body = self._infer_create_body(request, owner_identity)
+        endpoint_heuristic = self._infer_create_body_for_endpoint(candidate_path, owner_identity)
+        variants: list[dict[str, Any] | None] = []
+
+        def _add(candidate: Any) -> None:
+            if candidate is None:
+                if None not in variants:
+                    variants.append(None)
+                return
+            if not isinstance(candidate, dict):
+                return
+            normalized = {str(k): v for k, v in candidate.items() if str(k).strip()}
+            if normalized and normalized not in variants:
+                variants.append(normalized)
+
+        base = fallback_body if isinstance(fallback_body, dict) else (baseline_body if isinstance(baseline_body, dict) else None)
+        _add(base)
+        if isinstance(base, dict) and endpoint_heuristic:
+            merged = dict(base)
+            for key, value in endpoint_heuristic.items():
+                if key not in merged or merged.get(key) in (None, '', [], {}):
+                    merged[key] = value
+            _add(merged)
+        _add(endpoint_heuristic)
+        if isinstance(base, dict) and inferred_body:
+            merged_generic = dict(base)
+            for key, value in inferred_body.items():
+                if key not in merged_generic or merged_generic.get(key) in (None, '', [], {}):
+                    merged_generic[key] = value
+            _add(merged_generic)
+        _add(inferred_body)
+        if not variants:
+            variants.append(None)
+        return variants
+
+    def _infer_create_body_for_endpoint(self, endpoint: str, owner_identity: dict[str, Any]) -> dict[str, Any]:
+        lowered = str(endpoint or '').lower()
+        suffix = uuid.uuid4().hex[:6]
+        owner_name = str(owner_identity.get('name') or 'auto-owner')
+        if '/identity/api/v2/user/videos' in lowered or '/identity/api/v2/admin/videos' in lowered or lowered.endswith('/videos'):
+            return {
+                'videoName': f'autodast-{suffix}.mp4',
+                'video_url': f'http://example.test/{suffix}.mp4',
+                'conversion_params': '-v codec h264',
+            }
+        if '/workshop/api/shop/orders' in lowered:
+            return {'product_id': 1, 'quantity': 1}
+        if 'vehicle' in lowered:
+            return {
+                'vin': f'VIN{uuid.uuid4().hex[:8].upper()}',
+                'plateNumber': f'PLT{uuid.uuid4().hex[:8].upper()}',
+                'ownerName': owner_name,
+                'pincode': '123456',
+            }
+        if '/community/api/v2/community/posts' in lowered:
+            return {
+                'title': f'autodast-post-{suffix}',
+                'content': 'Created by bounded auth preparation tool.',
+            }
+        if '/mechanic/' in lowered and ('report' in lowered or 'service_requests' in lowered):
+            return {
+                'mechanic_code': 'TRAC_MECH1',
+                'problem_details': 'Bounded test report creation.',
+                'vin': '0BZCX25UTBJ987271',
+            }
+        return {}
 
     def _extract_object_id(self, result: HttpExecutionResult) -> str | None:
         json_body = result.json_body()
