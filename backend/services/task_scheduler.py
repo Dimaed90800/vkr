@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import Any
 
 try:
@@ -456,6 +457,8 @@ class TaskScheduler:
         harvested_object_ids = [str(item).strip() for item in (artifacts.get("harvested_object_ids") or []) if str(item).strip()]
         harvested_links = [str(item).strip() for item in (artifacts.get("harvested_links") or []) if str(item).strip()]
         workflow_context = artifacts.get("workflow_context") if isinstance(artifacts.get("workflow_context"), dict) else None
+        replay_endpoint = ""
+        replay_path_params: dict[str, Any] = {}
         propagated_object_id = None
         propagation_family = ""
         propagation_source = ""
@@ -464,6 +467,8 @@ class TaskScheduler:
             propagated_object_id = self._normalize_object_id(prepared_object.get("object_id"))
             propagation_family = str(prepared_object.get("resource_family") or prepared_object.get("object_type") or "").strip().lower()
             propagation_source = str(prepared_object.get("source") or "prepared_object").strip() or "prepared_object"
+            replay_endpoint = str(prepared_object.get("replay_endpoint_template") or prepared_object.get("replay_ready_endpoint") or "").strip()
+            replay_path_params = dict(prepared_object.get("replay_path_params") or {}) if isinstance(prepared_object.get("replay_path_params"), dict) else {}
             if propagated_object_id:
                 prepared_copy = dict(prepared_object)
                 prepared_copy["object_id"] = propagated_object_id
@@ -475,6 +480,8 @@ class TaskScheduler:
             propagated_object_id = self._normalize_object_id(workflow_context.get("object_id"))
             propagation_family = str(workflow_context.get("resource_family") or "").strip().lower()
             propagation_source = str(workflow_context.get("source") or "workflow_context").strip() or "workflow_context"
+            replay_endpoint = replay_endpoint or str(workflow_context.get("replay_endpoint_template") or workflow_context.get("replay_ready_endpoint") or "").strip()
+            replay_path_params = dict(workflow_context.get("replay_path_params") or {}) if isinstance(workflow_context.get("replay_path_params"), dict) else replay_path_params
             if propagated_object_id:
                 context.workflow_context = dict(workflow_context)
 
@@ -509,9 +516,11 @@ class TaskScheduler:
                 pending,
                 object_id=propagated_object_id,
                 resource_family=propagation_family,
+                replay_endpoint=replay_endpoint,
+                replay_path_params=replay_path_params,
             )
             if not enriched_task_ids and active_task is not None:
-                replay = self._build_post_preparation_replay_task(active_task, propagated_object_id, propagation_family)
+                replay = self._build_post_preparation_replay_task(active_task, propagated_object_id, propagation_family, replay_endpoint=replay_endpoint, replay_path_params=replay_path_params)
                 if replay is not None:
                     pending = [replay, *pending]
                     enriched_task_ids.append(replay.id)
@@ -860,7 +869,22 @@ class TaskScheduler:
         if bool(task.params.requires_object_id_enrichment) or bool(task.prerequisites.requires_object_id):
             return True
         endpoint = str(task.endpoint or "")
-        return "{" in endpoint and "}" in endpoint
+        if "{" in endpoint and "}" in endpoint:
+            return True
+        strategy = str(task.test_strategy or "").strip().lower()
+        subtype = str(task.subtype or "").strip().lower()
+        hypothesis_family = str(task.hypothesis_family or "").strip().lower()
+        return strategy in {"object_specific_auth_probe", "create_object_then_replay", "list_then_select_object_then_replay"} or subtype == "bola" or hypothesis_family == "object_authorization"
+
+    def _should_apply_object_replay_endpoint(self, task: TaskModel, replay_endpoint: str) -> bool:
+        endpoint_value = str(replay_endpoint or "").strip()
+        if not endpoint_value:
+            return False
+        if self._is_object_dependent_task(task):
+            return True
+        strategy = str(task.test_strategy or "").strip().lower()
+        origin_reason = str(task.origin_reason or "").strip().lower()
+        return strategy.endswith("_replay") or origin_reason == "preparation_replay"
 
     def _direct_test_tool(self, task: TaskModel) -> str:
         preferred = str(task.preferred_tool or (task.tool_preference.preferred_tool if task.tool_preference else "") or "").strip()
@@ -896,6 +920,8 @@ class TaskScheduler:
         *,
         object_id: str,
         resource_family: str,
+        replay_endpoint: str = "",
+        replay_path_params: Mapping[str, Any] | None = None,
     ) -> tuple[list[TaskModel], list[str]]:
         enriched: list[TaskModel] = []
         enriched_ids: list[str] = []
@@ -912,6 +938,14 @@ class TaskScheduler:
             updated.params.requires_object_id_enrichment = False
             updated.capability_state["has_object_candidates"] = True
             updated.context_source = updated.context_source or "propagated"
+            if self._should_apply_object_replay_endpoint(updated, replay_endpoint):
+                updated.endpoint = replay_endpoint
+                placeholders = self._extract_placeholders(replay_endpoint)
+                if placeholders:
+                    updated.params.object_param_name = str(placeholders[0])
+                elif isinstance(replay_path_params, Mapping) and replay_path_params:
+                    first_key = next(iter(replay_path_params.keys()))
+                    updated.params.object_param_name = str(first_key)
             if updated.readiness == "needs_preparation" and self._is_object_dependent_task(updated):
                 updated.readiness = "ready_to_test"
                 updated.allowed_tools = [self._direct_test_tool(updated)]
@@ -927,6 +961,9 @@ class TaskScheduler:
         active_task: TaskModel,
         object_id: str,
         resource_family: str,
+        *,
+        replay_endpoint: str = "",
+        replay_path_params: Mapping[str, Any] | None = None,
     ) -> TaskModel | None:
         if active_task is None or active_task.class_name not in {"authorization", "business_logic"}:
             return None
@@ -942,6 +979,13 @@ class TaskScheduler:
             candidates.insert(0, object_id)
         replay.params.object_id_candidates = candidates[:10]
         replay.resource_family = replay.resource_family or resource_family
+        if self._should_apply_object_replay_endpoint(replay, replay_endpoint):
+            replay.endpoint = replay_endpoint
+            placeholders = self._extract_placeholders(replay_endpoint)
+            if placeholders:
+                replay.params.object_param_name = str(placeholders[0])
+            elif isinstance(replay_path_params, Mapping) and replay_path_params:
+                replay.params.object_param_name = str(next(iter(replay_path_params.keys())))
         replay.readiness = "ready_to_test"
         replay.allowed_tools = [self._direct_test_tool(replay)]
         replay.preparation_options = []
@@ -1062,6 +1106,22 @@ class TaskScheduler:
             if str(item or "").strip()
         }
         return "create_test_object" in tools and not self._normalize_object_id(task.params.selected_object_id)
+
+    def _extract_placeholders(self, endpoint: str) -> list[str]:
+        placeholders: list[str] = []
+        current = ""
+        in_placeholder = False
+        for char in str(endpoint or ""):
+            if char == "{":
+                current = ""
+                in_placeholder = True
+            elif char == "}":
+                if current:
+                    placeholders.append(current)
+                in_placeholder = False
+            elif in_placeholder:
+                current += char
+        return placeholders
 
     def _materialization_preparation_tasks(self, tasks: list[TaskModel]) -> list[TaskModel]:
         prioritized = [task for task in tasks if self._is_materialization_preparation_task(task)]

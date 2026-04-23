@@ -498,6 +498,7 @@ class AuthPreparationService:
                 "email": str(owner_identity.get("email") or ""),
                 "username": str(owner_identity.get("username") or ""),
             },
+            "replay_endpoint_template": materialized.get("replay_endpoint_template"),
             "replay_ready_endpoint": materialized.get("replay_ready_endpoint"),
             "replay_path_params": materialized.get("replay_path_params") or {},
         } if object_id not in (None, "") else None
@@ -534,6 +535,7 @@ class AuthPreparationService:
                         "resource_family": str(materialized.get("resource_family") or ""),
                         "object_id": object_id,
                         "create_endpoint": request_url,
+                        "replay_endpoint_template": materialized.get("replay_endpoint_template"),
                         "replay_ready_endpoint": materialized.get("replay_ready_endpoint"),
                         "replay_path_params": materialized.get("replay_path_params") or {},
                     },
@@ -702,6 +704,13 @@ class AuthPreparationService:
                     counters={"total_materialized_objects": 1, "total_harvested_ids": len(harvested_from_list['harvested_object_ids'])},
                     artifacts={"resource_family": resource_family, "object_id": harvested_from_list["object_id"], "source": "harvested_from_list"},
                 )
+                replay_endpoint_template = self._select_object_replay_endpoint(
+                    request,
+                    target_endpoint,
+                    resource_family,
+                    preferred_method=str(request.task.method or "GET"),
+                )
+                replay_path_params = self._replay_path_params(request, replay_endpoint_template, harvested_from_list["object_id"])
                 return {
                     "result": HttpExecutionResult(method="GET", url="", status_code=200, headers={}, body_text="", elapsed_ms=None, error=None),
                     "request_url": "",
@@ -711,12 +720,9 @@ class AuthPreparationService:
                     "harvested_links": harvested_from_list["harvested_links"],
                     "resource_family": resource_family,
                     "object_type": self._object_type(target_endpoint),
-                    "replay_ready_endpoint": self._replay_ready_endpoint(
-                        request,
-                        target_endpoint,
-                        self._replay_path_params(request, target_endpoint, harvested_from_list["object_id"]),
-                    ),
-                    "replay_path_params": self._replay_path_params(request, target_endpoint, harvested_from_list["object_id"]),
+                    "replay_endpoint_template": replay_endpoint_template,
+                    "replay_ready_endpoint": self._replay_ready_endpoint(request, replay_endpoint_template, replay_path_params),
+                    "replay_path_params": replay_path_params,
                     "synthesis_metadata": {"source": "harvested_from_list"},
                     "failure_reason": "",
                     "source": "harvested_from_list",
@@ -802,7 +808,13 @@ class AuthPreparationService:
                         if harvested_link not in harvested["harvested_links"]:
                             harvested["harvested_links"].append(harvested_link)
             if self._is_success(last_result.status_code) and object_id:
-                replay_path_params = self._replay_path_params(request, target_endpoint, object_id)
+                replay_endpoint_template = self._select_object_replay_endpoint(
+                    request,
+                    target_endpoint,
+                    resource_family,
+                    preferred_method=str(request.task.method or "GET"),
+                )
+                replay_path_params = self._replay_path_params(request, replay_endpoint_template, object_id)
                 self._emit_prep_event(
                     request=request,
                     event_type="object_materialization_id_harvested",
@@ -852,7 +864,8 @@ class AuthPreparationService:
                     "harvested_links": harvested["harvested_links"],
                     "resource_family": resource_family,
                     "object_type": self._object_type(target_endpoint),
-                    "replay_ready_endpoint": self._replay_ready_endpoint(request, target_endpoint, replay_path_params),
+                    "replay_endpoint_template": replay_endpoint_template,
+                    "replay_ready_endpoint": self._replay_ready_endpoint(request, replay_endpoint_template, replay_path_params),
                     "replay_path_params": replay_path_params,
                     "synthesis_metadata": synthesis_metadata,
                     "failure_reason": "",
@@ -2511,6 +2524,70 @@ class AuthPreparationService:
                 seen.add(normalized)
                 deduped.append(normalized)
         return deduped[:20]
+
+    def _select_object_replay_endpoint(self, request: ToolTestRequest, endpoint: str, resource_family: str, preferred_method: str | None = None) -> str:
+        endpoint_value = str(endpoint or "").strip()
+        if not endpoint_value:
+            return endpoint_value
+        if self._extract_placeholders(endpoint_value):
+            return endpoint_value
+
+        spec_text = self._spec_text_for_request(request)
+        document = self.baseline_synthesis._parse_spec_text(spec_text)  # type: ignore[attr-defined]
+        paths = document.get("paths") or {}
+        if not isinstance(paths, Mapping):
+            return endpoint_value
+
+        target_segments = [segment for segment in endpoint_value.strip('/').split('/') if segment]
+        target_prefix = [segment for segment in target_segments if not segment.startswith('{')]
+        target_stem = '/'.join(target_prefix[:3])
+        preferred_method_upper = str(preferred_method or request.task.method or 'GET').upper()
+        family = str(resource_family or self._object_type(endpoint_value)).strip().lower()
+        best_path = endpoint_value
+        best_score = -999
+
+        for raw_path, path_item in paths.items():
+            if not isinstance(path_item, Mapping):
+                continue
+            candidate_path = str(raw_path or '').strip()
+            if not candidate_path or not self._extract_placeholders(candidate_path):
+                continue
+            for raw_method, operation in path_item.items():
+                method_upper = str(raw_method or '').upper()
+                if method_upper not in {'GET', 'DELETE', 'PUT', 'PATCH', 'POST'}:
+                    continue
+                if not isinstance(operation, Mapping):
+                    continue
+                inferred = self.baseline_synthesis.family_inference.infer(
+                    path=candidate_path,
+                    method=method_upper,
+                    tags=operation.get('tags') or [],
+                    operation_id=str(operation.get('operationId') or ''),
+                    summary=str(operation.get('summary') or operation.get('description') or ''),
+                    body_fields=list(self.baseline_synthesis._schema_property_names(self.baseline_synthesis._request_schema(operation, document))),  # type: ignore[attr-defined]
+                    response_fields=list(self.baseline_synthesis._response_schema_property_names(operation, document)),  # type: ignore[attr-defined]
+                )
+                score = 0
+                if family and inferred == family:
+                    score += 6
+                candidate_segments = [segment for segment in candidate_path.strip('/').split('/') if segment and not segment.startswith('{')]
+                candidate_prefix = '/'.join(candidate_segments[:3])
+                if target_stem and candidate_prefix == target_stem:
+                    score += 4
+                elif family and family.split('_')[0] and family.split('_')[0] in candidate_path.lower():
+                    score += 2
+                if method_upper == preferred_method_upper:
+                    score += 2
+                if method_upper == 'GET':
+                    score += 1
+                if self._looks_action_like_path(candidate_path):
+                    score -= 1
+                score -= max(len(candidate_path) // 40, 0)
+                if score > best_score:
+                    best_score = score
+                    best_path = candidate_path
+
+        return best_path
 
     def _replay_path_params(self, request: ToolTestRequest, endpoint: str, object_id: Any) -> dict[str, Any]:
         params: dict[str, Any] = {}
