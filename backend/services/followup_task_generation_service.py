@@ -313,6 +313,20 @@ class FollowupTaskGenerationService:
             candidate.hypothesis_family = "object_authorization"
             candidate.subtype = "bola"
             candidate.params.requires_object_id_enrichment = True
+            candidate.prerequisites.requires_object_id = True
+            candidate.readiness = "needs_preparation"
+            candidate.allowed_tools = ["create_test_object"]
+            candidate.preparation_options = ["create_test_object"]
+            candidate.preferred_tool = "create_test_object"
+            candidate.strategy_family = "object_materialization"
+            candidate.recommended_next_step = "create_test_object"
+            if getattr(candidate, "tool_preference", None):
+                candidate.tool_preference.preferred_tool = "create_test_object"
+                candidate.tool_preference.fallback_tools = []
+            candidate = DEFAULT_TASK_TOOLING.normalize_task(candidate, explicit_allowed_tools=["create_test_object"])
+            candidate.allowed_tools = ["create_test_object"]
+            candidate.preparation_options = ["create_test_object"]
+            candidate.recommended_next_step = "create_test_object"
             followups.append(candidate)
         elif str(active_task.subtype or "") == "auth_bootstrap":
             followups.append(self._clone_task(active_task, "login_only_bootstrap_retry", allowed_tools=["auto_provision"], readiness="needs_preparation", priority_boost=8))
@@ -476,6 +490,10 @@ class FollowupTaskGenerationService:
         cloned.readiness = readiness or ("needs_preparation" if any(str(item or "").strip() in prep_tools for item in (allowed_tools or [])) else "ready_to_test")
         cloned.retry_count = int(task.retry_count or 0) + 1
         cloned = DEFAULT_TASK_TOOLING.normalize_task(cloned, explicit_allowed_tools=cloned.allowed_tools)
+        if strategy in {"create_object_then_replay", "list_then_select_object_then_replay", "object_specific_auth_probe"}:
+            cloned.params.requires_object_id_enrichment = True
+            cloned.prerequisites.requires_object_id = True
+            cloned.readiness = "needs_preparation"
         cloned.rework_hint = None
         cloned.priority = min(100, int(task.priority or 0) + priority_boost)
         cloned.payload_family = payload_family or task.payload_family

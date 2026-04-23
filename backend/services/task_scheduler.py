@@ -1063,6 +1063,12 @@ class TaskScheduler:
         }
         return "create_test_object" in tools and not self._normalize_object_id(task.params.selected_object_id)
 
+    def _materialization_preparation_tasks(self, tasks: list[TaskModel]) -> list[TaskModel]:
+        prioritized = [task for task in tasks if self._is_materialization_preparation_task(task)]
+        prioritized.sort(key=lambda item: int(item.priority or 0), reverse=True)
+        return prioritized
+
+
     def _selection_candidates(
         self,
         executable_tests: list[TaskModel],
@@ -1071,6 +1077,10 @@ class TaskScheduler:
         *,
         execution_context: ExecutionContext | None = None,
     ) -> tuple[list[TaskModel], bool]:
+        materialization_preparation = self._materialization_preparation_tasks(executable_preparation)
+        if materialization_preparation:
+            prioritized = materialization_preparation + [task for task in executable_preparation if task.id not in {item.id for item in materialization_preparation}]
+            return prioritized, True
         if executable_preparation and self._should_prioritize_preparation(
             executable_tests,
             executable_preparation,

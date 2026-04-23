@@ -288,6 +288,9 @@ class TaskExecutabilityService:
                 updated.allowed_tools = ["create_test_object"]
                 updated.preparation_options = ["create_test_object"]
                 updated.recommended_next_step = "create_test_object"
+                updated.prerequisites.requires_object_id = True
+                updated.params.requires_object_id_enrichment = True
+                updated.strategy_family = "object_materialization"
         elif decision.execution_mode == "test":
             updated.readiness = "ready_to_test"
             updated = DEFAULT_TASK_TOOLING.normalize_task(updated)
