@@ -11,9 +11,11 @@ try:
     )
     from backend.models.testing import ExecutionContext, TaskModel
     from backend.services.diagnostic_logging_service import DiagnosticLoggingService
+    from backend.services.graph_state_service import DEFAULT_GRAPH_STATE
     from backend.services.followup_task_generation_service import FollowupTaskGenerationService
     from backend.services.task_executability_service import TaskExecutabilityService
     from backend.services.task_fingerprint import TaskFingerprintService
+    from backend.services.task_tooling_service import DEFAULT_TASK_TOOLING
 except ModuleNotFoundError:  # pragma: no cover
     from models.scheduling import (
         ExecutabilityDecision,
@@ -25,9 +27,11 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from models.testing import ExecutionContext, TaskModel
     from services.diagnostic_logging_service import DiagnosticLoggingService
+    from services.graph_state_service import DEFAULT_GRAPH_STATE
     from services.followup_task_generation_service import FollowupTaskGenerationService
     from services.task_executability_service import TaskExecutabilityService
     from services.task_fingerprint import TaskFingerprintService
+    from services.task_tooling_service import DEFAULT_TASK_TOOLING
 
 
 class TaskScheduler:
@@ -36,6 +40,7 @@ class TaskScheduler:
         self.followups = FollowupTaskGenerationService()
         self.diagnostics = DiagnosticLoggingService()
         self.executability = TaskExecutabilityService()
+        self.graph_state = DEFAULT_GRAPH_STATE
 
     def select_next_task(
         self,
@@ -417,6 +422,7 @@ class TaskScheduler:
         if execution_context is None:
             return pending, execution_context, {}
         context = execution_context.model_copy(deep=True)
+        self.graph_state.ensure_graph(context)
         artifacts = self._artifact_map(evidence)
         enriched_task_ids: list[str] = []
         queue_enrichment: dict[str, Any] = {}
@@ -424,6 +430,7 @@ class TaskScheduler:
         prepared_roles = artifacts.get("provisioned_identities") if isinstance(artifacts.get("provisioned_identities"), list) else []
         if prepared_roles:
             context.roles = self._merge_roles(context.roles, prepared_roles)
+            self.graph_state.upsert_auth_identities(context, prepared_roles)
             context.capabilities["has_auth_profiles"] = any(self._has_auth_material(item) for item in context.roles)
             context.capabilities["has_multi_role_auth"] = sum(1 for item in context.roles if self._has_auth_material(item)) >= 2
             context.capabilities["has_provisioned_identities"] = context.capabilities["has_multi_role_auth"]
@@ -451,6 +458,7 @@ class TaskScheduler:
                 prepared_copy["object_id"] = propagated_object_id
                 if propagation_family:
                     context.prepared_objects[propagation_family] = prepared_copy
+                self.graph_state.upsert_prepared_object(context, prepared_copy)
 
         if not propagated_object_id and isinstance(workflow_context, dict):
             propagated_object_id = self._normalize_object_id(workflow_context.get("object_id"))
@@ -467,6 +475,7 @@ class TaskScheduler:
 
         if harvested_object_ids:
             context.harvested_object_ids = self._merge_strings(context.harvested_object_ids, harvested_object_ids)
+            self.graph_state.upsert_harvested_ids(context, harvested_object_ids, resource_family=propagation_family or self._task_resource_family(active_task) if active_task is not None else "")
         if harvested_links:
             context.harvested_links = self._merge_strings(context.harvested_links, harvested_links)
         if propagated_object_id:
@@ -480,6 +489,7 @@ class TaskScheduler:
 
         if isinstance(workflow_context, dict) and workflow_context:
             context.workflow_context = dict(workflow_context)
+            self.graph_state.upsert_workflow_context(context, workflow_context)
             if self._normalize_object_id(workflow_context.get("object_id")):
                 context.capabilities["has_workflow_hints"] = True
 
@@ -830,6 +840,11 @@ class TaskScheduler:
         return "{" in endpoint and "}" in endpoint
 
     def _direct_test_tool(self, task: TaskModel) -> str:
+        preferred = str(task.preferred_tool or (task.tool_preference.preferred_tool if task.tool_preference else "") or "").strip()
+        normalized_allowed = list(getattr(task, "allowed_tools", None) or [])
+        prep_tools = {"auto_provision", "auth_probe_entrypoints", "create_test_object", "workflow_probe", "input_shape_probe", "import_har_capture"}
+        if preferred and preferred in normalized_allowed and preferred not in prep_tools:
+            return preferred
         if task.class_name == "authorization":
             return "property_mutation_test" if task.subtype in {"property_level_authorization", "mass_assignment"} else "auth_test_access"
         if task.class_name == "injection":
@@ -878,8 +893,8 @@ class TaskScheduler:
                 updated.readiness = "ready_to_test"
                 updated.allowed_tools = [self._direct_test_tool(updated)]
                 updated.preparation_options = []
-                updated.recommended_next_step = updated.allowed_tools[0]
                 updated.test_strategy = self._test_strategy_for_replay(updated)
+                updated = DEFAULT_TASK_TOOLING.normalize_task(updated, explicit_allowed_tools=updated.allowed_tools)
             enriched.append(updated)
             enriched_ids.append(updated.id)
         return enriched, enriched_ids
@@ -907,8 +922,8 @@ class TaskScheduler:
         replay.readiness = "ready_to_test"
         replay.allowed_tools = [self._direct_test_tool(replay)]
         replay.preparation_options = []
-        replay.recommended_next_step = replay.allowed_tools[0]
         replay.test_strategy = self._test_strategy_for_replay(replay)
+        replay = DEFAULT_TASK_TOOLING.normalize_task(replay, explicit_allowed_tools=replay.allowed_tools)
         replay.priority = min(100, int(replay.priority or 0) + 8)
         return replay
 

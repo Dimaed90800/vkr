@@ -20,6 +20,10 @@ testing_service = TestingService()
 
 TOOL_NAME_ALIASES = {
     "probe_entrypoints": "auth_probe_entrypoints",
+    "import_traffic_surface": "import_har_capture",
+    "runtime_inventory_discovery": "runtime_inventory",
+    "bounded_rate_probe": "bounded_burst_helper",
+    "replay_sequence": "replay_http_sequence",
 }
 
 
@@ -212,6 +216,31 @@ async def version_diff_test(request: ToolTestRequest) -> ToolTestResponse:
     request = _normalized_request(request)
     return await testing_service.version_diff_test(request)
 
+
+
+
+@router.post("/traffic/import-har", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
+async def import_har_capture(request: ToolTestRequest) -> ToolTestResponse:
+    request = _normalized_request(request)
+    return await testing_service.import_har_capture(request)
+
+
+@router.post("/inventory/runtime", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
+async def runtime_inventory(request: ToolTestRequest) -> ToolTestResponse:
+    request = _normalized_request(request)
+    return await testing_service.runtime_inventory(request)
+
+
+@router.post("/replay/http-sequence", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
+async def replay_http_sequence(request: ToolTestRequest) -> ToolTestResponse:
+    request = _normalized_request(request)
+    return await testing_service.replay_http_sequence(request)
+
+
+@router.post("/resource/bounded-burst-helper", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
+async def bounded_burst_helper(request: ToolTestRequest) -> ToolTestResponse:
+    request = _normalized_request(request)
+    return await testing_service.bounded_burst_helper(request)
 
 @router.post("/recon/capture-authenticated-traffic", response_model=ToolTestResponse, status_code=status.HTTP_200_OK)
 async def capture_authenticated_traffic(request: ToolTestRequest) -> ToolTestResponse:

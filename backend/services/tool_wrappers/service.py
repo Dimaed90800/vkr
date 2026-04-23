@@ -42,6 +42,17 @@ SCHEMATHESIS_TO_SIGNAL = {
     "schema violation": "schema_violation",
     "negative data rejection": "negative_test_completed",
 }
+RESTLER_COMMAND_SIGNALS = {
+    "restler_compile": ["restler_compile_scaffold_ready", "sequence_grammar_planned"],
+    "restler_fuzz": ["restler_fuzz_scaffold_ready", "stateful_sequence_fuzzing_planned"],
+    "restler_replay": ["restler_replay_scaffold_ready", "sequence_replay_planned"],
+}
+ENGINE_WRAPPER_COMMAND_ENV = {
+    "restler": "RESTLER_WRAPPER_COMMAND",
+    "cats": "CATS_WRAPPER_COMMAND",
+    "akto": "AKTO_WRAPPER_COMMAND",
+    "astf": "ASTF_WRAPPER_COMMAND",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -109,15 +120,7 @@ class ToolWrapperService:
             "reproduction": reproduction.model_dump(mode="json"),
             "budget": budget.model_dump(mode="json"),
             "wrapper_command": command_preview,
-            "replay": {
-                "strategy": "deterministic_tool_replay",
-                "cli_command": command_preview,
-                "request_template": reproduction.model_dump(mode="json"),
-                "notes": [
-                    "Schemathesis runs with deterministic generation; rerun cli_command against the same API state to reproduce generated cases.",
-                    "Tool stdout/stderr may include the exact minimized failing case when Schemathesis reports one.",
-                ],
-            },
+            "replay": self._replay_block(request, command_preview, reproduction),
             "artifact_paths": {
                 "run_dir": str(run_dir),
                 "stdout_path": str(stdout_path),
@@ -209,7 +212,66 @@ class ToolWrapperService:
         engine = TOOL_COMMAND_TO_ENGINE[request.tool_name]
         if engine == "schemathesis":
             return self._run_schemathesis(request, stdout_path=stdout_path, stderr_path=stderr_path)
+        if engine == "restler":
+            return self._run_restler(request, stdout_path=stdout_path, stderr_path=stderr_path)
+        runtime_result = self._run_external_runtime(request, engine=engine, stdout_path=stdout_path, stderr_path=stderr_path)
+        if runtime_result is not None:
+            return runtime_result
         return self._stub_result(request, engine=engine, stdout_path=stdout_path, stderr_path=stderr_path)
+
+    def _run_restler(self, request: ToolWrapperRequest, *, stdout_path: Path, stderr_path: Path) -> ToolWrapperResult:
+        runtime_result = self._run_external_runtime(request, engine="restler", stdout_path=stdout_path, stderr_path=stderr_path)
+        if runtime_result is not None:
+            return runtime_result
+        run_dir = stdout_path.parent
+        restler_dir = run_dir / "restler"
+        restler_dir.mkdir(parents=True, exist_ok=True)
+        spec_ref = self._openapi_ref(request)
+        if request.tool_name in {"restler_compile", "restler_fuzz"} and not spec_ref:
+            return self._stub_result(
+                request,
+                engine="restler",
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                fallback_reason="RESTler compile/fuzz requires openapi_url or openapi_spec_path",
+                termination_reason="missing_openapi",
+                extra_signals=["openapi_missing"],
+            )
+
+        artifacts = self._write_restler_artifacts(request, restler_dir)
+        message = (
+            f"{request.tool_name} scaffold prepared. RESTler CLI/container execution is not wired in this environment."
+        )
+        stdout_path.write_text(
+            json.dumps(
+                {
+                    "tool_name": request.tool_name,
+                    "status": "scaffolded",
+                    "artifact_dir": str(restler_dir),
+                    "restler_runtime": self._restler_runtime_hint(),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        stderr_path.write_text(message + "\n", encoding="utf-8")
+        signals = ["wrapper_scaffold_ready", "tool_unavailable"]
+        for signal in RESTLER_COMMAND_SIGNALS.get(request.tool_name, []):
+            if signal not in signals:
+                signals.append(signal)
+        return ToolWrapperResult(
+            tool_name=request.tool_name,
+            status="partial",
+            summary=message,
+            signals=signals,
+            artifacts=ToolArtifacts(raw_report_paths=[str(path) for path in artifacts]),
+            candidate_findings=[],
+            budget=self._budget_for(request).model_copy(update={"termination_reason": "tool_unavailable"}),
+            fallback_reason=message,
+            termination_reason="tool_unavailable",
+            error="restler_runtime_unavailable",
+        )
 
     def _run_schemathesis(self, request: ToolWrapperRequest, *, stdout_path: Path, stderr_path: Path) -> ToolWrapperResult:
         spec_ref = request.openapi_spec_path or request.openapi_url or request.execution_context.openapi_url
@@ -352,6 +414,86 @@ class ToolWrapperService:
             "--continue-on-failure",
         ]
 
+    def _restler_command_preview(self, request: ToolWrapperRequest) -> list[str]:
+        restler_bin = os.getenv("RESTLER_BIN") or shutil.which("restler") or "restler"
+        spec_ref = self._openapi_ref(request) or "<missing-openapi-ref>"
+        target = str(request.target_url or request.execution_context.target_url).rstrip("/")
+        if request.tool_name == "restler_compile":
+            return [restler_bin, "compile", "--api_spec", spec_ref]
+        if request.tool_name == "restler_fuzz":
+            return [restler_bin, "fuzz", "--grammar_file", "Compile/grammar.py", "--target_ip", target]
+        replay_file = str(
+            request.arguments.get("replay_file")
+            or request.arguments.get("sequence_file")
+            or "RestlerResults/replay_sequence.json"
+        )
+        return [restler_bin, "replay", "--replay_file", replay_file, "--target_ip", target]
+
+    def _write_restler_artifacts(self, request: ToolWrapperRequest, restler_dir: Path) -> list[Path]:
+        compile_dir = restler_dir / "Compile"
+        results_dir = restler_dir / "RestlerResults"
+        replay_dir = restler_dir / "Replay"
+        for path in (compile_dir, results_dir, replay_dir):
+            path.mkdir(parents=True, exist_ok=True)
+        config = {
+            "schema_version": "restler-wrapper-artifacts/v1",
+            "tool_name": request.tool_name,
+            "target_url": str(request.target_url or request.execution_context.target_url),
+            "openapi_ref": self._openapi_ref(request),
+            "allowed_hosts": list(request.execution_context.allowed_hosts or []),
+            "budget": self._budget_for(request).model_dump(mode="json"),
+            "restler_runtime": self._restler_runtime_hint(),
+            "compile": {
+                "grammar_file": str(compile_dir / "grammar.py"),
+                "dictionary_file": str(compile_dir / "dict.json"),
+            },
+            "fuzz": {
+                "results_dir": str(results_dir),
+                "sequence_budget": self._max_examples(request),
+            },
+            "replay": {
+                "sequence_file": str(replay_dir / "replay_sequence.json"),
+                "request_template": self._reproduction_for(request).model_dump(mode="json"),
+            },
+            "notes": [
+                "RESTler execution is scaffolded until RESTLER_BIN or a RESTler container is wired into the toolbox runtime.",
+                "Artifacts are laid out to match compile -> fuzz -> replay sequence-based execution.",
+            ],
+        }
+        config_path = restler_dir / "restler_wrapper_config.json"
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        grammar_path = compile_dir / "grammar.py"
+        grammar_path.write_text(
+            "# RESTler grammar placeholder generated by the wrapper scaffold.\n",
+            encoding="utf-8",
+        )
+        dictionary_path = compile_dir / "dict.json"
+        dictionary_path.write_text(json.dumps({"restler_custom_payload": {}}, indent=2), encoding="utf-8")
+        replay_path = replay_dir / "replay_sequence.json"
+        replay_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "restler-replay-sequence/v1",
+                    "tool_name": request.tool_name,
+                    "sequence": [self._reproduction_for(request).model_dump(mode="json")],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        return [config_path, grammar_path, dictionary_path, replay_path]
+
+    def _restler_runtime_hint(self) -> dict[str, Any]:
+        restler_bin = os.getenv("RESTLER_BIN") or shutil.which("restler")
+        image = os.getenv("RESTLER_DOCKER_IMAGE")
+        return {
+            "restler_bin": restler_bin or "",
+            "restler_docker_image": image or "",
+            "available": bool(restler_bin or image),
+            "execution_mode": "scaffold",
+        }
+
     def _stub_result(
         self,
         request: ToolWrapperRequest,
@@ -370,6 +512,10 @@ class ToolWrapperService:
         logger.info("Wrapper fallback tool=%s engine=%s reason=%s", request.tool_name, engine, message)
         stdout_path.write_text("", encoding="utf-8")
         stderr_path.write_text(message + "\n", encoding="utf-8")
+        runtime_hint_path = stdout_path.parent / f"{engine}_runtime_hint.json"
+        request_path = stdout_path.parent / f"{engine}_runtime_request.json"
+        runtime_hint_path.write_text(json.dumps(self._engine_runtime_hint(engine), ensure_ascii=False, indent=2), encoding="utf-8")
+        request_path.write_text(json.dumps(self._runtime_request_payload(request, engine), ensure_ascii=False, indent=2), encoding="utf-8")
         signals = ["wrapper_scaffold_ready"]
         for signal in extra_signals or []:
             if signal not in signals:
@@ -379,12 +525,163 @@ class ToolWrapperService:
             status="partial",
             summary=message,
             signals=signals,
-            artifacts=ToolArtifacts(),
+            artifacts=ToolArtifacts(raw_report_paths=[str(request_path), str(runtime_hint_path)]),
             candidate_findings=[],
             fallback_reason=message,
             termination_reason=termination_reason or "scaffold_only",
             error=message if termination_reason in {"tool_unavailable", "missing_openapi"} else None,
         )
+
+    def _run_external_runtime(self, request: ToolWrapperRequest, *, engine: str, stdout_path: Path, stderr_path: Path) -> ToolWrapperResult | None:
+        command_template = os.getenv(ENGINE_WRAPPER_COMMAND_ENV.get(engine, ""), "").strip()
+        if not command_template:
+            return None
+        request_path = stdout_path.parent / f"{engine}_runtime_request.json"
+        result_path = stdout_path.parent / f"{engine}_runtime_result.json"
+        request_path.write_text(json.dumps(self._runtime_request_payload(request, engine), ensure_ascii=False, indent=2), encoding="utf-8")
+        command = command_template.format(
+            request_json=str(request_path),
+            result_json=str(result_path),
+            output_dir=str(stdout_path.parent),
+            target_url=str(request.target_url or request.execution_context.target_url),
+            openapi_ref=self._openapi_ref(request),
+            tool_name=request.tool_name,
+        )
+        append_run_event(
+            event_name="tool_subprocess_start",
+            run_id=self._run_id(request),
+            task_id=self._source_task_id(request),
+            worker_role=self._worker_role(request),
+            tool_name=request.tool_name,
+            status="started",
+            summary=f"Starting external {engine} runtime.",
+            extra={"command": self._redact(command), "cwd": str(stdout_path.parent)},
+        )
+        started = time.monotonic()
+        completed = subprocess.run(command, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self._timeout_seconds(request), check=False)
+        stdout_path.write_text(self._redact(completed.stdout), encoding="utf-8")
+        stderr_path.write_text(self._redact(completed.stderr), encoding="utf-8")
+        status = "ok" if completed.returncode == 0 else "partial"
+        append_run_event(
+            event_name="tool_subprocess_completed",
+            run_id=self._run_id(request),
+            task_id=self._source_task_id(request),
+            worker_role=self._worker_role(request),
+            tool_name=request.tool_name,
+            status=status,
+            summary=f"External {engine} runtime completed.",
+            extra={
+                "returncode": completed.returncode,
+                "duration_sec": round(time.monotonic() - started, 3),
+                "stdout_preview": self._preview(completed.stdout),
+                "stderr_preview": self._preview(completed.stderr),
+            },
+        )
+        parsed_result = self._runtime_result_from_file(request, engine=engine, result_path=result_path, request_path=request_path)
+        if parsed_result is not None:
+            return parsed_result
+        parsed_result = self._runtime_result_from_stdout(request, engine=engine, stdout=completed.stdout, request_path=request_path)
+        if parsed_result is not None:
+            return parsed_result
+        signals = [f"{engine}_runtime_executed"]
+        if engine == "restler":
+            signals.extend([sig for sig in RESTLER_COMMAND_SIGNALS.get(request.tool_name, []) if sig not in signals])
+        if completed.returncode != 0:
+            signals.append("tool_execution_error")
+        return ToolWrapperResult(
+            tool_name=request.tool_name,
+            status=status,
+            summary=f"{engine} runtime finished with exit code {completed.returncode}.",
+            signals=signals,
+            artifacts=ToolArtifacts(raw_report_paths=[str(request_path)]),
+            candidate_findings=self._candidate_findings_for(request, signals),
+            budget=self._budget_for(request).model_copy(update={"termination_reason": "completed" if completed.returncode == 0 else "tool_reported_findings"}),
+            termination_reason="completed" if completed.returncode == 0 else "tool_reported_findings",
+            error=None if completed.returncode == 0 else f"{engine}_runtime_reported_failures",
+        )
+
+    def _runtime_request_payload(self, request: ToolWrapperRequest, engine: str) -> dict[str, Any]:
+        return {
+            "schema_version": "external-wrapper-request/v1",
+            "engine": engine,
+            "tool_name": request.tool_name,
+            "run_id": self._run_id(request),
+            "task_id": self._source_task_id(request),
+            "worker_role": self._worker_role(request),
+            "target_url": str(request.target_url or request.execution_context.target_url),
+            "openapi_ref": self._openapi_ref(request),
+            "allowed_hosts": list(request.execution_context.allowed_hosts or []),
+            "arguments": request.arguments,
+            "task": request.task.model_dump(by_alias=True, mode="json") if request.task else {},
+        }
+
+    def _runtime_result_from_file(self, request: ToolWrapperRequest, *, engine: str, result_path: Path, request_path: Path) -> ToolWrapperResult | None:
+        if not result_path.exists():
+            return None
+        try:
+            payload = json.loads(result_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        return self._runtime_payload_to_result(request, engine=engine, payload=payload, request_path=request_path, result_path=result_path)
+
+    def _runtime_result_from_stdout(self, request: ToolWrapperRequest, *, engine: str, stdout: str, request_path: Path) -> ToolWrapperResult | None:
+        text = str(stdout or "").strip()
+        if not text:
+            return None
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in reversed(lines[-5:]):
+            if not (line.startswith('{') and line.endswith('}')):
+                continue
+            try:
+                payload = json.loads(line)
+            except Exception:
+                continue
+            return self._runtime_payload_to_result(request, engine=engine, payload=payload, request_path=request_path, result_path=None)
+        return None
+
+    def _runtime_payload_to_result(self, request: ToolWrapperRequest, *, engine: str, payload: dict[str, Any], request_path: Path, result_path: Path | None) -> ToolWrapperResult | None:
+        if not isinstance(payload, dict):
+            return None
+        status = str(payload.get('status') or 'partial')
+        if status not in {'ok', 'partial', 'error'}:
+            status = 'partial'
+        raw_paths = [str(request_path)]
+        for path in payload.get('raw_report_paths') or []:
+            if str(path).strip() and str(path) not in raw_paths:
+                raw_paths.append(str(path))
+        if result_path is not None:
+            raw_paths.append(str(result_path))
+        termination_reason = str(payload.get('termination_reason') or ('completed' if status == 'ok' else 'tool_reported_findings'))
+        budget = self._budget_for(request).model_copy(update={
+            'used_requests': int(payload.get('used_requests') or 0),
+            'termination_reason': termination_reason,
+        })
+        result = ToolWrapperResult(
+            tool_name=str(payload.get('tool_name') or request.tool_name),
+            status=status,
+            summary=str(payload.get('summary') or f"{engine} runtime completed."),
+            signals=[str(item) for item in (payload.get('signals') or []) if str(item).strip()],
+            artifacts=ToolArtifacts(raw_report_paths=raw_paths),
+            candidate_findings=[item for item in (payload.get('candidate_findings') or []) if isinstance(item, dict)],
+            budget=budget,
+            termination_reason=termination_reason,
+            fallback_reason=(str(payload.get('fallback_reason') or '') or None),
+            error=(str(payload.get('error') or '') or None),
+        )
+        return result
+
+    def _engine_runtime_hint(self, engine: str) -> dict[str, Any]:
+        env_name = ENGINE_WRAPPER_COMMAND_ENV.get(engine, "")
+        return {
+            "schema_version": "engine-runtime-hint/v1",
+            "engine": engine,
+            "wrapper_command_env": env_name,
+            "configured": bool(os.getenv(env_name or "")),
+            "restler_bin": os.getenv("RESTLER_BIN", "") if engine == "restler" else "",
+            "cats_bin": os.getenv("CATS_BIN", "") if engine == "cats" else "",
+            "akto_bin": os.getenv("AKTO_BIN", "") if engine == "akto" else "",
+            "astf_bin": os.getenv("ASTF_BIN", "") if engine == "astf" else "",
+        }
 
     def _candidate_findings_for(self, request: ToolWrapperRequest, signals: list[str]) -> list[dict[str, Any]]:
         if not signals or not request.task:
@@ -479,7 +776,10 @@ class ToolWrapperService:
         return str(request.openapi_spec_path or request.openapi_url or request.execution_context.openapi_url or "")
 
     def _command_preview(self, request: ToolWrapperRequest) -> list[str]:
-        if TOOL_COMMAND_TO_ENGINE.get(request.tool_name) != "schemathesis":
+        engine = TOOL_COMMAND_TO_ENGINE.get(request.tool_name)
+        if engine == "restler":
+            return self._redact_command(self._restler_command_preview(request))
+        if engine != "schemathesis":
             return [request.tool_name]
         spec_ref = self._openapi_ref(request) or "<missing-openapi-ref>"
         command = self._schemathesis_command(
@@ -491,6 +791,33 @@ class ToolWrapperService:
         if auth_header:
             command.extend(["--header", self._redact(auth_header)])
         return command
+
+    def _replay_block(self, request: ToolWrapperRequest, command_preview: list[str], reproduction: ToolReproduction) -> dict[str, Any]:
+        engine = TOOL_COMMAND_TO_ENGINE.get(request.tool_name)
+        if engine == "restler":
+            return {
+                "strategy": "restler_sequence_replay",
+                "cli_command": command_preview,
+                "request_template": reproduction.model_dump(mode="json"),
+                "sequence_artifacts": {
+                    "compile_dir": "restler/Compile",
+                    "results_dir": "restler/RestlerResults",
+                    "replay_sequence_path": "restler/Replay/replay_sequence.json",
+                },
+                "notes": [
+                    "RESTler is sequence-based; compile produces grammar artifacts, fuzz explores producer-consumer sequences, replay re-runs a recorded sequence.",
+                    "This wrapper currently prepares deterministic artifacts and normalized output; wire RESTLER_BIN or RESTLER_DOCKER_IMAGE for real execution.",
+                ],
+            }
+        return {
+            "strategy": "deterministic_tool_replay",
+            "cli_command": command_preview,
+            "request_template": reproduction.model_dump(mode="json"),
+            "notes": [
+                "Schemathesis runs with deterministic generation; rerun cli_command against the same API state to reproduce generated cases.",
+                "Tool stdout/stderr may include the exact minimized failing case when Schemathesis reports one.",
+            ],
+        }
 
     def _redact_headers(self, headers: dict[str, Any]) -> dict[str, Any]:
         return {

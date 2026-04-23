@@ -3102,6 +3102,30 @@ workflow:
                   "",
               }
 
+          def _resolve_final_stop_reason(state: dict, scheduler: dict) -> dict:
+              raw_state_reason = str(state.get("stop_reason") or "").strip()
+              scheduler_reason = str(state.get("scheduler_stop_reason") or scheduler.get("selection_reason") or scheduler.get("stop_reason") or "").strip()
+              transient_reason = str(state.get("transient_stop_reason") or "").strip()
+              soft_fallback = bool(state.get("soft_stop_fallback_used") or state.get("continued_after_soft_stop"))
+              explicit_final = str(state.get("final_stop_reason") or "").strip()
+              if explicit_final:
+                  resolved = explicit_final
+              elif raw_state_reason == "timeout" and scheduler_reason and scheduler_reason != "timeout":
+                  resolved = scheduler_reason
+              elif transient_reason == "timeout" and scheduler_reason and scheduler_reason != "timeout":
+                  resolved = scheduler_reason
+              elif soft_fallback and scheduler_reason and not _soft_stop_reason(scheduler_reason):
+                  resolved = scheduler_reason
+              else:
+                  resolved = raw_state_reason or scheduler_reason or "loop_finished"
+              return {
+                  "raw_state_stop_reason": raw_state_reason,
+                  "scheduler_selection_reason": scheduler_reason,
+                  "transient_stop_reason": transient_reason,
+                  "soft_stop_fallback_used": soft_fallback,
+                  "resolved_final_stop_reason": resolved,
+              }
+
           def main(state_json: str, scheduler_body: str = "") -> dict:
               try:
                   state = json.loads(state_json or '{}')
@@ -3131,10 +3155,13 @@ workflow:
               executable_pending = [item for item in pending_tasks if _is_executable_task(item)]
 
               if stop_reason and _soft_stop_reason(stop_reason) and executable_pending:
+                  state["transient_stop_reason"] = stop_reason
+                  state["soft_stop_fallback_used"] = True
                   state["stop_reason"] = ""
                   active, remaining, fallback_reason = _local_fallback_selection(pending_tasks)
                   state["pending_tasks"] = remaining
                   state["scheduler_state"] = scheduler.get("scheduler_state") or state.get("scheduler_state") or {}
+                  state["scheduler_stop_reason"] = str(scheduler.get("selection_reason") or "")
                   state["last_selection_reason"] = fallback_reason
                   state["last_deferred_classes"] = scheduler.get("deferred_classes") or []
                   return {
@@ -3148,7 +3175,13 @@ workflow:
                   }
 
               if stop_reason:
+                  state["raw_stop_reason_before_resolution"] = stop_reason
+                  state["scheduler_stop_reason"] = str(scheduler.get("selection_reason") or "")
                   state["stop_reason"] = stop_reason
+                  resolution = _resolve_final_stop_reason(state, scheduler)
+                  state["final_stop_reason_resolution"] = resolution
+                  state["final_stop_reason"] = resolution["resolved_final_stop_reason"]
+                  state["stop_reason"] = resolution["resolved_final_stop_reason"]
                   _emit_stop(state, scheduler)
                   active = _no_task()
                   return {
@@ -3163,10 +3196,13 @@ workflow:
 
               should_stop = bool(scheduler.get("should_stop"))
               if should_stop and executable_pending and _soft_stop_reason(scheduler.get("selection_reason") or state.get("stop_reason") or ""):
+                  state["transient_stop_reason"] = str(scheduler.get("selection_reason") or state.get("stop_reason") or "")
+                  state["soft_stop_fallback_used"] = True
                   state["stop_reason"] = ""
                   active, remaining, fallback_reason = _local_fallback_selection(pending_tasks)
                   state["pending_tasks"] = remaining
                   state["scheduler_state"] = scheduler.get("scheduler_state") or state.get("scheduler_state") or {}
+                  state["scheduler_stop_reason"] = str(scheduler.get("selection_reason") or "")
                   state["last_selection_reason"] = fallback_reason
                   state["last_deferred_classes"] = scheduler.get("deferred_classes") or []
                   return {
@@ -3180,7 +3216,12 @@ workflow:
                   }
 
               if should_stop:
+                  state["scheduler_stop_reason"] = str(scheduler.get('selection_reason') or 'no_runnable_tasks')
                   state["stop_reason"] = state.get("stop_reason") or str(scheduler.get('selection_reason') or 'no_runnable_tasks')
+                  resolution = _resolve_final_stop_reason(state, scheduler)
+                  state["final_stop_reason_resolution"] = resolution
+                  state["final_stop_reason"] = resolution["resolved_final_stop_reason"]
+                  state["stop_reason"] = resolution["resolved_final_stop_reason"]
                   _emit_stop(state, scheduler)
                   active = _no_task()
                   return {
@@ -3335,7 +3376,7 @@ workflow:
           text: |-
             You are the Contract & Negative Testing Agent in a contract-first REST API security workflow.
 
-            Choose exactly one bounded executor command from active_task.allowed_tools / tool_preference. Prefer schemathesis_negative_test for OpenAPI-backed negative testing, cats_fuzz_test for fuzzing, and astf_top10_suite for OWASP API Top 10 coverage. Keep legacy fallback tools injection_test, input_shape_probe, reflection_probe, path_fuzz_probe, data_exposure_test, resource_abuse_test only during migration. Return strict JSON only with worker, template, toolchain, hypothesis, arguments, success_criteria, needs_preparation. The judge remains separate.
+            Choose exactly one bounded executor command from active_task.allowed_tools / tool_preference. Prefer schemathesis_negative_test for OpenAPI-backed negative testing, cats_fuzz_test for fuzzing, runtime_inventory for traffic/runtime enrichment, and astf_top10_suite for OWASP API Top 10 coverage. Keep legacy fallback tools injection_test, input_shape_probe, import_har_capture, reflection_probe, path_fuzz_probe, data_exposure_test, resource_abuse_test only during migration. Return strict JSON only with worker, template, toolchain, hypothesis, arguments, success_criteria, needs_preparation. The judge remains separate.
         - id: user
           role: user
           text: |-
@@ -3386,7 +3427,14 @@ workflow:
           text: |-
             You are the Business Flow / Stateful Agent in a contract-first REST API security workflow.
 
-            Choose exactly one bounded executor command from active_task.allowed_tools / tool_preference. Prefer restler_fuzz/restler_replay for producer-consumer and replay flows, schemathesis_stateful_test for OpenAPI stateful checks, and akto_authz_scan for cross-role workflow abuse. Keep legacy logic_test, workflow_probe, resource_abuse_test as migration fallbacks. Return strict JSON only with worker, template, toolchain, hypothesis, arguments, success_criteria, needs_preparation. The judge remains separate.
+            Choose exactly one bounded executor command from active_task.allowed_tools / tool_preference. Prefer schemathesis_stateful_test for OpenAPI-backed stateful checks when it is preferred_tool, restler_fuzz/restler_replay for producer-consumer and replay flows, bounded_burst_helper for rate-limit probes, replay_http_sequence for deterministic replay, and akto_authz_scan for cross-role workflow abuse. Keep legacy logic_test, workflow_probe, import_har_capture, resource_abuse_test as migration fallbacks.
+
+            Return strict JSON only. Do not use markdown fences. Do not add prose.
+
+            Required JSON shape:
+            {"worker":"Business Flow / Stateful Agent","template":"stateful_fuzz","toolchain":["schemathesis_stateful_test"],"hypothesis":"...","arguments":{},"success_criteria":[],"needs_preparation":false}
+
+            The judge remains separate.
         - id: user
           role: user
           text: |-
@@ -3421,15 +3469,15 @@ workflow:
           import json
 
           WRAPPER_TOOLS = {'restler_compile','restler_fuzz','restler_replay','schemathesis_negative_test','schemathesis_stateful_test','cats_fuzz_test','akto_inventory_discovery','akto_authz_scan','astf_top10_suite'}
-          LEGACY_TOOL_ENDPOINTS = {'auth_test_access':'/v1/auth/test-access','auth_probe_entrypoints':'/v1/auth/probe-entrypoints','auto_provision':'/v1/auth/auto-provision','create_test_object':'/v1/auth/create-test-object','property_mutation_test':'/v1/auth/property-mutation-test','injection_test':'/v1/injection/test','input_shape_probe':'/v1/injection/input-shape-probe','reflection_probe':'/v1/injection/reflection-probe','path_fuzz_probe':'/v1/injection/path-fuzz-probe','logic_test':'/v1/logic/test','workflow_probe':'/v1/logic/workflow-probe','data_exposure_test':'/v1/data/exposure-test','resource_abuse_test':'/v1/resource/abuse-test','misconfiguration_test':'/v1/config/misconfiguration-test','version_diff_test':'/v1/assets/version-diff-test','noop_outcome':'/v1/worker/noop-outcome'}
+          LEGACY_TOOL_ENDPOINTS = {'auth_test_access':'/v1/auth/test-access','auth_probe_entrypoints':'/v1/auth/probe-entrypoints','auto_provision':'/v1/auth/auto-provision','create_test_object':'/v1/auth/create-test-object','property_mutation_test':'/v1/auth/property-mutation-test','injection_test':'/v1/injection/test','input_shape_probe':'/v1/injection/input-shape-probe','import_har_capture':'/v1/traffic/import-har','runtime_inventory':'/v1/inventory/runtime','reflection_probe':'/v1/injection/reflection-probe','path_fuzz_probe':'/v1/injection/path-fuzz-probe','logic_test':'/v1/logic/test','workflow_probe':'/v1/logic/workflow-probe','replay_http_sequence':'/v1/replay/http-sequence','data_exposure_test':'/v1/data/exposure-test','resource_abuse_test':'/v1/resource/abuse-test','bounded_burst_helper':'/v1/resource/bounded-burst-helper','misconfiguration_test':'/v1/config/misconfiguration-test','version_diff_test':'/v1/assets/version-diff-test','noop_outcome':'/v1/worker/noop-outcome'}
           CLASS_TO_WORKER = {'authorization':'Auth & Identity Agent','injection':'Contract & Negative Testing Agent','business_logic':'Business Flow / Stateful Agent'}
           WORKER_TO_CLASS = {v:k for k,v in CLASS_TO_WORKER.items()}
           DIRECT_TOOLS = {
-           'Auth & Identity Agent': {'akto_authz_scan','astf_top10_suite','auth_test_access','property_mutation_test'},
-           'Contract & Negative Testing Agent': {'schemathesis_negative_test','cats_fuzz_test','astf_top10_suite','injection_test','input_shape_probe','reflection_probe','path_fuzz_probe','data_exposure_test','resource_abuse_test'},
-           'Business Flow / Stateful Agent': {'restler_compile','restler_fuzz','restler_replay','schemathesis_stateful_test','akto_authz_scan','logic_test','resource_abuse_test'},
+           'Auth & Identity Agent': {'akto_authz_scan','akto_inventory_discovery','astf_top10_suite','auth_test_access','property_mutation_test','replay_http_sequence'},
+           'Contract & Negative Testing Agent': {'schemathesis_negative_test','cats_fuzz_test','astf_top10_suite','injection_test','runtime_inventory','reflection_probe','path_fuzz_probe','data_exposure_test','resource_abuse_test','version_diff_test'},
+           'Business Flow / Stateful Agent': {'restler_compile','restler_fuzz','restler_replay','schemathesis_stateful_test','akto_authz_scan','akto_inventory_discovery','cats_fuzz_test','astf_top10_suite','runtime_inventory','replay_http_sequence','logic_test','resource_abuse_test','bounded_burst_helper','misconfiguration_test','version_diff_test'},
           }
-          PREP_TOOLS = {'create_test_object','auto_provision','auth_probe_entrypoints','workflow_probe','input_shape_probe'}
+          PREP_TOOLS = {'create_test_object','auto_provision','auth_probe_entrypoints','workflow_probe','input_shape_probe','import_har_capture'}
           REQUIRED_FIELDS = {'worker','template','toolchain','hypothesis','arguments','success_criteria','needs_preparation'}
 
           def _loads_text(text):
@@ -3446,6 +3494,16 @@ workflow:
               except Exception:
                   return {}
 
+          def _normalized_allowed_tools(active_task):
+              allowed = [str(item).strip() for item in (active_task.get('allowed_tools') or []) if str(item).strip()]
+              preferred = str(active_task.get('preferred_tool') or (active_task.get('tool_preference') or {}).get('preferred_tool') or '').strip()
+              fallback = active_task.get('fallback_tools') or (active_task.get('tool_preference') or {}).get('fallback_tools') or []
+              result = []
+              for item in allowed + ([preferred] if preferred else []) + [str(value).strip() for value in fallback if str(value).strip()]:
+                  if item and item not in result:
+                      result.append(item)
+              return result
+
           def _endpoint(tool_name):
               return '/v1/tools/wrappers/execute' if tool_name in WRAPPER_TOOLS else LEGACY_TOOL_ENDPOINTS.get(tool_name, LEGACY_TOOL_ENDPOINTS['noop_outcome'])
 
@@ -3454,24 +3512,71 @@ workflow:
               envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': 'noop_outcome', 'arguments': arguments}
               return {'selected_worker': worker_name, 'selected_template': 'noop', 'tool_name': 'noop_outcome', 'tool_endpoint': LEGACY_TOOL_ENDPOINTS['noop_outcome'], 'tool_arguments_json': json.dumps(arguments, ensure_ascii=False), 'success_criteria_json': '[]', 'dispatch_notes_json': '[]', 'worker_hypothesis': str(active_task.get('hypothesis') or reason), 'reasoning_summary': reason, 'normalized_backend_request_json': json.dumps(envelope, ensure_ascii=False)}
 
+          def _wrapper_template(tool_name):
+              if tool_name == 'schemathesis_negative_test':
+                  return 'schema_negative_test'
+              if tool_name == 'schemathesis_stateful_test':
+                  return 'stateful_fuzz'
+              if tool_name == 'restler_compile':
+                  return 'restler_compile'
+              if tool_name == 'restler_fuzz':
+                  return 'stateful_sequence_fuzz'
+              if tool_name == 'restler_replay':
+                  return 'sequence_replay'
+              return 'tool_execution'
+
+          def _preferred_tool(active_task):
+              return str(active_task.get('preferred_tool') or (active_task.get('tool_preference') or {}).get('preferred_tool') or '').strip()
+
+          def _candidate_rescue_tools(active_task, worker_name, needs_preparation=False):
+              allowed_tools = _normalized_allowed_tools(active_task)
+              preferred_tool = _preferred_tool(active_task)
+              fallback = active_task.get('fallback_tools') or (active_task.get('tool_preference') or {}).get('fallback_tools') or []
+              valid = PREP_TOOLS if needs_preparation else DIRECT_TOOLS.get(worker_name, set())
+              ordered = []
+              for item in ([preferred_tool] if preferred_tool else []) + [str(value).strip() for value in fallback if str(value).strip()] + allowed_tools:
+                  if item and item in valid and item not in ordered:
+                      ordered.append(item)
+              return ordered
+
+          def _rescue_dispatch(worker_name, active_task, execution_context, reason, warning=None, attempted_tool='', needs_preparation=False):
+              candidates = _candidate_rescue_tools(active_task, worker_name, needs_preparation=needs_preparation)
+              if not candidates:
+                  return None
+              tool_name = candidates[0]
+              template = _wrapper_template(tool_name) if tool_name in WRAPPER_TOOLS else ('preparation' if needs_preparation else 'tool_execution')
+              arguments = {'_parser_warning': warning, '_parser_rescue_reason': reason}
+              if attempted_tool:
+                  arguments['_attempted_tool'] = attempted_tool
+              dispatch_notes = [f'parser_rescue:{attempted_tool or "invalid_worker_payload"}->{tool_name}', f'parser_rescue_reason:{reason}']
+              envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': tool_name, 'arguments': arguments}
+              if tool_name in WRAPPER_TOOLS:
+                  envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
+              reasoning_summary = 'Parser rescue selected a normalized allowed tool after worker payload mismatch. Dispatch notes: ' + ', '.join(dispatch_notes)
+              return {'selected_worker': worker_name, 'selected_template': template, 'tool_name': tool_name, 'tool_endpoint': _endpoint(tool_name), 'tool_arguments_json': json.dumps(arguments, ensure_ascii=False), 'success_criteria_json': '[]', 'dispatch_notes_json': json.dumps(dispatch_notes, ensure_ascii=False), 'worker_hypothesis': str(active_task.get('hypothesis') or reason), 'reasoning_summary': reasoning_summary, 'normalized_backend_request_json': json.dumps(envelope, ensure_ascii=False)}
+
           def _validate(payload, worker_name, active_task):
               missing = sorted(REQUIRED_FIELDS - set(payload.keys()))
               if missing:
-                  return None, None, None, None, {'error':'missing_required_fields','fields':missing}
+                  return None, None, None, None, False, {'error':'missing_required_fields','fields':missing}
               toolchain = payload.get('toolchain')
-              if not isinstance(toolchain, list) or len(toolchain) != 1:
-                  return None, None, None, None, {'error':'invalid_toolchain','toolchain':toolchain}
+              if isinstance(toolchain, str):
+                  toolchain = [toolchain]
+              if isinstance(toolchain, list):
+                  toolchain = [str(item or '').strip() for item in toolchain if str(item or '').strip()]
+              if not isinstance(toolchain, list) or not toolchain:
+                  return None, None, None, None, bool(payload.get('needs_preparation')), {'error':'invalid_toolchain','toolchain':toolchain}
               tool_name = str(toolchain[0] or '').strip()
-              allowed = {str(item).strip() for item in (active_task.get('allowed_tools') or []) if str(item).strip()}
+              allowed = set(_normalized_allowed_tools(active_task))
               needs_preparation = bool(payload.get('needs_preparation'))
               valid = PREP_TOOLS if needs_preparation else DIRECT_TOOLS.get(worker_name, set())
               if tool_name not in valid:
-                  return None, None, None, None, {'error':'tool_not_valid_for_worker','tool_name':tool_name}
+                  return None, None, None, None, needs_preparation, {'error':'tool_not_valid_for_worker','tool_name':tool_name,'valid_tools':sorted(valid)}
               if allowed and tool_name not in allowed:
-                  return None, None, None, None, {'error':'tool_not_in_allowed_tools','tool_name':tool_name,'allowed_tools':sorted(allowed)}
+                  return None, None, None, None, needs_preparation, {'error':'tool_not_in_allowed_tools','tool_name':tool_name,'allowed_tools':sorted(allowed)}
               arguments = payload.get('arguments') if isinstance(payload.get('arguments'), dict) else {}
               success_criteria = payload.get('success_criteria') if isinstance(payload.get('success_criteria'), list) else []
-              return str(payload.get('template') or '').strip() or 'tool_execution', tool_name, arguments, success_criteria, None
+              return str(payload.get('template') or '').strip() or ('preparation' if needs_preparation else 'tool_execution'), tool_name, arguments, success_criteria, needs_preparation, None
 
           def main(task_class: str, auth_text: str = '', injection_text: str = '', business_text: str = '', active_task_json: str = '', current_execution_context_json: str = '') -> dict:
               class_name = str(task_class or 'authorization').lower()
@@ -3490,21 +3595,29 @@ workflow:
                   return _noop(default_worker, 'No active task available.', active_task, execution_context)
               worker_name = str(payload.get('worker') or '').strip()
               if worker_name != default_worker or WORKER_TO_CLASS.get(worker_name) != class_name:
+                  rescued = _rescue_dispatch(default_worker, active_task, execution_context, 'invalid_worker_selection', {'error':'invalid_worker','received_worker':worker_name}, needs_preparation=str(active_task.get('readiness') or '').strip().lower() == 'needs_preparation')
+                  if rescued:
+                      return rescued
                   return _noop(default_worker, 'Worker payload rejected: invalid worker selection.', active_task, execution_context, {'error':'invalid_worker','received_worker':worker_name})
-              template, tool_name, arguments, success_criteria, error = _validate(payload, worker_name, active_task)
+              template, tool_name, arguments, success_criteria, needs_preparation, error = _validate(payload, worker_name, active_task)
               if error:
+                  attempted_tool = ''
+                  toolchain = payload.get('toolchain') if isinstance(payload, dict) else None
+                  if isinstance(toolchain, list) and toolchain:
+                      attempted_tool = str(toolchain[0] or '').strip()
+                  if isinstance(toolchain, str):
+                      attempted_tool = toolchain.strip()
+                  rescued = _rescue_dispatch(worker_name, active_task, execution_context, 'worker_payload_validation_failed', error, attempted_tool, needs_preparation=needs_preparation)
+                  if rescued:
+                      return rescued
                   return _noop(worker_name, 'Worker payload rejected by parse_worker_command validation.', active_task, execution_context, error)
               dispatch_notes = []
-              preferred_tool = str(active_task.get('preferred_tool') or (active_task.get('tool_preference') or {}).get('preferred_tool') or '').strip()
-              allowed_tools = {str(item).strip() for item in (active_task.get('allowed_tools') or []) if str(item).strip()}
-              schemathesis_preferred = preferred_tool in {'schemathesis_negative_test', 'schemathesis_stateful_test'}
-              if schemathesis_preferred and preferred_tool in allowed_tools and tool_name != preferred_tool and not bool(payload.get('needs_preparation')):
-                  dispatch_notes.append(f'wrapper_first_override:{tool_name}->{preferred_tool}')
+              preferred_tool = _preferred_tool(active_task)
+              allowed_tools = set(_normalized_allowed_tools(active_task))
+              if preferred_tool and preferred_tool in allowed_tools and tool_name != preferred_tool and not needs_preparation and preferred_tool in DIRECT_TOOLS.get(worker_name, set()):
+                  dispatch_notes.append(f'preferred_tool_override:{tool_name}->{preferred_tool}')
                   tool_name = preferred_tool
-                  if preferred_tool == 'schemathesis_negative_test':
-                      template = 'schema_negative_test'
-                  elif preferred_tool == 'schemathesis_stateful_test':
-                      template = 'stateful_fuzz'
+                  template = _wrapper_template(preferred_tool) if preferred_tool in WRAPPER_TOOLS else template
               envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': tool_name, 'arguments': arguments}
               if tool_name in WRAPPER_TOOLS:
                   envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
@@ -5296,6 +5409,7 @@ workflow:
     - data:
         code: |
           import json
+          from datetime import datetime, timezone
 
 
           def _dedupe_findings(findings):
@@ -5315,6 +5429,45 @@ workflow:
                   result.append(item)
               return result
 
+          def _emit(run_id: str, component: str, event_type: str, payload: dict):
+              record = {
+                  "timestamp": datetime.now(timezone.utc).isoformat(),
+                  "event_type": event_type,
+                  "component": component,
+                  "run_id": str(run_id or "").strip(),
+                  **payload,
+              }
+              try:
+                  print("[diag-event]", json.dumps(record, ensure_ascii=False))
+              except Exception:
+                  pass
+
+
+          def _resolve_final_stop_reason(state: dict) -> dict:
+              existing = state.get("final_stop_reason_resolution") or {}
+              if isinstance(existing, dict) and str(existing.get("resolved_final_stop_reason") or "").strip():
+                  return existing
+              raw_state_reason = str(state.get("raw_stop_reason_before_resolution") or state.get("stop_reason") or "").strip()
+              scheduler_reason = str(state.get("scheduler_stop_reason") or state.get("last_scheduler_stop_reason") or "").strip()
+              transient_reason = str(state.get("transient_stop_reason") or "").strip()
+              soft_fallback = bool(state.get("soft_stop_fallback_used") or state.get("continued_after_soft_stop"))
+              explicit_final = str(state.get("final_stop_reason") or "").strip()
+              if explicit_final:
+                  resolved = explicit_final
+              elif raw_state_reason == "timeout" and scheduler_reason and scheduler_reason != "timeout":
+                  resolved = scheduler_reason
+              elif transient_reason == "timeout" and scheduler_reason and scheduler_reason != "timeout":
+                  resolved = scheduler_reason
+              else:
+                  resolved = raw_state_reason or scheduler_reason or "loop_finished"
+              return {
+                  "raw_state_stop_reason": raw_state_reason,
+                  "scheduler_selection_reason": scheduler_reason,
+                  "transient_stop_reason": transient_reason,
+                  "soft_stop_fallback_used": soft_fallback,
+                  "resolved_final_stop_reason": resolved,
+              }
+
 
           def main(target_url: str, state_json: str) -> dict:
               try:
@@ -5322,13 +5475,29 @@ workflow:
               except Exception:
                   state = {}
               confirmed_findings = _dedupe_findings(state.get("confirmed_findings", []))
+              resolution = _resolve_final_stop_reason(state)
+              run_id = str((state.get("execution_context") or {}).get("run_id") or (state.get("scheduler_state") or {}).get("run_id") or "").strip()
+              _emit(run_id, "reporter", "final_stop_reason_resolved", {
+                  "status": "success",
+                  "summary": "Resolved final report stop reason.",
+                  "reason": {
+                      "raw_state_stop_reason": resolution["raw_state_stop_reason"],
+                      "scheduler_selection_reason": resolution["scheduler_selection_reason"],
+                      "resolved_final_stop_reason": resolution["resolved_final_stop_reason"],
+                  },
+                  "artifacts": {
+                      "transient_stop_reason": resolution["transient_stop_reason"],
+                      "soft_stop_fallback_used": resolution["soft_stop_fallback_used"],
+                  },
+              })
               report_context = {
                   "target_url": target_url,
                   "confirmed_findings": confirmed_findings,
                   "completed_tasks": len(state.get("completed_tasks", [])),
                   "rejected_tasks": len(state.get("rejected_findings", [])),
                   "evidence_records": len(state.get("evidence_records", [])),
-                  "stop_reason": state.get("stop_reason", "loop_finished"),
+                  "stop_reason": resolution["resolved_final_stop_reason"],
+                  "stop_reason_resolution": resolution,
                   "budget_used": state.get("budget_used", 0),
               }
               return {

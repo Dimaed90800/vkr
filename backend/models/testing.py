@@ -24,6 +24,7 @@ class ExecutionContext(BaseModel):
     harvested_links: list[str] = Field(default_factory=list)
     prepared_objects: dict[str, Any] = Field(default_factory=dict)
     workflow_context: dict[str, Any] = Field(default_factory=dict)
+    graph_state: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuthContext(BaseModel):

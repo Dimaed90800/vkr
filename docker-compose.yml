@@ -150,6 +150,14 @@ services:
       FFUF_BIN: /usr/local/bin/ffuf
       HTTPX_BIN: /usr/local/bin/httpx
       DAST_LOG_DIR: /app/logs/dast_runs
+      RESTLER_WRAPPER_COMMAND: "python /app/scripts/runtime/restler_runtime_adapter.py --request-json {request_json} --result-json {result_json} --output-dir {output_dir}"
+      CATS_WRAPPER_COMMAND: "python /app/scripts/runtime/cats_runtime_adapter.py --request-json {request_json} --result-json {result_json} --output-dir {output_dir}"
+      AKTO_WRAPPER_COMMAND: "python /app/scripts/runtime/akto_runtime_adapter.py --request-json {request_json} --result-json {result_json} --output-dir {output_dir}"
+      ASTF_WRAPPER_COMMAND: ${ASTF_WRAPPER_COMMAND:-}
+      RESTLER_BIN: ${RESTLER_BIN:-}
+      CATS_BIN: ${CATS_BIN:-}
+      AKTO_BIN: ${AKTO_BIN:-}
+      ASTF_BIN: ${ASTF_BIN:-}
     ports:
       - "8000:8000"
     volumes:

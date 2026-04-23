@@ -9,9 +9,6 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.diagnostic_logging_service import DiagnosticLoggingService
 
 
-diagnostic_logger = DiagnosticLoggingService()
-
-
 def wrapper_trace_context(
     *,
     run_id: str | None,
@@ -34,6 +31,10 @@ def wrapper_trace_context(
     return context
 
 
+def _logger() -> DiagnosticLoggingService:
+    return DiagnosticLoggingService()
+
+
 def append_run_event(
     *,
     event_name: str,
@@ -52,7 +53,7 @@ def append_run_event(
     payload_extra = {"event_name": event_name}
     if extra:
         payload_extra.update(extra)
-    return diagnostic_logger.emit(
+    return _logger().emit(
         event_type=event_name,
         component="wrapper",
         status=status,
@@ -73,4 +74,4 @@ def append_run_event(
 
 
 def run_events_path(run_id: str | None) -> Path:
-    return diagnostic_logger.event_paths(run_id or "")["events"]
+    return _logger().event_paths(run_id or "")["events"]

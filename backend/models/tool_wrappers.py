@@ -81,6 +81,7 @@ class JudgeReadyEvidence(BaseModel):
     hypothesis: str = ""
     signals: list[str] = Field(default_factory=list)
     candidate_finding: dict[str, Any] = Field(default_factory=dict)
+    tool_summary: dict[str, Any] = Field(default_factory=dict)
     reproduction: dict[str, Any] = Field(default_factory=dict)
     artifacts: dict[str, Any] = Field(default_factory=dict)
     budget: dict[str, Any] = Field(default_factory=dict)

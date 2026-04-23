@@ -5,11 +5,15 @@ from typing import Any
 try:
     from backend.models.scheduling import ExecutabilityDecision, SchedulerState
     from backend.models.testing import ExecutionContext, TaskModel
+    from backend.services.graph_state_service import DEFAULT_GRAPH_STATE
     from backend.services.rejection_analyzer import RejectionAnalyzer
+    from backend.services.task_tooling_service import DEFAULT_TASK_TOOLING
 except ModuleNotFoundError:  # pragma: no cover
     from models.scheduling import ExecutabilityDecision, SchedulerState
     from models.testing import ExecutionContext, TaskModel
+    from services.graph_state_service import DEFAULT_GRAPH_STATE
     from services.rejection_analyzer import RejectionAnalyzer
+    from services.task_tooling_service import DEFAULT_TASK_TOOLING
 
 
 class TaskExecutabilityService:
@@ -30,6 +34,7 @@ class TaskExecutabilityService:
 
     def __init__(self) -> None:
         self.rejection_analyzer = RejectionAnalyzer()
+        self.graph_state = DEFAULT_GRAPH_STATE
 
     def evaluate(
         self,
@@ -44,11 +49,13 @@ class TaskExecutabilityService:
         capability_state = task.capability_state or {}
         creator_candidates = list(hints.get("spec_creator_candidates") or [])
         list_candidates = list(hints.get("spec_list_candidates") or [])
-        resolved_object_id, available_object_ids = self._resolve_object_id(task, context)
-        auth_available = self._auth_context_available(task, context)
+        self.graph_state.ensure_graph(context)
+        self.graph_state.add_requirement_edges(context, task)
+        resolved_object_id, available_object_ids = self.graph_state.resolve_object_id(task, context)
+        auth_available = self.graph_state.auth_context_available(task, context)
         baseline_valid = self._baseline_valid(task)
         success_path_feasibility = float(hints.get("spec_success_path_feasibility") or 0.0)
-        workflow_state_available = self._workflow_state_available(task, context, resolved_object_id)
+        workflow_state_available = self.graph_state.workflow_state_available(task, context, resolved_object_id)
         next_strategies = self._next_best_followups(task, creator_candidates, list_candidates)
         is_preparation_task = self._is_preparation_task(task)
 
@@ -239,12 +246,16 @@ class TaskExecutabilityService:
             updated.readiness = "needs_preparation"
             if decision.preferred_tool:
                 updated.allowed_tools = [decision.preferred_tool]
-                updated.recommended_next_step = decision.preferred_tool
+                updated.preferred_tool = decision.preferred_tool
+                if getattr(updated, "tool_preference", None):
+                    updated.tool_preference.preferred_tool = decision.preferred_tool
             if decision.preferred_strategy:
                 updated.test_strategy = decision.preferred_strategy
                 updated.strategy_family = decision.preferred_strategy
+            updated = DEFAULT_TASK_TOOLING.normalize_task(updated)
         elif decision.execution_mode == "test":
             updated.readiness = "ready_to_test"
+            updated = DEFAULT_TASK_TOOLING.normalize_task(updated)
         return updated
 
     def _resolve_object_id(self, task: TaskModel, context: ExecutionContext) -> tuple[str | None, list[str]]:

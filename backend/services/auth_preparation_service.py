@@ -5,6 +5,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urljoin, urlparse
+from urllib.request import urlopen
 
 try:
     from backend.models.testing import Artifact, ToolTestRequest, ToolTestResponse
@@ -49,6 +50,7 @@ class AuthPreparationService:
         self.playwright_runner_url = str(os.getenv("PLAYWRIGHT_RUNNER_URL") or "").strip()
         self.baseline_synthesis = OpenApiBaselineSynthesisService()
         self.diagnostics = DiagnosticLoggingService()
+        self._openapi_cache: dict[str, str] = {}
 
     async def probe_entrypoints(self, request: ToolTestRequest) -> ToolTestResponse:
         args = dict(request.arguments or {})
@@ -378,8 +380,9 @@ class AuthPreparationService:
         fallback_body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         target_endpoint = str(request.task.endpoint or "")
+        spec_text = self._spec_text_for_request(request)
         support = self.baseline_synthesis.endpoint_support_summary(
-            str(request.execution_context.openapi_spec_text or ""),
+            spec_text,
             target_endpoint,
             request.task.method,
         )
@@ -827,11 +830,22 @@ class AuthPreparationService:
         return score
 
     def _build_identity_seed(self, request: ToolTestRequest, index: int) -> dict[str, Any]:
-        label = "ab"[index] if index < 2 else str(index)
-        suffix = uuid.uuid5(uuid.NAMESPACE_URL, f"{request.execution_context.target_url}|{request.task.id}|{index}").hex[:10]
+        configured_roles = [
+            str(request.task.auth_context.owner_role or "").strip(),
+            str(request.task.auth_context.other_role or "").strip(),
+        ]
+        configured_roles = [item for item in configured_roles if item]
+        default_roles = ["user_a", "user_b"]
+        role_name = configured_roles[index] if index < len(configured_roles) else default_roles[index] if index < len(default_roles) else f"user_{index}"
+        label = role_name.split("_", 1)[-1] if "_" in role_name else role_name
+        suffix = uuid.uuid5(uuid.NAMESPACE_URL, f"{request.execution_context.target_url}|{request.task.id}|{role_name}|{index}").hex[:10]
         username = f"auto_{suffix}_{label}"
+        aliases = [role_name]
+        display_name = role_name
         return {
-            "name": f"user_auto_{label}",
+            "name": display_name,
+            "role": role_name,
+            "aliases": aliases,
             "username": username,
             "email": f"{username}@example.test",
             "password": f"AutoPass!{suffix[:6]}A1",
@@ -869,7 +883,7 @@ class AuthPreparationService:
             request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
             self._validate_scope(request, request_url)
             synthesized = self.baseline_synthesis.synthesize_request(
-                spec_text=str(request.execution_context.openapi_spec_text or ""),
+                spec_text=self._spec_text_for_request(request),
                 endpoint_path=endpoint,
                 method=method,
                 known_values=identity,
@@ -909,7 +923,7 @@ class AuthPreparationService:
             request_url = self._resolve_url(str(request.execution_context.target_url), endpoint)
             self._validate_scope(request, request_url)
             synthesized = self.baseline_synthesis.synthesize_request(
-                spec_text=str(request.execution_context.openapi_spec_text or ""),
+                spec_text=self._spec_text_for_request(request),
                 endpoint_path=endpoint,
                 method=method,
                 known_values=identity,
@@ -934,11 +948,12 @@ class AuthPreparationService:
                             "token": token,
                             "auth_headers": auth_headers,
                             "cookies": cookies,
+                            "authenticated": True,
                         }
                     )
                     return last_result, last_endpoint, authenticated_identity
 
-        authenticated_identity.update({"cookies": dict(fallback_cookies), "auth_headers": {}, "token": None})
+        authenticated_identity.update({"cookies": dict(fallback_cookies), "auth_headers": {}, "token": None, "authenticated": False})
         return last_result, last_endpoint, authenticated_identity
 
     def _aggregate_status(self, *, expected_total: int, register_success_total: int, login_success_total: int) -> str:
@@ -999,12 +1014,51 @@ class AuthPreparationService:
         owner_name = str(request.task.auth_context.owner_role or "").strip()
         roles = [item for item in (request.execution_context.roles or []) if isinstance(item, dict)]
         for role in roles:
-            if str(role.get("name") or role.get("role") or "").strip() == owner_name and self._has_auth_material(role):
+            if self._role_matches(role, owner_name) and self._has_auth_material(role):
                 return role
+        if owner_name:
+            return None
         for role in roles:
             if self._has_auth_material(role):
                 return role
         return None
+
+    def _spec_text_for_request(self, request: ToolTestRequest) -> str:
+        existing = str(request.execution_context.openapi_spec_text or "")
+        if existing.strip():
+            return existing
+        ref = str(request.execution_context.openapi_url or "").strip()
+        if not ref:
+            return ""
+        cached = self._openapi_cache.get(ref)
+        if cached is not None:
+            return cached
+        try:
+            if ref.startswith(("http://", "https://")):
+                with urlopen(ref) as resp:  # nosec - constrained by backend scope/targeted OpenAPI input
+                    text = resp.read().decode("utf-8")
+            else:
+                text = Path(ref).read_text(encoding="utf-8")
+        except Exception:
+            text = ""
+        self._openapi_cache[ref] = text
+        return text
+
+    def _role_matches(self, role: dict[str, Any], owner_name: str) -> bool:
+        target = str(owner_name or "").strip().lower()
+        if not target:
+            return False
+        candidates = {
+            str(role.get("name") or "").strip().lower(),
+            str(role.get("role") or "").strip().lower(),
+            str(role.get("username") or "").strip().lower(),
+            str(role.get("email") or "").strip().lower(),
+        }
+        aliases = role.get("aliases")
+        if isinstance(aliases, list):
+            for item in aliases:
+                candidates.add(str(item or "").strip().lower())
+        return target in {item for item in candidates if item}
 
     def _identity_headers(self, identity: dict[str, Any]) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}

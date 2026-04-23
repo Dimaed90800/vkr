@@ -1,0 +1,100 @@
+from types import SimpleNamespace
+
+from backend.models.scheduling import SchedulerState
+from backend.models.testing import ExecutionContext, TaskModel
+from backend.services.task_executability_service import TaskExecutabilityService
+from backend.services.task_generator import TaskGenerator
+from backend.services.task_scheduler import TaskScheduler
+
+
+def _auth_task() -> TaskModel:
+    return TaskModel.model_validate(
+        {
+            "id": "task_auth_bola_001",
+            "class": "authorization",
+            "subtype": "bola",
+            "endpoint": "/videos/{video_id}",
+            "method": "GET",
+            "hypothesis": "cross object access may be possible",
+            "readiness": "needs_preparation",
+            "allowed_tools": ["auto_provision", "create_test_object"],
+            "preparation_options": ["auto_provision", "create_test_object"],
+            "auth_context": {"owner_role": "user_a", "other_role": "user_b", "token_strategy": "cross_role_replay"},
+            "prerequisites": {"requires_auth_context": True, "requires_object_id": True},
+            "resource_family": "video",
+        }
+    )
+
+
+def test_executability_uses_graph_state_for_specific_auth_roles() -> None:
+    service = TaskExecutabilityService()
+    task = _auth_task()
+    context = ExecutionContext(
+        target_url="http://example.test",
+        roles=[
+            {"name": "auto_user_a", "role": "user_a", "aliases": ["user_a"], "token": "tok-a"},
+        ],
+        graph_state={
+            "nodes": {
+                "auth:user_b:context": {
+                    "id": "auth:user_b:context",
+                    "kind": "auth_context",
+                    "status": "ready",
+                    "aliases": ["user_b"],
+                    "has_auth_material": True,
+                }
+            },
+            "edges": [],
+        },
+    )
+    decision = service.evaluate(task, execution_context=context, scheduler_state=SchedulerState())
+    assert decision.auth_context_available is True
+    assert "missing_auth_context" not in decision.missing_prerequisites
+    assert any(edge["type"] == "requires" for edge in context.graph_state.get("edges", []))
+
+
+def test_queue_update_enrichment_populates_graph_nodes() -> None:
+    scheduler = TaskScheduler()
+    task = _auth_task()
+    context = ExecutionContext(target_url="http://example.test")
+    evidence = {
+        "artifacts": [
+            {
+                "type": "provisioned_identities",
+                "value": [
+                    {"name": "auto_user_a", "role": "user_a", "aliases": ["user_a"], "token": "tok-a"},
+                    {"name": "auto_user_b", "role": "user_b", "aliases": ["user_b"], "token": "tok-b"},
+                ],
+            },
+            {
+                "type": "prepared_object",
+                "value": {"object_id": "vid-123", "resource_family": "video", "source": "prepared_object"},
+            },
+        ]
+    }
+    _, updated_context, _ = scheduler._apply_evidence_runtime_enrichment(
+        pending=[task],
+        active_task=task,
+        evidence=evidence,
+        execution_context=context,
+        scheduler_state=SchedulerState(run_id="run-1", root_trace_id="run-1"),
+    )
+    graph = updated_context.graph_state
+    assert "auth:user_a:context" in graph["nodes"]
+    assert "auth:user_b:context" in graph["nodes"]
+    assert "object:video:vid-123" in graph["nodes"]
+
+
+def test_generator_keeps_auth_and_materialization_tools_for_object_authorization() -> None:
+    generator = TaskGenerator()
+    endpoint = SimpleNamespace(path="/videos/{video_id}", auth_required=True, path_params=["video_id"])
+    capabilities = {
+        "has_auth_profiles": False,
+        "has_api_surface": True,
+        "has_register_endpoint": True,
+        "has_login_endpoint": True,
+    }
+    allowed_tools = generator._allowed_tools("authorization", "object_authorization", endpoint, capabilities)
+    preparation = generator._preparation_options("authorization", "object_authorization", endpoint, capabilities)
+    assert allowed_tools[:2] == ["auto_provision", "create_test_object"]
+    assert preparation[:2] == ["auto_provision", "create_test_object"]

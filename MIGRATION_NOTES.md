@@ -4,7 +4,7 @@
 
 - Added a normalized backend wrapper layer at `POST /v1/tools/wrappers/execute`.
 - Added wrapper result and judge-ready evidence models.
-- Added wrapper scaffolds for RESTler, Schemathesis, CATS, Akto, and OWASP ASTF command names.
+- Added wrapper scaffolds for RESTler, CATS, Akto, and OWASP ASTF command names, plus real Schemathesis execution.
 - Extended planner tasks with `worker_role`, `preferred_tool`, `fallback_tools`, `artifact_requirements`, `budget_profile`, and `tool_preference`.
 - Updated the Dify DSL dispatcher to route wrapper commands to `/v1/tools/wrappers/execute` while preserving legacy tool endpoints.
 - Updated `schema.html` to show intake, graph planner, tool-aware agents, executor tools, evidence store, judge loop, and reporter.
@@ -38,17 +38,55 @@ Wrapper-first behavior is explicit for Schemathesis tasks. If an active task has
 
 Judge compatibility is preserved because `build_evidence` checks for `judge_ready_evidence` first. If it exists, that normalized package is passed to the judge path. If it does not exist, the old evidence builder still handles legacy tool responses.
 
+### Schemathesis Dispatch Mismatch Fix
+
+Schemathesis was not firing because some active tasks had `preferred_tool=schemathesis_stateful_test` while `allowed_tools` still contained only legacy entries such as `logic_test`. The Dify parser validated the worker output against legacy `allowed_tools`, rejected the payload, and fell back to `noop_outcome` before the wrapper-first override could run.
+
+Current normalization behavior:
+
+- Backend task generation merges `preferred_tool` and `fallback_tools` into `allowed_tools`.
+- Business-flow ready-to-test tasks include `schemathesis_stateful_test`, `restler_fuzz`, `akto_authz_scan`, and `logic_test`.
+- Contract/negative ready-to-test tasks include `schemathesis_negative_test`, `cats_fuzz_test`, `astf_top10_suite`, and `injection_test`.
+- Auth ready-to-test tasks include `akto_authz_scan`, `astf_top10_suite`, and `auth_test_access`.
+- Dify `parse_worker_command` builds normalized allowed tools from `allowed_tools + preferred_tool + fallback_tools`.
+- If a worker payload is invalid but the active task has `preferred_tool=schemathesis_negative_test` or `schemathesis_stateful_test`, the parser routes to the preferred wrapper instead of `noop_outcome` and records `wrapper_first_rescue`.
+
+Verify after rerun:
+
+```bash
+jq 'select(.event_type=="wrapper_dispatch_start")' logs/dast_runs/<run_id>/events.jsonl
+jq 'select(.trace_context.tool_name=="schemathesis_stateful_test" or .trace_context.tool_name=="schemathesis_negative_test")' logs/dast_runs/<run_id>/events.jsonl
+jq 'select(.event_type=="tool_execution_start")' logs/dast_runs/<run_id>/events.jsonl
+jq 'select(.event_type=="tool_subprocess_start")' logs/dast_runs/<run_id>/events.jsonl
+```
+
+## Live RESTler Wrapper Contract
+
+The second wrapper path is:
+
+`planner -> preferred_tool=restler_fuzz/restler_compile/restler_replay -> Dify Business Flow / Stateful Agent -> parse_worker_command -> /v1/tools/wrappers/execute -> ToolWrapperService -> RESTler scaffold artifacts -> normalized wrapper result -> EvidenceBuilderService -> judge_ready_evidence -> Dify build_evidence -> Judge`
+
+RESTler commands currently implemented:
+
+- `restler_compile`
+- `restler_fuzz`
+- `restler_replay`
+
+Current live behavior is a deterministic scaffold, not a real RESTler subprocess. The wrapper creates RESTler-oriented artifact directories and replay metadata, then returns normalized `partial` output with `termination_reason=tool_unavailable` until a RESTler runtime is configured.
+
+Wrapper-first behavior is explicit for RESTler tasks. If `preferred_tool` is one of `restler_compile`, `restler_fuzz`, or `restler_replay`, and that command is present in `allowed_tools`, the Dify dispatcher overrides a legacy worker selection and records a `wrapper_first_override` dispatch note.
+
 ## Tool Status
 
 - Schemathesis: real CLI execution for `schemathesis_negative_test`; `schemathesis_stateful_test` is routed through Schemathesis with broader generation mode.
-- RESTler: scaffold only.
+- RESTler: live normalized wrapper contract and deterministic compile/fuzz/replay scaffold; real CLI/container execution is not wired yet.
 - CATS: scaffold only.
 - Akto: scaffold only.
 - OWASP ASTF: scaffold only.
 
 ## Missing External Dependencies
 
-- RESTler CLI/container is not configured in `docker-compose.yml`.
+- RESTler CLI/container is not configured in `docker-compose.yml`. Expected future runtime input is either `RESTLER_BIN` or `RESTLER_DOCKER_IMAGE`.
 - CATS CLI/container is not configured in `docker-compose.yml`.
 - Akto service/container is not configured in `docker-compose.yml`.
 - OWASP ASTF runner/container is not configured in `docker-compose.yml`.
@@ -75,6 +113,89 @@ Expected high-level result:
 - `tool_name`: `schemathesis_negative_test`
 - `schema_version`: `tool-wrapper-result/v1`
 - `judge_ready_evidence.schema_version`: `judge-ready-evidence/v1`
+
+## Schemathesis Judge Evidence Hardening
+
+Earlier live Schemathesis runs reached `evidence_build_finish`, but the judge often saw only generic wrapper signals such as `negative_test_completed` or `partial`. That was not enough for the conservative judge rules to confirm or cleanly reject rate/resource-abuse hypotheses, so many outcomes became generic rework/partial decisions.
+
+The evidence builder now enriches Schemathesis-derived wrapper results before they enter the judge path. It reads bounded `stdout.log` / `stderr.log` artifacts, preserves the original wrapper signals, and adds concrete normalized indicators only when supported by the wrapper output.
+
+New Schemathesis indicators include:
+
+- `no_rate_limit_detected`
+- `rate_limit_detected`
+- `repeated_success_without_throttle`
+- `repeated_429_detected`
+- `schema_violation`
+- `server_error_signal`
+- `workflow_state_bypass`
+- `invalid_transition_accepted`
+- `cross_role_workflow_access`
+- `repeated_sensitive_action_allowed`
+- `invariant_violation`
+
+Judge-ready evidence now also includes a compact `tool_summary` block:
+
+```json
+{
+  "tool_summary": {
+    "tool_name": "schemathesis_stateful_test",
+    "operation_count": 1,
+    "success_count": 3,
+    "client_error_count": 0,
+    "server_error_count": 0,
+    "saw_429": false,
+    "saw_5xx": false,
+    "rate_limit_response_count": 0,
+    "bounded_burst_count": 3,
+    "request_count": 3,
+    "error_count": 0,
+    "operations": [
+      {
+        "method": "POST",
+        "endpoint": "/api/orders",
+        "url": "http://target/api/orders"
+      }
+    ]
+  }
+}
+```
+
+For rate-abuse tasks, `no_rate_limit_detected` is emitted only when a bounded burst has repeated successful responses and no `429` signal was observed. Workflow indicators are emitted only from explicit workflow/state/invariant phrases in the tool output, not from generic `200` responses.
+
+Structured `evidence_build_finish` logs now include:
+
+- `derived_signals`
+- `evidence_strength`
+- `strong_indicators`
+- `tool_summary`
+
+Verify the judge input after a run:
+
+```bash
+jq 'select(.event_type=="evidence_build_finish") | {tool: .trace_context.tool_name, derived: .extra.derived_signals, strength: .extra.evidence_strength, summary: .extra.tool_summary}' logs/dast_runs/<run_id>/events.jsonl
+```
+
+## Final Stop Reason Resolution
+
+The final report previously could say `timeout` while the scheduler run summary said `all_class_budgets_exhausted`. The mismatch came from two sources of truth: the dispatcher could set a local transient `timeout`, while the scheduler later selected a more specific final stop reason. The reporter consumed `state.stop_reason` directly.
+
+The Dify dispatcher now records scheduler stop context and resolves a final stop reason before emitting the final no-task state. The reporter context consumes the resolved value, and includes `stop_reason_resolution` for inspection:
+
+```json
+{
+  "stop_reason": "all_class_budgets_exhausted",
+  "stop_reason_resolution": {
+    "raw_state_stop_reason": "timeout",
+    "scheduler_selection_reason": "all_class_budgets_exhausted",
+    "transient_stop_reason": "",
+    "soft_stop_fallback_used": false,
+    "resolved_final_stop_reason": "all_class_budgets_exhausted"
+  }
+}
+```
+
+The reporter also emits a diagnostic `final_stop_reason_resolved` event so one run can show how the final value was chosen. If timeout is truly the final reason and no later scheduler reason exists, the resolved final reason remains `timeout`.
 - signals include at least one Schemathesis-derived signal such as `5xx`, `schema_violation`, or `negative_test_completed`
 - artifacts include deterministic `stdout.log`, `stderr.log`, and `replay_pack.json`
 
@@ -91,6 +212,76 @@ Expected failure distinctions:
 
 - `missing-openapi`: `termination_reason=missing_openapi`, signals include `openapi_missing`.
 - `missing-cli`: `termination_reason=tool_unavailable`, signals include `tool_unavailable`.
+
+## RESTler Smoke Path
+
+Run the RESTler wrapper contract smoke path:
+
+```bash
+python scripts/smoke_restler_wrapper.py
+```
+
+Or inside the rebuilt toolbox image:
+
+```bash
+docker compose build toolbox
+docker compose run --rm toolbox python scripts/smoke_restler_wrapper.py
+```
+
+Expected high-level result:
+
+- `tool_name`: `restler_fuzz`
+- `schema_version`: `tool-wrapper-result/v1`
+- `status`: `partial`
+- `termination_reason`: `tool_unavailable`
+- signals include `wrapper_scaffold_ready` and `stateful_sequence_fuzzing_planned`
+- artifacts include deterministic `stdout.log`, `stderr.log`, `replay_pack.json`, and RESTler scaffold files under `restler/`
+- `judge_ready_evidence.schema_version`: `judge-ready-evidence/v1`
+
+Sample normalized RESTler output:
+
+```json
+{
+  "tool_name": "restler_fuzz",
+  "status": "partial",
+  "result": {
+    "schema_version": "tool-wrapper-result/v1",
+    "tool_name": "restler_fuzz",
+    "source_task_id": "task_restler_smoke_001",
+    "worker_role": "Business Flow / Stateful Agent",
+    "status": "partial",
+    "summary": "restler_fuzz scaffold prepared. RESTler CLI/container execution is not wired in this environment.",
+    "signals": [
+      "wrapper_scaffold_ready",
+      "tool_unavailable",
+      "restler_fuzz_scaffold_ready",
+      "stateful_sequence_fuzzing_planned"
+    ],
+    "artifacts": {
+      "stdout_path": ".../stdout.log",
+      "stderr_path": ".../stderr.log",
+      "raw_report_paths": [
+        ".../restler/restler_wrapper_config.json",
+        ".../restler/Compile/grammar.py",
+        ".../restler/Compile/dict.json",
+        ".../restler/Replay/replay_sequence.json"
+      ],
+      "replay_pack_path": ".../replay_pack.json"
+    },
+    "budget": {
+      "max_requests": 4,
+      "used_requests": 0,
+      "duration_sec": 0.02,
+      "max_duration_sec": 20,
+      "concurrency": 1,
+      "termination_reason": "tool_unavailable"
+    },
+    "termination_reason": "tool_unavailable",
+    "fallback_reason": "restler_fuzz scaffold prepared. RESTler CLI/container execution is not wired in this environment.",
+    "error": "restler_runtime_unavailable"
+  }
+}
+```
 
 ## Direct Wrapper Request
 
@@ -235,6 +426,22 @@ The replay pack includes:
 - a `replay` block with deterministic replay strategy, CLI command, and request template
 - stdout/stderr/replay artifact paths
 
+For RESTler wrappers, the replay block uses `strategy=restler_sequence_replay` and includes sequence artifact hints:
+
+```json
+{
+  "replay": {
+    "strategy": "restler_sequence_replay",
+    "cli_command": ["restler", "fuzz", "--grammar_file", "Compile/grammar.py", "--target_ip", "http://127.0.0.1:8001"],
+    "sequence_artifacts": {
+      "compile_dir": "restler/Compile",
+      "results_dir": "restler/RestlerResults",
+      "replay_sequence_path": "restler/Replay/replay_sequence.json"
+    }
+  }
+}
+```
+
 Example replay block:
 
 ```json
@@ -328,3 +535,128 @@ How to tell what happened:
 - Persist wrapper artifacts in a durable mounted volume for experiment exports.
 - Expand the Dify worker prompts further once wrapper execution is proven against crAPI.
 - Add replay-pack ingestion into the final report/export pipeline.
+
+## Core + Desirable Tooling Integration Pass
+
+This pass extends the project beyond wrapper-first routing and adds a broader backend contract for the requested core stack:
+
+Core now represented in routing / execution contracts:
+- Schemathesis
+- RESTler
+- Akto
+- internal auth/materialization helpers
+- wrapper layer
+- evidence builder
+- judge
+- scheduler/planner
+
+Desirable support now represented in routing / helper endpoints:
+- CATS
+- HAR / traffic import (`import_har_capture`)
+- runtime inventory (`runtime_inventory`)
+- replay tooling (`replay_http_sequence`)
+- rate-limit / bounded burst helper (`bounded_burst_helper`)
+
+What changed in this pass:
+- Task generation and task tooling now keep the following helper tools available where appropriate:
+  - `import_har_capture`
+  - `runtime_inventory`
+  - `replay_http_sequence`
+  - `bounded_burst_helper`
+- Business-flow tasks now keep richer stateful / replay / burst helper options rather than collapsing to legacy-only commands.
+- New legacy helper endpoints were added:
+  - `/v1/traffic/import-har`
+  - `/v1/inventory/runtime`
+  - `/v1/replay/http-sequence`
+  - `/v1/resource/bounded-burst-helper`
+- Wrapper service now supports optional external runtime handoff for RESTler / CATS / Akto / ASTF through environment-variable commands:
+  - `RESTLER_WRAPPER_COMMAND`
+  - `CATS_WRAPPER_COMMAND`
+  - `AKTO_WRAPPER_COMMAND`
+  - `ASTF_WRAPPER_COMMAND`
+- If those commands are not configured, wrappers still return deterministic scaffolded output with runtime request and runtime hint artifacts.
+
+How to wire optional external runtimes:
+- Set one or more of the wrapper command environment variables on `toolbox`.
+- Each command receives formatted values such as:
+  - `{request_json}`
+  - `{output_dir}`
+  - `{target_url}`
+  - `{openapi_ref}`
+  - `{tool_name}`
+- Example pattern:
+  - `RESTLER_WRAPPER_COMMAND="python /opt/restler_adapter.py --request {request_json} --out {output_dir}"`
+
+What is still partial:
+- Schemathesis is the only wrapper with a real in-process CLI path in the default toolbox image.
+- RESTler / CATS / Akto / ASTF still rely on either:
+  - scaffold mode, or
+  - explicitly configured external runtime commands.
+- Auth materialization and object provisioning are still the biggest blocker for authorization coverage when auth contexts are absent.
+
+## Runtime adapter pass for RESTler and Akto
+
+This pass adds default runtime adapter entrypoints for RESTler and Akto so wrapper-first tasks can reach a real external-runtime handoff without requiring immediate full upstream installation.
+
+### What changed
+- `backend/services/tool_wrappers/service.py`
+  - external runtime commands now receive both `{request_json}` and `{result_json}` placeholders;
+  - if the runtime writes a normalized JSON result file, the backend parses it back into `ToolWrapperResult`;
+  - stdout JSON fallback parsing was added for simple runtime adapters.
+- `scripts/runtime/restler_runtime_adapter.py`
+  - adapter for `restler_compile`, `restler_fuzz`, `restler_replay`;
+  - uses `RESTLER_BIN` if available for compile, otherwise creates deterministic compile/fuzz/replay artifacts.
+- `scripts/runtime/akto_runtime_adapter.py`
+  - adapter for `akto_inventory_discovery` and `akto_authz_scan`;
+  - synthesizes runtime inventory from OpenAPI and prepares authorization scan plans when upstream Akto runtime is unavailable.
+- `docker-compose.yml`
+  - toolbox now defaults `RESTLER_WRAPPER_COMMAND` and `AKTO_WRAPPER_COMMAND` to the adapter scripts shipped in `/app/scripts/runtime/`.
+- `scripts/smoke_akto_wrapper.py`
+  - minimal smoke path for Akto adapter.
+
+### What is live now
+- Schemathesis remains the most direct in-process CLI wrapper.
+- RESTler now has a live external-runtime adapter path that can:
+  - parse a wrapper request,
+  - fetch OpenAPI,
+  - optionally invoke `RESTLER_BIN` for compile,
+  - otherwise generate deterministic runtime artifacts and normalized wrapper output.
+- Akto now has a live external-runtime adapter path that can:
+  - build runtime inventory from OpenAPI,
+  - produce authorization scan plans and candidate findings for auth tasks,
+  - return normalized wrapper output even without upstream Akto installed.
+
+### Verification
+- `python scripts/smoke_restler_wrapper.py`
+- `python scripts/smoke_akto_wrapper.py`
+- wrapper runs now persist `<engine>_runtime_request.json` and `<engine>_runtime_result.json` under the wrapper artifact directory.
+
+### Remaining gaps
+- RESTler fuzz/replay are still adapter-backed unless a real `RESTLER_BIN` is provided.
+- Akto adapter currently provides runtime-backed inventory/authz planning, not a full upstream Akto engine.
+- Auth/materialization remains a major blocker for some authorization findings and still needs a dedicated follow-up pass.
+
+
+## Auth/materialization pass
+- Auto-provisioned identities now keep deterministic role names / aliases (`user_a`, `user_b`) so downstream auth tests can resolve the correct profiles.
+- Auth preparation now fetches OpenAPI from `execution_context.openapi_url` when `openapi_spec_text` is empty, which improves baseline synthesis and object materialization in black-box runs.
+- TestingService now indexes role profiles by aliases, role, username, and email to reduce `missing_auth_context` caused by naming mismatches.
+- Added a CATS runtime adapter and smoke path; `docker-compose.yml` now wires `CATS_WRAPPER_COMMAND` by default through `scripts/runtime/cats_runtime_adapter.py`.
+
+
+## Graph-state and auth/materialization alignment pass
+
+This pass adds a lightweight executable `graph_state` inside `ExecutionContext` and uses it to reduce task/preparation mismatches.
+
+What changed:
+- added `execution_context.graph_state`
+- added `backend/services/graph_state_service.py`
+- task executability now consults graph-backed auth/object/workflow state
+- queue enrichment now writes provisioned identities, prepared objects, harvested IDs and workflow context into graph nodes
+- authorization object-materialization tasks now keep both `auto_provision` and `create_test_object` in their preparation/allowed tool sets when auth is still missing
+- owner identity selection is stricter: if an explicit owner role is requested and no matching provisioned identity exists, preparation no longer silently falls back to an arbitrary authenticated role
+
+Why this helps:
+- reduces `missing_auth_context` caused by alias / role lookup drift
+- gives scheduler/executability a real dependency memory for auth/object/workflow state
+- makes object-authorization tasks progress through `auto_provision -> create_test_object -> replay/test` instead of losing one half of the preparation path
