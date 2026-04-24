@@ -1211,6 +1211,25 @@ class TaskScheduler:
             "baseline_refinement",
         }
 
+    def _is_materialization_task(self, task: TaskModel) -> bool:
+        strategy = str(task.test_strategy or "").strip().lower()
+        strategy_family = str(task.strategy_family or "").strip().lower()
+        if strategy in {
+            "create_object_then_replay",
+            "list_then_select_object_then_replay",
+            "object_specific_auth_probe",
+            "prepare_workflow_state_then_retry",
+        }:
+            return True
+        if strategy_family == "object_materialization":
+            return True
+        tool_candidates = {
+            str(item or "").strip()
+            for item in [*(task.allowed_tools or []), *(task.preparation_options or []), task.preferred_tool]
+            if str(item or "").strip()
+        }
+        return bool(task.params.requires_object_id_enrichment) and "create_test_object" in tool_candidates
+
     def _downgrade_unsafe_confirmed_verdict(
         self,
         *,

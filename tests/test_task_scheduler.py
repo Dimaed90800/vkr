@@ -1062,6 +1062,35 @@ def test_rejected_missing_object_context_generates_preparation_followup() -> Non
     assert updated.pending_tasks[0].readiness == "needs_preparation"
 
 
+def test_confirmed_materialization_task_downgrades_without_scheduler_attribute_error() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("auth_materialize", "authorization", 88)
+    active_task.endpoint = "/identity/api/v2/admin/videos/{video_id}"
+    active_task.params.path_params = ["video_id"]
+    active_task.params.object_param_name = "video_id"
+    active_task.params.requires_object_id_enrichment = True
+    active_task.allowed_tools = ["create_test_object"]
+    active_task.readiness = "needs_preparation"
+    active_task.test_strategy = "create_object_then_replay"
+    active_task.hypothesis_family = "object_authorization"
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[],
+        active_task=active_task,
+        verdict="confirmed",
+        rework_hint=None,
+        evidence={
+            "response_summary": {"evidence_strength": "strong", "finding_type_hint": "bola"},
+            "indicators": ["object_created"],
+        },
+        max_retries=1,
+        state=SchedulerState(),
+        fairness=FairnessConfig(),
+    )
+
+    assert updated.queue_update_reason in {"generated_rework_followups", "requeued_rework_task"}
+
+
 def test_create_object_then_replay_injects_real_harvested_object_id_into_followup() -> None:
     scheduler = TaskScheduler()
     active_task = _task("auth_create", "authorization", 86)
