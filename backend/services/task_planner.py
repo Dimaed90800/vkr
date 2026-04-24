@@ -263,6 +263,9 @@ class TaskPlanner:
                 "evidence_feasibility": float(task.evidence_feasibility or 0.0),
                 "noise_risk": float(task.noise_risk or 0.0),
                 "readiness": task.readiness,
+                "worker_role": task.worker_role,
+                "preferred_tool": task.preferred_tool,
+                "fallback_tools": list(task.fallback_tools or [])[:3],
             }
             for task in normalized_tasks[:8]
         ]

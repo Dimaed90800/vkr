@@ -225,6 +225,10 @@ def test_object_dependent_auth_rework_without_object_id_generates_materializatio
     assert "list_then_select_object_then_replay" in strategies
     assert "privileged_function_replay" not in strategies
     assert all(task.readiness == "needs_preparation" for task in updated.pending_tasks)
+    assert all(task.params.requires_object_id_enrichment is True for task in updated.pending_tasks)
+    assert all(task.prerequisites.requires_object_id is True for task in updated.pending_tasks)
+    assert all(task.allowed_tools == ["create_test_object"] for task in updated.pending_tasks)
+    assert all(task.recommended_next_step == "create_test_object" for task in updated.pending_tasks)
 
 
 def test_object_dependent_auth_rework_with_object_id_allows_privileged_replay() -> None:
@@ -512,12 +516,13 @@ def test_fallback_does_not_repeat_same_class_when_other_classes_exist() -> None:
         ),
     )
 
-    assert response.next_task is None
-    assert response.selection_reason == "all_class_budgets_exhausted"
-    assert response.should_stop is True
+    assert response.next_task is not None
+    assert response.next_task.id == "auth_1"
+    assert response.selection_reason == "selected_runnable_task_after_all_class_budgets_exhausted"
+    assert response.should_stop is False
 
 
-def test_all_class_budgets_exhausted_returns_no_selection() -> None:
+def test_all_class_budgets_exhausted_keeps_runnable_task_available() -> None:
     scheduler = TaskScheduler()
     tasks = [
         _task("auth_1", "authorization", 100),
@@ -536,9 +541,9 @@ def test_all_class_budgets_exhausted_returns_no_selection() -> None:
         ),
     )
 
-    assert selection.selected_task_id is None
-    assert selection.selected_class is None
-    assert selection.reason == "all_class_budgets_exhausted"
+    assert selection.selected_task_id == "auth_1"
+    assert selection.selected_class == "authorization"
+    assert selection.reason == "fallback_single_class_queue"
 
     response = scheduler.select_next_task(
         tasks,
@@ -552,10 +557,61 @@ def test_all_class_budgets_exhausted_returns_no_selection() -> None:
         ),
     )
 
-    assert response.next_task is None
-    assert response.should_stop is True
-    assert response.selection_reason == "all_class_budgets_exhausted"
+    assert response.next_task is not None
+    assert response.next_task.id == "auth_1"
+    assert response.should_stop is False
+    assert response.selection_reason == "fallback_single_class_queue"
 
+
+def test_confirmed_vertical_privilege_requires_replay_evidence() -> None:
+    scheduler = TaskScheduler()
+    active = _task("auth_create_then_replay", "authorization", 100).model_copy(
+        update={
+            "subtype": "vertical_privilege",
+            "test_strategy": "create_object_then_replay",
+            "readiness": "needs_preparation",
+            "allowed_tools": ["create_test_object"],
+        }
+    )
+
+    verdict, evidence = scheduler._downgrade_unsafe_confirmed_verdict(
+        active_task=active,
+        verdict="confirmed",
+        evidence={
+            "indicators": ["test_object_created"],
+            "response_summary": {"finding_type_hint": "vertical_privilege"},
+        },
+    )
+
+    assert verdict == "rework"
+    assert evidence["response_summary"]["unsafe_confirm_downgraded"] is True
+    assert evidence["response_summary"]["unsafe_confirm_reason"] == "authorization_confirm_requires_access_or_replay_evidence"
+
+
+
+
+def test_confirmed_function_level_authorization_requires_replay_evidence() -> None:
+    scheduler = TaskScheduler()
+    active = _task("auth_fn_then_replay", "authorization", 100).model_copy(
+        update={
+            "subtype": "function_level_authorization",
+            "test_strategy": "create_object_then_replay",
+            "readiness": "needs_preparation",
+            "allowed_tools": ["create_test_object"],
+        }
+    )
+
+    verdict, evidence = scheduler._downgrade_unsafe_confirmed_verdict(
+        active_task=active,
+        verdict="confirmed",
+        evidence={
+            "indicators": ["test_object_created"],
+            "response_summary": {"finding_type_hint": "function_level_authorization"},
+        },
+    )
+
+    assert verdict == "rework"
+    assert evidence["response_summary"]["unsafe_confirm_reason"] == "authorization_confirm_requires_access_or_replay_evidence"
 
 def test_should_stop_true_when_no_runnable_tasks_remain() -> None:
     scheduler = TaskScheduler()
@@ -1178,6 +1234,44 @@ def test_preparation_task_without_object_id_is_still_executable() -> None:
     assert response.executable_preparation_task_count >= 1
 
 
+def test_materialization_preparation_can_run_after_class_budget_is_exhausted() -> None:
+    scheduler = TaskScheduler()
+    task = _task("auth_prepare_video_budget", "authorization", 88)
+    task.endpoint = "/identity/api/v2/admin/videos/{video_id}"
+    task.params.path_params = ["video_id"]
+    task.params.object_param_name = "video_id"
+    task.params.requires_object_id_enrichment = True
+    task.hypothesis_family = "object_authorization"
+    task.resource_family = "video"
+    task.prerequisites.requires_object_id = True
+    task.readiness = "needs_preparation"
+    task.allowed_tools = ["create_test_object"]
+    task.preparation_options = ["create_test_object"]
+    task.test_strategy = "create_object_then_replay"
+    task.strategy_family = "object_materialization"
+
+    response = scheduler.select_next_task(
+        [task],
+        state=SchedulerState(class_budget_used={"authorization": 4}),
+        fairness=FairnessConfig(max_tasks_per_class_per_run={"authorization": 4, "business_logic": 4, "injection": 4}),
+        execution_context=ExecutionContext(
+            target_url="http://example.test",
+            roles=[
+                {"name": "user_a", "role": "user_a", "aliases": ["user_a"], "auth_headers": {"Authorization": "Bearer a"}},
+                {"name": "user_b", "role": "user_b", "aliases": ["user_b"], "auth_headers": {"Authorization": "Bearer b"}},
+            ],
+        ),
+    )
+
+    assert response.next_task is not None
+    assert response.next_task.id == "auth_prepare_video_budget"
+    assert response.next_task.allowed_tools == ["create_test_object"]
+    assert response.next_task.readiness == "needs_preparation"
+    assert response.selection_reason == "selected_materialization_preparation_despite_class_budget"
+    assert response.scheduler_state.class_budget_used["authorization"] == 4
+    assert response.scheduler_state.preparation_budget_used >= 1
+
+
 def test_scheduler_prioritizes_preparation_when_prerequisites_are_missing() -> None:
     scheduler = TaskScheduler()
     prep_task = _task("auth_prepare_first", "authorization", 100)
@@ -1210,6 +1304,33 @@ def test_scheduler_prioritizes_preparation_when_prerequisites_are_missing() -> N
     assert response.next_task.readiness == "needs_preparation"
     assert response.selection_reason == "selected_highest_priority_preparation_task"
     assert response.scheduler_state.preparation_budget_used >= 1
+
+
+def test_queue_update_uses_lightweight_remaining_ordering() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("auth_root_lightweight", "authorization", 90)
+    active_task.hypothesis_family = "privileged_function_access"
+    active_task.test_strategy = "cross_role_replay"
+
+    def _unexpected_order_queue(*args, **kwargs):
+        raise AssertionError("update_queue_after_verdict should not resimulate full scheduling")
+
+    scheduler.order_queue = _unexpected_order_queue
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[_task("logic_still_pending", "business_logic", 50)],
+        active_task=active_task,
+        verdict="rework",
+        rework_hint="materialize object and replay",
+        evidence={"response_summary": {"failure_reason": "object_id_missing"}, "indicators": []},
+        max_retries=2,
+        state=SchedulerState(run_id="run-test-lightweight"),
+        fairness=FairnessConfig(),
+        execution_context=ExecutionContext(target_url="http://example.test"),
+    )
+
+    assert updated.pending_tasks
+    assert updated.queue_update_reason in {"generated_rework_followups", "requeued_rework_task"}
 
 
 def test_high_value_followups_are_bounded_by_root_budget() -> None:
@@ -1279,3 +1400,26 @@ def test_baseline_refinement_budget_does_not_consume_alternate_payload_budget() 
 
     assert updated.generated_followup_task_ids == ["inj_budget__alternate_payload_family_1"]
     assert updated.pending_tasks[0].test_strategy == "alternate_payload_family"
+
+
+def test_authorization_property_tasks_do_not_block_on_missing_baseline_if_mutation_probe_available() -> None:
+    scheduler = TaskScheduler()
+    task = _task("auth_prop", "authorization", 70)
+    task.subtype = "property_level_authorization"
+    task.method = "PATCH"
+    task.allowed_tools = ["property_mutation_test"]
+    task.preferred_tool = "property_mutation_test"
+    task.params.body_fields = ["email", "role"]
+    task.prerequisites.requires_valid_baseline = True
+    task.context_hints = {"baseline_valid": False, "spec_baseline_available": False}
+
+    response = scheduler.select_next_task(
+        [task],
+        state=SchedulerState(),
+        fairness=FairnessConfig(),
+        execution_context=ExecutionContext(target_url="http://example.test"),
+    )
+
+    assert response.next_task is not None
+    assert response.next_task.id == "auth_prop"
+    assert response.should_stop is False

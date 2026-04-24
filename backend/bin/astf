@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /opt/java/openjdk/bin/java -jar /opt/astf/api-security-testing-framework-1.0-SNAPSHOT.jar "$@"

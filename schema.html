@@ -2,157 +2,101 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Мультиагентная система тестирования API</title>
-
+  <title>Tool-aware multi-agent REST API DAST architecture</title>
   <script type="module">
     import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.5/dist/mermaid.esm.min.mjs";
     mermaid.initialize({
       startOnLoad: true,
       securityLevel: "loose",
       theme: "base",
-      themeVariables: {
-        fontFamily: "Inter, Arial, sans-serif",
-        lineColor: "#455a64"
-      },
-      flowchart: {
-        htmlLabels: true,
-        curve: "basis",
-        nodeSpacing: 50,
-        rankSpacing: 60
-      }
+      themeVariables: { fontFamily: "Inter, Arial, sans-serif", lineColor: "#455a64" },
+      flowchart: { htmlLabels: true, curve: "basis", nodeSpacing: 42, rankSpacing: 54 }
     });
   </script>
-
   <style>
-    body {
-      font-family: 'Inter', Arial, sans-serif;
-      padding: 30px 20px;
-      background: #f4f7f6;
-      margin: 0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-    }
-    .diagram-container {
-      background: #ffffff;
-      padding: 30px;
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.05);
-      max-width: 1400px;
-      width: 100%;
-      overflow-x: auto;
-    }
-    h2 {
-      text-align: center;
-      color: #2c3e50;
-      margin-top: 0;
-    }
-    .legend {
-      margin-top: 20px;
-      padding: 15px;
-      background: #eef2f5;
-      border-radius: 8px;
-      border-left: 4px solid #3498db;
-      font-size: 14px;
-      line-height: 1.6;
-      color: #34495e;
-    }
+    body { font-family: Inter, Arial, sans-serif; padding: 30px 20px; background: #f4f7f6; margin: 0; display: flex; justify-content: center; }
+    .diagram-container { background: #fff; padding: 28px; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.05); max-width: 1500px; width: 100%; overflow-x: auto; }
+    h2 { text-align: center; color: #243746; margin-top: 0; }
+    .legend { margin-top: 20px; padding: 15px; background: #eef2f5; border-left: 4px solid #3498db; font-size: 14px; line-height: 1.6; color: #34495e; }
   </style>
 </head>
 <body>
-
 <div class="diagram-container">
-  <h2>Мультиагентная архитектура DAST (Роутер - Воркеры - Судья)</h2>
-
+  <h2>Tool-aware contract-first REST API DAST architecture</h2>
   <div class="mermaid">
     flowchart TD
+      classDef input fill:#e8f4f8,stroke:#2980b9,stroke-width:2px,color:#000
+      classDef planner fill:#fdebd0,stroke:#f39c12,stroke-width:2px,color:#000
+      classDef agent fill:#e8f8f5,stroke:#1abc9c,stroke-width:2px,color:#000
+      classDef tool fill:#f4f6f6,stroke:#7f8c8d,stroke-width:1px,stroke-dasharray:5 5,color:#000
+      classDef evidence fill:#eaeded,stroke:#95a5a6,stroke-width:2px,color:#000
+      classDef judge fill:#f5eef8,stroke:#9b59b6,stroke-width:2px,color:#000
+      classDef queue fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
+      classDef report fill:#ebdef0,stroke:#8e44ad,stroke-width:2px,color:#000
 
-        classDef user fill:#e8f4f8,stroke:#2980b9,stroke-width:2px,color:#000
-        classDef router fill:#fdebd0,stroke:#f39c12,stroke-width:2px,color:#000
-        classDef pentester fill:#e8f8f5,stroke:#1abc9c,stroke-width:2px,color:#000
-        classDef tools fill:#f4f6f6,stroke:#7f8c8d,stroke-width:1px,stroke-dasharray: 5 5,color:#000
-        classDef judge fill:#f5eef8,stroke:#9b59b6,stroke-width:2px,color:#000
-        classDef reporter fill:#ebdef0,stroke:#8e44ad,stroke-width:2px,color:#000
-        classDef queue fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
-        classDef decision fill:#ffebd6,stroke:#d35400,stroke-width:2px,color:#000
-        classDef db fill:#eaeded,stroke:#bdc3c7,stroke-width:2px,color:#000
+      User["User / OpenAPI / Roles"]:::input
+      Intake["Intake & Surface Builder<br/>OpenAPI, passive discovery, endpoint discovery, traffic import"]:::planner
+      Planner["Graph Planner / Router<br/>task queue + tool preferences"]:::planner
+      Queue[("Task Queue<br/>preferred_tool, fallback_tools, budget_profile")]:::queue
 
-        subgraph Init [1. Инициализация и Маршрутизация]
-            A["Пользователь<br/>OpenAPI, URL, Роли"]:::user
-            B["Агент-Роутер (Master)<br/>Анализирует API, режет на задачи"]:::router
-            C[("Очередь задач<br/>(Task Broker)")]:::queue
+      Auth["Auth & Identity Agent<br/>BOLA, BOPLA, role misuse, authz probes"]:::agent
+      Contract["Contract & Negative Testing Agent<br/>schema violations, malformed input, headers, params"]:::agent
+      Flow["Business Flow / Stateful Agent<br/>sequences, invalid transitions, replay, idempotency"]:::agent
+      Discovery["Discovery / Surface Agent<br/>inventory and sequence hints"]:::agent
 
-            A --> B
-            B --> C
-        end
+      RESTler["RESTler<br/>compile, fuzz, replay"]:::tool
+      Schemathesis["Schemathesis<br/>negative and stateful tests"]:::tool
+      CATS["CATS<br/>contract fuzzing"]:::tool
+      Akto["Akto<br/>inventory and authz scan"]:::tool
+      ASTF["OWASP ASTF<br/>API Top 10 suite"]:::tool
+      Legacy["Legacy internal helpers<br/>kept as fallback during migration"]:::tool
 
-        subgraph Execution [2. Параллельное тестирование - Воркеры]
-            P1["Агент-Пентестер: Инъекции<br/>SQLi, XSS, Command Inj"]:::pentester
-            T1["Инструменты:<br/>SQLmap, Fuzzer"]:::tools
+      Evidence["Unified Evidence Store<br/>normalized traces, artifacts, replay packs"]:::evidence
+      Judge["Judge / Oracle Verifier<br/>false-positive reduction"]:::judge
+      Verdict{"confirm / reject / rework"}:::judge
+      Findings[("Confirmed Findings")]:::evidence
+      Rework["Rework loop<br/>bounded retry with judge hint"]:::queue
+      Reporter["Reporter<br/>confirmed evidence only"]:::report
+      Out["Final report"]:::input
 
-            P2["Агент-Пентестер: Авторизация<br/>BOLA/IDOR, Access"]:::pentester
-            T2["Инструменты:<br/>Токен-сваппер, Память ID"]:::tools
+      User --> Intake --> Planner --> Queue
+      Queue --> Auth
+      Queue --> Contract
+      Queue --> Flow
+      Queue --> Discovery
 
-            P3["Агент-Пентестер: Бизнес-логика<br/>Race Conditions, Logic"]:::pentester
-            T3["Инструменты:<br/>HTTP-клиент, JSON-парсер"]:::tools
+      Auth --> Akto
+      Auth --> ASTF
+      Auth --> Legacy
+      Contract --> Schemathesis
+      Contract --> CATS
+      Contract --> ASTF
+      Contract --> Legacy
+      Flow --> RESTler
+      Flow --> Schemathesis
+      Flow --> Akto
+      Flow --> Legacy
+      Discovery --> Akto
+      Discovery --> Legacy
 
-            Target(("Целевой API")):::user
+      RESTler --> Evidence
+      Schemathesis --> Evidence
+      CATS --> Evidence
+      Akto --> Evidence
+      ASTF --> Evidence
+      Legacy --> Evidence
 
-            C --> P1
-            C --> P2
-            C --> P3
-
-            P1 -.->|Подключает| T1
-            P2 -.->|Подключает| T2
-            P3 -.->|Подключает| T3
-
-            P1 -->|Атака по HTTP| Target
-            P2 -->|Атака по HTTP| Target
-            P3 -->|Атака по HTTP| Target
-        end
-
-        subgraph Validation [3. Проверка и Принятие решений]
-            Q["Сбор Evidence<br/>Запрос + Ответ + Логика агента"]:::db
-            J["Агент-Судья (Judge)<br/>Поиск ложных срабатываний"]:::judge
-            D{"Вердикт Судьи"}:::decision
-
-            P1 --> Q
-            P2 --> Q
-            P3 --> Q
-            Q --> J
-            J --> D
-
-            Rework["Доработка (Rework)<br/>Судья пишет подсказку"]:::queue
-            DB[("База Уязвимостей<br/>Confirmed Findings")]:::db
-            Drop["Отклонено<br/>False Positive"]:::db
-
-            D -->|Ошибка агента| Rework
-            D -->|Подтверждено| DB
-            D -->|Не уязвимость| Drop
-
-            %% Возврат в очередь
-            Rework --> C
-        end
-
-        subgraph Reporting [4. Формирование Отчета]
-            Rep["Агент-Репортер<br/>Форматирует рекомендации"]:::reporter
-            Out["Итоговый README.md<br/>Вывод пользователю"]:::user
-
-            DB --> Rep
-            Rep --> Out
-        end
+      Evidence --> Judge --> Verdict
+      Verdict -->|confirmed| Findings --> Reporter --> Out
+      Verdict -->|rejected| Reporter
+      Verdict -->|rework| Rework --> Queue
   </div>
-
   <div class="legend">
-    <strong>Преимущества данной архитектуры:</strong><br><br>
-    <ul>
-      <li><span style="color:#f39c12; font-weight:bold;">Агент-Роутер (Orchestrator):</span> Выступает в роли менеджера проекта. Он не ломает API, его задача — грамотно распарсить спецификацию и нарезать мелкие задачи.</li>
-      <li><span style="color:#1abc9c; font-weight:bold;">Независимые Воркеры:</span> Каждый Пентестер имеет свой промпт, заточенный под конкретный класс уязвимостей. Это исключает путаницу LLM. Они работают параллельно со своими утилитами.</li>
-      <li><span style="color:#9b59b6; font-weight:bold;">Агент-Судья с петлей обратной связи:</span> Если Пентестер ошибся, Судья отправляет задачу обратно в Очередь (Rework) с подсказкой (например: "Ты забыл закрыть кавычку").</li>
-      <li><span style="color:#8e44ad; font-weight:bold;">Агент-Репортер:</span> Отделен от Судьи. Работает только в конце — генерирует финальный красивый README из подтвержденных багов.</li>
-    </ul>
+    <strong>Почему Judge остаётся отдельным:</strong>
+    executor tools and worker agents can produce useful signals, but they do not make the final vulnerability decision.
+    The judge consumes normalized evidence, replay metadata, raw artifact references, confidence signals, and budget data,
+    then confirms, rejects, or requests bounded rework. This keeps tool noise and LLM assumptions away from the final report.
   </div>
 </div>
-
 </body>
 </html>

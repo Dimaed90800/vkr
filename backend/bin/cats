@@ -1,0 +1,6 @@
+#!/bin/sh
+if [ ! -s /opt/cats/cats-runner.jar ]; then
+  echo "CATS runtime unavailable: /opt/cats/cats-runner.jar is missing. Check /opt/cats/CATS_RELEASE_UNAVAILABLE if present." >&2
+  exit 127
+fi
+exec /opt/java/openjdk/bin/java -jar /opt/cats/cats-runner.jar "$@"

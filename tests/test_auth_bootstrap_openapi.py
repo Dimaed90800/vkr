@@ -1,0 +1,689 @@
+import json
+from pathlib import Path
+
+import pytest
+
+from backend.models.testing import ExecutionContext, TaskModel, ToolTestRequest
+from backend.services.auth_preparation_service import AuthPreparationService
+from backend.services.openapi_baseline_synthesis_service import OpenApiBaselineSynthesisService
+from backend.services.http_client import HttpExecutionResult
+
+
+OPENAPI_AUTH_SPEC = json.dumps(
+    {
+        "openapi": "3.0.0",
+        "paths": {
+            "/identity/api/auth/signup": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["email", "password", "firstName", "lastName"],
+                                    "properties": {
+                                        "email": {"type": "string", "format": "email"},
+                                        "password": {"type": "string"},
+                                        "firstName": {"type": "string"},
+                                        "lastName": {"type": "string"},
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/identity/api/auth/login": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["email", "password"],
+                                    "properties": {
+                                        "email": {"type": "string", "format": "email"},
+                                        "password": {"type": "string"},
+                                    },
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        },
+    }
+)
+
+
+class _AuthBootstrapHttpClient:
+    def __init__(self, *, login_mode: str = "body", fail: bool = False) -> None:
+        self.login_mode = login_mode
+        self.fail = fail
+        self.requests: list[dict] = []
+
+    async def execute(self, *, method, url, headers=None, query_params=None, json_body=None, form_data=None, multipart_data=None):
+        self.requests.append({"method": method, "url": url, "headers": headers or {}, "json_body": json_body or {}})
+        if url.endswith("/identity/api/auth/signup"):
+            if self.fail or set((json_body or {}).keys()) != {"email", "password", "firstName", "lastName"}:
+                return HttpExecutionResult(method=method, url=url, status_code=422, headers={}, body_text="{}", elapsed_ms=1.0)
+            return HttpExecutionResult(method=method, url=url, status_code=201, headers={}, body_text=json.dumps({"ok": True}), elapsed_ms=1.0)
+        if url.endswith("/identity/api/auth/login"):
+            if self.fail or set((json_body or {}).keys()) != {"email", "password"}:
+                return HttpExecutionResult(method=method, url=url, status_code=401, headers={}, body_text="{}", elapsed_ms=1.0)
+            if self.login_mode == "body":
+                return HttpExecutionResult(method=method, url=url, status_code=200, headers={}, body_text=json.dumps({"result": {"authToken": "body-token"}}), elapsed_ms=1.0)
+            if self.login_mode == "header":
+                return HttpExecutionResult(method=method, url=url, status_code=200, headers={"x-auth-token": "header-token"}, body_text="{}", elapsed_ms=1.0)
+            if self.login_mode == "cookie":
+                return HttpExecutionResult(method=method, url=url, status_code=200, headers={"set-cookie": "sessionid=cookie-token; Path=/"}, body_text="{}", elapsed_ms=1.0)
+            return HttpExecutionResult(method=method, url=url, status_code=200, headers={}, body_text="{}", elapsed_ms=1.0)
+        return HttpExecutionResult(method=method, url=url, status_code=404, headers={}, body_text="{}", elapsed_ms=1.0)
+
+
+class _FailingAuthHttpClient:
+    def __init__(self, *, register_status: int = 400, login_status: int = 401) -> None:
+        self.register_status = register_status
+        self.login_status = login_status
+
+    async def execute(self, *, method, url, headers=None, query_params=None, json_body=None, form_data=None, multipart_data=None):
+        if url.endswith("/identity/api/auth/signup"):
+            return HttpExecutionResult(method=method, url=url, status_code=self.register_status, headers={}, body_text='{"error":"bad"}', elapsed_ms=1.0)
+        if url.endswith("/identity/api/auth/login"):
+            return HttpExecutionResult(method=method, url=url, status_code=self.login_status, headers={}, body_text='{"error":"unauthorized"}', elapsed_ms=1.0)
+        return HttpExecutionResult(method=method, url=url, status_code=404, headers={}, body_text="{}", elapsed_ms=1.0)
+
+
+class _PreviewAuthHttpClient:
+    async def execute(self, *, method, url, headers=None, query_params=None, json_body=None, form_data=None, multipart_data=None):
+        if url.endswith("/identity/api/auth/signup"):
+            body = '{"error":"duplicate","access_token":"signup-secret-token","password":"plain-secret"}'
+            return HttpExecutionResult(method=method, url=url, status_code=500, headers={}, body_text=body, elapsed_ms=1.0)
+        if url.endswith("/identity/api/auth/login"):
+            body = '{"message":"unauthorized","token":"login-secret-token","authorization":"Bearer abc.def.ghi"}'
+            return HttpExecutionResult(method=method, url=url, status_code=401, headers={"set-cookie": "sessionid=secret-cookie; Path=/"}, body_text=body, elapsed_ms=1.0)
+        return HttpExecutionResult(method=method, url=url, status_code=404, headers={}, body_text="{}", elapsed_ms=1.0)
+
+
+class _ParsingFailureAuthService(AuthPreparationService):
+    def _authenticated_identity_from_result(self, identity, result, *, fallback_cookies):
+        raise ValueError("parse failed")
+
+
+class _ExtractionFailureAuthService(AuthPreparationService):
+    def _extract_token_with_source(self, result):
+        raise RuntimeError("token extraction failed")
+
+
+def _task() -> TaskModel:
+    return TaskModel.model_validate(
+        {
+            "id": "task_auth_bootstrap_openapi",
+            "class": "authorization",
+            "subtype": "auth_bootstrap",
+            "endpoint": "/identity/api/auth/login",
+            "method": "POST",
+            "auth_context": {"owner_role": "user_a", "other_role": "user_b"},
+            "hypothesis": "Bootstrap auth from OpenAPI operations.",
+            "allowed_tools": ["auto_provision"],
+            "readiness": "needs_preparation",
+        }
+    )
+
+
+def _request(identity_count: int = 1) -> ToolTestRequest:
+    return ToolTestRequest(
+        execution_context=ExecutionContext(
+            target_url="http://api.test",
+            run_id="run-auth-openapi",
+            allowed_hosts=["api.test"],
+            openapi_spec_text=OPENAPI_AUTH_SPEC,
+        ),
+        task=_task(),
+        tool_name="auto_provision",
+        arguments={"identity_count": identity_count},
+    )
+
+
+def _request_with_spec(spec_text: str, identity_count: int = 1) -> ToolTestRequest:
+    request = _request(identity_count=identity_count)
+    request.execution_context.openapi_spec_text = spec_text
+    return request
+
+
+def test_openapi_register_login_operations_are_schema_grounded() -> None:
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    request = _request()
+
+    register_ops = service._best_auth_operations(request=request, endpoint_type="register")
+    login_ops = service._best_auth_operations(request=request, endpoint_type="login")
+
+    assert register_ops[0]["source"] == "openapi"
+    assert register_ops[0]["method"] == "POST"
+    assert register_ops[0]["content_type"] == "application/json"
+    assert register_ops[0]["required_body_keys"] == ["email", "password", "firstName", "lastName"]
+    assert login_ops[0]["required_body_keys"] == ["email", "password"]
+
+
+def test_openapi_operation_selection_filters_token_login_and_non_generic_register() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/identity/api/auth/signup": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "password", "name", "number"],
+                                        "properties": {
+                                            "email": {"type": "string"},
+                                            "password": {"type": "string"},
+                                            "name": {"type": "string"},
+                                            "number": {"type": "string"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/workshop/api/mechanic/signup": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "password", "name", "number", "mechanic_code"],
+                                        "properties": {
+                                            "email": {"type": "string"},
+                                            "password": {"type": "string"},
+                                            "name": {"type": "string"},
+                                            "number": {"type": "string"},
+                                            "mechanic_code": {"type": "string"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/identity/api/auth/login": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "password"],
+                                        "properties": {
+                                            "email": {"type": "string"},
+                                            "password": {"type": "string"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "/identity/api/auth/v4.0/user/login-with-token": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "token"],
+                                        "properties": {
+                                            "email": {"type": "string"},
+                                            "token": {"type": "string"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+            },
+        }
+    )
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    request = _request_with_spec(spec)
+
+    register_ops = service._best_auth_operations(request=request, endpoint_type="register")
+    login_ops = service._best_auth_operations(request=request, endpoint_type="login")
+
+    assert [item["path"] for item in register_ops] == ["/identity/api/auth/signup"]
+    assert [item["path"] for item in login_ops] == ["/identity/api/auth/login"]
+
+
+def test_auth_payload_variants_include_openapi_example_candidate() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/identity/api/auth/login": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "password"],
+                                        "properties": {
+                                            "email": {"type": "string", "example": "seeded-user@example.com"},
+                                            "password": {"type": "string", "example": "SeededPass!123"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    request = _request_with_spec(spec)
+    operation = service._best_auth_operations(request=request, endpoint_type="login")[0]
+    identity = service._build_identity_seed(request, 0)
+
+    payload_variants = service._auth_payload_variants(
+        request=request,
+        identity=identity,
+        operation=operation,
+        endpoint_type="login",
+    )
+
+    assert any(item.get("email") == "seeded-user@example.com" for item in payload_variants)
+    assert any("password" in item for item in payload_variants)
+
+
+def test_identity_seed_uses_numeric_phone_number() -> None:
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    identity = service._build_identity_seed(_request(), 0)
+
+    assert identity["number"].isdigit()
+    assert identity["number"].startswith("555")
+
+
+def test_identity_seed_is_unique_per_run() -> None:
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    first = service._build_identity_seed(_request(), 0)
+    second_request = _request()
+    second_request.execution_context.run_id = "run-auth-openapi-next"
+    second = service._build_identity_seed(second_request, 0)
+
+    assert first["email"] != second["email"]
+    assert first["number"] != second["number"]
+
+
+
+
+def test_materialization_list_candidates_prefer_collection_paths_over_action_paths() -> None:
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+
+    candidates = service._materialization_list_candidates(
+        target_endpoint="/identity/api/v2/admin/videos/{video_id}",
+        support_candidates=[
+            {"path": "/identity/api/v2/user/videos/convert_video", "method": "GET", "source": "support"},
+            {"path": "/identity/api/v2/user/videos", "method": "GET", "source": "support"},
+        ],
+        target_method="DELETE",
+    )
+
+    assert candidates
+    assert candidates[0]["path"] == "/identity/api/v2/user/videos"
+    assert all(item["path"] != "/identity/api/v2/user/videos/convert_video" for item in candidates)
+
+
+def test_materialization_create_candidates_keep_inferred_collection_creator() -> None:
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+
+    candidates = service._materialization_create_candidates(
+        target_endpoint="/identity/api/v2/admin/videos/{video_id}",
+        explicit_create_endpoint=None,
+        explicit_create_method="POST",
+        support_candidates=[
+            {"path": "/identity/api/v2/user/videos/upload_video", "method": "POST", "source": "support"},
+        ],
+    )
+
+    assert candidates
+    assert candidates[0]["path"] == "/identity/api/v2/user/videos"
+    assert all(item["path"] != "/identity/api/v2/user/videos/upload_video" for item in candidates)
+
+
+@pytest.mark.asyncio
+async def test_auto_provision_extracts_nested_body_token_and_persists_identity(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+    http_client = _AuthBootstrapHttpClient(login_mode="body")
+
+    response = await AuthPreparationService(http_client=http_client).auto_provision(_request())
+
+    assert response.raw_status == "success"
+    assert response.response_summary["usable_identity_total"] == 1
+    assert response.identities[0]["token"] == "body-token"
+    assert response.identities[0]["auth_headers"]["Authorization"] == "Bearer body-token"
+    artifact_types = {artifact.type for artifact in response.artifacts}
+    assert {"provisioned_identities", "auth_profiles"}.issubset(artifact_types)
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_register_attempt" in events
+    assert "auth_provision_login_result" in events
+    assert "auth_provision_token_extracted" in events
+    assert "AutoPass!" not in events
+
+
+@pytest.mark.asyncio
+async def test_auto_provision_extracts_header_token() -> None:
+    response = await AuthPreparationService(http_client=_AuthBootstrapHttpClient(login_mode="header")).auto_provision(_request())
+
+    assert response.response_summary["usable_identity_total"] == 1
+    assert response.identities[0]["token"] == "header-token"
+    assert response.identities[0]["auth_headers"]["X-Auth-Token"] == "header-token"
+
+
+@pytest.mark.asyncio
+async def test_auto_provision_extracts_cookie_session() -> None:
+    response = await AuthPreparationService(http_client=_AuthBootstrapHttpClient(login_mode="cookie")).auto_provision(_request())
+
+    assert response.response_summary["usable_identity_total"] == 1
+    assert response.identities[0]["cookies"]["sessionid"] == "cookie-token"
+
+
+@pytest.mark.asyncio
+async def test_auto_provision_fails_without_success_or_auth_artifact() -> None:
+    failed = await AuthPreparationService(http_client=_AuthBootstrapHttpClient(fail=True)).auto_provision(_request())
+    missing_token = await AuthPreparationService(http_client=_AuthBootstrapHttpClient(login_mode="none")).auto_provision(_request())
+
+    assert failed.response_summary["usable_identity_total"] == 0
+    assert "registration_failed" in failed.response_summary["failure_reasons"]
+    assert "login_failed" in failed.response_summary["failure_reasons"]
+    assert missing_token.response_summary["usable_identity_total"] == 0
+    assert "token_missing" in missing_token.response_summary["failure_reasons"]
+
+
+@pytest.mark.asyncio
+async def test_register_400_still_emits_attempt_and_result(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+
+    await AuthPreparationService(http_client=_FailingAuthHttpClient(register_status=400)).auto_provision(_request())
+
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_register_attempt" in events
+    assert "auth_provision_register_result" in events
+    assert '"status_code": 400' in events
+    assert "AutoPass!" not in events
+    assert "body-token" not in events
+
+
+@pytest.mark.asyncio
+async def test_login_401_still_emits_attempt_and_result(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+
+    await AuthPreparationService(http_client=_FailingAuthHttpClient(register_status=201, login_status=401)).auto_provision(_request())
+
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_login_attempt" in events
+    assert "auth_provision_login_result" in events
+    assert '"status_code": 401' in events
+    assert "unexpected_status_code" in events
+
+
+@pytest.mark.asyncio
+async def test_response_parsing_failure_is_logged_as_login_result(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+
+    await _ParsingFailureAuthService(http_client=_AuthBootstrapHttpClient(login_mode="body")).auto_provision(_request())
+
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_login_attempt" in events
+    assert "auth_provision_login_result" in events
+    assert "token_extraction_failed" in events
+    assert "ValueError" in events
+
+
+@pytest.mark.asyncio
+async def test_token_extraction_failure_is_logged_as_login_result(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+
+    await _ExtractionFailureAuthService(http_client=_AuthBootstrapHttpClient(login_mode="body")).auto_provision(_request())
+
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_login_attempt" in events
+    assert "auth_provision_login_result" in events
+    assert "token_extraction_failed" in events
+    assert "RuntimeError" in events
+
+
+@pytest.mark.asyncio
+async def test_openapi_url_context_is_used_and_canonical_ops_reduce_fallback_attempts(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+    spec_path = tmp_path / "openapi.json"
+    spec_path.write_text(OPENAPI_AUTH_SPEC, encoding="utf-8")
+    request = _request()
+    request.execution_context.openapi_spec_text = ""
+    request.execution_context.openapi_url = str(spec_path)
+    http_client = _AuthBootstrapHttpClient(login_mode="body")
+
+    response = await AuthPreparationService(http_client=http_client).auto_provision(request)
+
+    assert response.raw_status == "success"
+    assert response.response_summary["usable_identity_total"] == 1
+    urls = [entry["url"] for entry in http_client.requests]
+    assert urls.count("http://api.test/identity/api/auth/signup") == 1
+    assert urls.count("http://api.test/identity/api/auth/login") == 1
+    disallowed_fallback_urls = {
+        "http://api.test/api/register",
+        "http://api.test/register",
+        "http://api.test/signup",
+        "http://api.test/api/login",
+        "http://api.test/login",
+        "http://api.test/signin",
+    }
+    assert all(url not in disallowed_fallback_urls for url in urls)
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_openapi_context_received" in events
+    assert "auth_operation_selected" in events
+    assert '"source": "openapi"' in events
+
+
+@pytest.mark.asyncio
+async def test_non_success_auth_events_include_safe_response_preview(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DAST_DIAGNOSTIC_LOG_DIR", str(tmp_path / "logs"))
+    request = _request()
+
+    await AuthPreparationService(http_client=_PreviewAuthHttpClient()).auto_provision(request)
+
+    events = (tmp_path / "logs" / "run-auth-openapi" / "events.jsonl").read_text(encoding="utf-8")
+    assert "auth_provision_register_result" in events
+    assert "auth_provision_login_result" in events
+    assert '"response_body_preview":' in events
+    assert "***REDACTED***" in events
+    assert "plain-secret" not in events
+    assert "login-secret-token" not in events
+    assert "secret-cookie" not in events
+
+
+def test_select_object_replay_endpoint_prefers_object_specific_path_from_spec() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/identity/api/v2/vehicle/vehicles": {"get": {"responses": {"200": {"description": "ok"}}}},
+                "/identity/api/v2/vehicle/{vehicleId}/location": {"get": {"responses": {"200": {"description": "ok"}}}},
+            },
+        }
+    )
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    request = _request_with_spec(spec)
+
+    endpoint = service._select_object_replay_endpoint(
+        request,
+        "/identity/api/v2/vehicle/vehicles",
+        "vehicle",
+        preferred_method="GET",
+    )
+
+    assert endpoint == "/identity/api/v2/vehicle/{vehicleId}/location"
+
+
+def test_create_body_variants_prefer_video_shape_over_generic_fields() -> None:
+    service = AuthPreparationService()
+    owner = {"name": "user_a"}
+    variants = service._create_body_variants(
+        candidate_path="/identity/api/v2/user/videos",
+        baseline_body={"name": "generic-name", "title": "generic-title"},
+        owner_identity=owner,
+        request=ToolTestRequest.model_validate({
+            "tool_name": "create_test_object",
+            "execution_context": {"target_url": "http://api.test", "allowed_hosts": ["api.test"]},
+            "task": {"id": "task1", "class": "authorization", "subtype": "bola", "endpoint": "/identity/api/v2/user/videos/{video_id}", "method": "GET", "hypothesis": "probe"},
+            "arguments": {},
+        }),
+    )
+    keys = [set((item or {}).keys()) for item in variants if isinstance(item, dict)]
+    assert any({"videoName", "video_url", "conversion_params"}.issubset(item) for item in keys)
+
+
+
+def test_materialization_create_candidates_preserve_openapi_content_type() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/identity/api/v2/user/videos": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "multipart/form-data": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"videoName": {"type": "string"}}
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {"200": {"description": "ok"}},
+                    }
+                }
+            },
+        }
+    )
+    service = AuthPreparationService(http_client=_AuthBootstrapHttpClient())
+    request = _request_with_spec(spec)
+    candidates = service._materialization_create_candidates(
+        request=request,
+        target_endpoint="/identity/api/v2/admin/videos/{video_id}",
+        explicit_create_endpoint=None,
+        explicit_create_method="POST",
+        support_candidates=[{"path": "/identity/api/v2/user/videos", "method": "POST", "source": "support", "content_type": "multipart/form-data"}],
+    )
+    assert candidates
+    assert candidates[0]["content_type"] == "multipart/form-data"
+
+
+def test_materialization_media_type_variants_add_video_multipart_fallback() -> None:
+    service = AuthPreparationService()
+    variants = service._materialization_media_type_variants("/identity/api/v2/user/videos", "application/json")
+    assert variants[0] == "application/json"
+    assert "multipart/form-data" in variants
+
+def test_prepare_materialization_body_adds_video_file_for_multipart() -> None:
+    service = AuthPreparationService()
+    prepared = service._prepare_materialization_body_for_content_type(
+        candidate_path="/identity/api/v2/user/videos",
+        body={"videoName": "demo.mp4", "video_url": "http://example.test/demo.mp4"},
+        content_type="multipart/form-data",
+    )
+    assert "file" in prepared
+    filename, content, mime = prepared["file"]
+    assert filename.endswith(".mp4")
+    assert content
+    assert mime == "video/mp4"
+
+
+def test_synthesize_request_uses_request_body_example_for_missing_required_fields() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/api/example-create": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["email", "password", "name", "number"],
+                                        "properties": {
+                                            "email": {"type": "string", "format": "email"},
+                                            "password": {"type": "string"},
+                                            "name": {"type": "string"},
+                                            "number": {"type": "string"},
+                                        },
+                                    },
+                                    "example": {"email": "example@test.local", "number": "79000000000"},
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+    synthesis = OpenApiBaselineSynthesisService().synthesize_request(
+        spec_text=spec,
+        endpoint_path="/api/example-create",
+        method="POST",
+        known_values={},
+    )
+
+    assert synthesis["baseline_valid"] is True
+    assert synthesis["structured_failure_reason"] is None
+    assert synthesis["baseline_body"]["email"] == "example@test.local"
+    assert synthesis["baseline_body"]["number"] == "79000000000"
+    assert synthesis["baseline_body"]["password"]
+    assert synthesis["baseline_body"]["name"]
+
+
+def test_synthesize_request_supports_vendor_json_media_type() -> None:
+    spec = json.dumps(
+        {
+            "openapi": "3.0.0",
+            "paths": {
+                "/api/vendor-json": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/problem+json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["title", "email"],
+                                        "properties": {
+                                            "title": {"type": "string"},
+                                            "email": {"type": "string", "format": "email"},
+                                        },
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+    synthesis = OpenApiBaselineSynthesisService().synthesize_request(
+        spec_text=spec,
+        endpoint_path="/api/vendor-json",
+        method="POST",
+        known_values={},
+    )
+
+    assert synthesis["baseline_valid"] is True
+    assert synthesis["media_type"] == "application/problem+json"
+    assert synthesis["baseline_body"]["title"]
+    assert synthesis["baseline_body"]["email"]

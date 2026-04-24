@@ -66,10 +66,12 @@ class TrafficCaptureService:
             "accepted_paths": [],
             "rejected_paths_with_reasons": [],
         }
-        if not observed_requests and request.target_url:
+        if not observed_requests and request.target_url and request.allow_autonomous_capture:
             generated_requests, probe_metadata = self._generate_anonymous_requests(request)
             observed_requests = generated_requests
             generation_mode = "autonomous_anonymous"
+        elif not observed_requests:
+            generation_mode = "empty_observed_traffic"
 
         accepted_requests = sum(
             1

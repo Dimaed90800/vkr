@@ -161,6 +161,10 @@ class OpenApiBaselineSynthesisService:
             baseline_body = self._synthesize_from_schema(schema, document=document, known=known, metadata=synthesis_metadata, prefix="body")
             if baseline_body in (None, ""):
                 baseline_body = {}
+            example_body = self._request_body_example(operation, document)
+            if isinstance(example_body, Mapping):
+                baseline_body = self._merge_body_example(example_body, baseline_body if isinstance(baseline_body, Mapping) else {})
+            baseline_body = self._fill_required_request_fields(schema, baseline_body if isinstance(baseline_body, Mapping) else {}, known, synthesis_metadata, prefix="body")
 
         family = self.family_inference.infer(
             path=endpoint_path,
@@ -262,7 +266,13 @@ class OpenApiBaselineSynthesisService:
                 lowered_path = str(path).lower()
                 op_id = str(operation.get("operationId") or "").lower()
                 summary = str(operation.get("summary") or operation.get("description") or "").lower()
-                item = {"path": str(path), "method": method_upper}
+                request_schema, request_media_type = self._request_schema(operation, document, include_media=True)
+                item = {
+                    "path": str(path),
+                    "method": method_upper,
+                    "content_type": request_media_type,
+                    "request_body_keys": list(self._schema_property_names(request_schema)) if request_schema else [],
+                }
                 response_fields = self._response_schema_property_names(operation, document)
                 if self._is_creator_candidate(
                     method_upper=method_upper,
@@ -381,15 +391,95 @@ class OpenApiBaselineSynthesisService:
         content = request_body.get("content") or {}
         if not isinstance(content, Mapping):
             return ({}, None) if include_media else {}
-        for media_type in ("application/json", "application/x-www-form-urlencoded", "multipart/form-data"):
+        preferred_media_types = [
+            "application/json",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+        ]
+        for media_type, media in content.items():
+            normalized = str(media_type or "").lower()
+            if normalized.endswith("+json") and normalized not in preferred_media_types:
+                preferred_media_types.append(str(media_type))
+        preferred_media_types.extend([str(item) for item in content.keys() if str(item) not in preferred_media_types])
+        for media_type in preferred_media_types:
             media = content.get(media_type) or {}
             if not isinstance(media, Mapping):
                 continue
             schema = self._resolve_schema(media.get("schema") or {}, document=document, visited_refs=set(), depth=0)
+            if not schema:
+                continue
             if include_media:
                 return schema, media_type
             return schema
         return ({}, None) if include_media else {}
+
+    def _request_body_example(self, operation: Mapping[str, Any], document: Mapping[str, Any]) -> dict[str, Any] | None:
+        request_body = operation.get("requestBody") or {}
+        if not isinstance(request_body, Mapping):
+            return None
+        content = request_body.get("content") or {}
+        if not isinstance(content, Mapping):
+            return None
+        preferred_media_types = [
+            str(operation.get("_request_media_type") or "application/json"),
+            "application/json",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+        ]
+        preferred_media_types.extend([str(item) for item in content.keys() if str(item) not in preferred_media_types])
+        for media_type in preferred_media_types:
+            media = content.get(media_type) or {}
+            if not isinstance(media, Mapping):
+                continue
+            example = media.get("example")
+            if isinstance(example, Mapping):
+                return dict(example)
+            examples = media.get("examples")
+            if isinstance(examples, Mapping):
+                for candidate in examples.values():
+                    if isinstance(candidate, Mapping) and isinstance(candidate.get("value"), Mapping):
+                        return dict(candidate.get("value"))
+                    if isinstance(candidate, Mapping):
+                        continue
+                    if isinstance(candidate, Mapping):
+                        return dict(candidate)
+        return None
+
+    def _merge_body_example(self, example_body: Mapping[str, Any], synthesized_body: Mapping[str, Any]) -> dict[str, Any]:
+        merged = dict(example_body)
+        for key, value in synthesized_body.items():
+            if key not in merged or merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+        return merged
+
+    def _fill_required_request_fields(
+        self,
+        schema: Mapping[str, Any],
+        baseline_body: Mapping[str, Any],
+        known: Mapping[str, Any],
+        metadata: dict[str, str],
+        *,
+        prefix: str,
+    ) -> dict[str, Any]:
+        if not isinstance(schema, Mapping):
+            return dict(baseline_body)
+        body = dict(baseline_body)
+        properties = schema.get("properties") or {}
+        properties = properties if isinstance(properties, Mapping) else {}
+        required = [str(item) for item in (schema.get("required") or []) if str(item).strip()]
+        for name in required:
+            property_schema = properties.get(name) if isinstance(properties.get(name), Mapping) else {}
+            if isinstance(property_schema, Mapping) and bool(property_schema.get("readOnly")):
+                continue
+            if body.get(name) not in (None, "", [], {}):
+                continue
+            value, source = self._synthesize_value(name, property_schema if isinstance(property_schema, Mapping) else {}, known)
+            if value in (None, "", [], {}):
+                value = self._fallback_for_field(name)
+                source = "heuristic"
+            body[name] = value
+            metadata.setdefault(f"{prefix}.{name}", source)
+        return body
 
     def _response_schema_property_names(self, operation: Mapping[str, Any], document: Mapping[str, Any]) -> list[str]:
         responses = operation.get("responses") or {}
@@ -473,6 +563,7 @@ class OpenApiBaselineSynthesisService:
 
         resolved = dict(schema)
         merged_properties: dict[str, Any] = {}
+        merged_required: list[str] = [str(item) for item in (resolved.get("required") or []) if str(item).strip()]
         for key in ("allOf", "oneOf", "anyOf"):
             variants = resolved.get(key)
             if not isinstance(variants, list):
@@ -482,11 +573,17 @@ class OpenApiBaselineSynthesisService:
                 properties = variant.get("properties") or {}
                 if isinstance(properties, Mapping):
                     merged_properties.update(properties)
+                for required_name in variant.get("required") or []:
+                    normalized_required = str(required_name).strip()
+                    if normalized_required and normalized_required not in merged_required:
+                        merged_required.append(normalized_required)
         properties = resolved.get("properties") or {}
         if isinstance(properties, Mapping):
             merged_properties.update(properties)
         if merged_properties:
             resolved["properties"] = merged_properties
+        if merged_required:
+            resolved["required"] = merged_required
         return resolved
 
     def _resolve_local_ref(self, ref: str, *, document: Mapping[str, Any]) -> Mapping[str, Any] | None:

@@ -72,6 +72,11 @@ class TaskGenerator:
         "injection": "injection_test",
         "business_logic": "logic_test",
     }
+    WORKER_ROLE_BY_CLASS = {
+        "authorization": "Auth & Identity Agent",
+        "injection": "Contract & Negative Testing Agent",
+        "business_logic": "Business Flow / Stateful Agent",
+    }
     AUTH_HIGH_PRIORITY_SUBSTRINGS = (
         "/admin",
         "/management",
@@ -144,6 +149,13 @@ class TaskGenerator:
                 subtype = self._subtype(family_candidate["family_id"], endpoint, features, synthesized_context)
                 readiness = self._readiness(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
                 allowed_tools = self._allowed_tools(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
+                tool_preference = self._tool_preference(candidate_class, family_candidate["family_id"], readiness)
+                allowed_tools = self._normalize_allowed_tools(
+                    candidate_class=candidate_class,
+                    readiness=readiness,
+                    allowed_tools=allowed_tools,
+                    tool_preference=tool_preference,
+                )
                 preparation_options = self._preparation_options(candidate_class, family_candidate["family_id"], endpoint, capability_state, synthesized_context)
                 test_strategy = self._test_strategy(candidate_class, family_candidate["family_id"], readiness, preparation_options)
                 expected_evidence = list(family_candidate.get("expected_evidence") or [])
@@ -188,6 +200,12 @@ class TaskGenerator:
                     "evidence_feasibility": float(family_candidate.get("evidence_feasibility") or 0.0),
                     "noise_risk": float(family_candidate.get("noise_penalty") or 0.0),
                     "recommended_next_step": recommended_next_step,
+                    "worker_role": self.WORKER_ROLE_BY_CLASS.get(candidate_class),
+                    "preferred_tool": tool_preference["preferred_tool"],
+                    "fallback_tools": tool_preference["fallback_tools"],
+                    "artifact_requirements": tool_preference["artifact_requirements"],
+                    "budget_profile": tool_preference["budget_profile"],
+                    "tool_preference": tool_preference,
                 }
                 tasks.append(task)
 
@@ -385,42 +403,162 @@ class TaskGenerator:
         if candidate_class == "authorization":
             if readiness == "ready_to_test":
                 if family_id in {"property_level_authorization", "mass_assignment"}:
-                    return ["property_mutation_test"]
-                return ["auth_test_access"]
+                    return ["property_mutation_test", "auth_test_access", "replay_http_sequence", "akto_authz_scan", "akto_inventory_discovery", "astf_top10_suite"]
+                return ["auth_test_access", "replay_http_sequence", "akto_inventory_discovery", "akto_authz_scan", "astf_top10_suite"]
             if self._is_auth_bootstrap_endpoint(endpoint.path, synthesized_context):
                 return ["auto_provision"]
             if family_id == "authentication_weakness":
                 if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
                     return ["auto_provision"]
                 return ["auth_probe_entrypoints"]
+            if family_id == "object_authorization":
+                if not capabilities.get("has_auth_profiles") and capabilities.get("has_api_surface"):
+                    if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
+                        return ["auto_provision", "create_test_object"]
+                    return ["auth_probe_entrypoints", "create_test_object"]
+                return ["create_test_object", "auto_provision"]
             if not capabilities.get("has_auth_profiles") and capabilities.get("has_api_surface"):
                 if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
                     return ["auto_provision"]
                 return ["auth_probe_entrypoints"]
-            if family_id == "object_authorization":
-                return ["create_test_object"]
             return ["noop_outcome"]
         if candidate_class == "injection":
             if readiness == "ready_to_test":
                 if family_id == "reflection_or_template_sink":
-                    return ["reflection_probe", "injection_test"]
-                return ["injection_test", "reflection_probe", "path_fuzz_probe"]
+                    return ["schemathesis_negative_test", "reflection_probe", "injection_test", "path_fuzz_probe", "cats_fuzz_test"]
+                return ["schemathesis_negative_test", "injection_test", "reflection_probe", "path_fuzz_probe", "data_exposure_test", "runtime_inventory", "cats_fuzz_test", "astf_top10_suite"]
             if readiness == "needs_preparation":
-                return ["input_shape_probe"]
+                return ["input_shape_probe", "import_har_capture"]
             return ["noop_outcome"]
         if readiness == "ready_to_test":
             mapping = {
-                "excessive_data_exposure": ["data_exposure_test"],
-                "resource_abuse_rate_limit": ["resource_abuse_test"],
-                "security_misconfiguration": ["misconfiguration_test"],
-                "improper_assets_management": ["version_diff_test"],
-                "documentation_inventory_leak": ["version_diff_test"],
+                "excessive_data_exposure": ["data_exposure_test", "runtime_inventory", "akto_inventory_discovery", "akto_authz_scan"],
+                "resource_abuse_rate_limit": ["bounded_burst_helper", "resource_abuse_test", "schemathesis_stateful_test", "cats_fuzz_test"],
+                "security_misconfiguration": ["misconfiguration_test", "runtime_inventory", "astf_top10_suite"],
+                "improper_assets_management": ["runtime_inventory", "version_diff_test", "import_har_capture", "akto_inventory_discovery"],
+                "documentation_inventory_leak": ["runtime_inventory", "version_diff_test", "import_har_capture", "akto_inventory_discovery"],
                 "url_fetch_or_ssrf": ["noop_outcome"],
             }
-            return mapping.get(family_id, ["logic_test"])
+            return mapping.get(family_id, ["replay_http_sequence", "logic_test", "bounded_burst_helper", "resource_abuse_test", "schemathesis_stateful_test", "restler_fuzz"])
         if readiness == "needs_preparation":
-            return ["workflow_probe"]
+            return ["workflow_probe", "import_har_capture"]
         return ["noop_outcome"]
+
+    def _tool_preference(self, candidate_class: str, family_id: str, readiness: str) -> dict:
+        if readiness not in {"ready_to_test", "needs_preparation"}:
+            return {
+                "preferred_tool": "noop_outcome",
+                "fallback_tools": [],
+                "artifact_requirements": [],
+                "budget_profile": "minimal",
+            }
+        if readiness == "needs_preparation":
+            if candidate_class == "authorization":
+                if family_id == "object_authorization":
+                    return {
+                        "preferred_tool": "create_test_object",
+                        "fallback_tools": ["auto_provision", "auth_probe_entrypoints"],
+                        "artifact_requirements": ["http_trace", "replay_pack"],
+                        "budget_profile": "preparation",
+                    }
+                if family_id == "authentication_weakness":
+                    return {
+                        "preferred_tool": "auto_provision",
+                        "fallback_tools": ["auth_probe_entrypoints"],
+                        "artifact_requirements": ["http_trace", "replay_pack"],
+                        "budget_profile": "preparation",
+                    }
+                return {
+                    "preferred_tool": "auto_provision",
+                    "fallback_tools": ["auth_probe_entrypoints", "create_test_object"],
+                    "artifact_requirements": ["http_trace", "replay_pack"],
+                    "budget_profile": "preparation",
+                }
+            if candidate_class == "injection":
+                return {
+                    "preferred_tool": "input_shape_probe",
+                    "fallback_tools": ["import_har_capture"],
+                    "artifact_requirements": ["http_trace", "raw_report"],
+                    "budget_profile": "preparation",
+                }
+            return {
+                "preferred_tool": "workflow_probe",
+                "fallback_tools": ["import_har_capture"],
+                "artifact_requirements": ["http_trace", "replay_pack"],
+                "budget_profile": "preparation",
+            }
+        if candidate_class == "authorization":
+            fallback = ["replay_http_sequence", "akto_inventory_discovery", "akto_authz_scan", "astf_top10_suite"]
+            if family_id in {"property_level_authorization", "mass_assignment"}:
+                fallback = ["auth_test_access", "replay_http_sequence", "akto_authz_scan", "astf_top10_suite"]
+            return {
+                "preferred_tool": "property_mutation_test" if family_id in {"property_level_authorization", "mass_assignment"} else "auth_test_access",
+                "fallback_tools": fallback,
+                "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+                "budget_profile": "balanced",
+            }
+        if candidate_class == "injection":
+            return {
+                "preferred_tool": "schemathesis_negative_test",
+                "fallback_tools": ["injection_test", "reflection_probe", "path_fuzz_probe", "runtime_inventory", "cats_fuzz_test", "astf_top10_suite"],
+                "artifact_requirements": ["http_trace", "raw_report"],
+                "budget_profile": "balanced",
+            }
+        if family_id in {"invalid_transition", "repeated_sensitive_action", "cross_role_workflow_abuse"}:
+            return {
+                "preferred_tool": "replay_http_sequence",
+                "fallback_tools": ["logic_test", "bounded_burst_helper", "resource_abuse_test", "schemathesis_stateful_test", "restler_fuzz"],
+                "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+                "budget_profile": "stateful",
+            }
+        if family_id in {"improper_assets_management", "documentation_inventory_leak"}:
+            return {
+                "preferred_tool": "runtime_inventory",
+                "fallback_tools": ["version_diff_test", "import_har_capture", "akto_inventory_discovery", "astf_top10_suite"],
+                "artifact_requirements": ["raw_report", "http_trace"],
+                "budget_profile": "inventory",
+            }
+        if family_id == "resource_abuse_rate_limit":
+            return {
+                "preferred_tool": "bounded_burst_helper",
+                "fallback_tools": ["resource_abuse_test", "schemathesis_stateful_test", "cats_fuzz_test"],
+                "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+                "budget_profile": "burst",
+            }
+        return {
+            "preferred_tool": "replay_http_sequence",
+            "fallback_tools": ["logic_test", "bounded_burst_helper", "resource_abuse_test", "schemathesis_stateful_test", "restler_fuzz", "akto_authz_scan"],
+            "artifact_requirements": ["http_trace", "replay_pack", "raw_report"],
+            "budget_profile": "balanced",
+        }
+
+    def _normalize_allowed_tools(
+        self,
+        *,
+        candidate_class: str,
+        readiness: str,
+        allowed_tools: list[str],
+        tool_preference: dict,
+    ) -> list[str]:
+        merged: list[str] = []
+
+        def add_many(values) -> None:
+            for value in values or []:
+                item = str(value or "").strip()
+                if item and item not in merged:
+                    merged.append(item)
+
+        if readiness == "ready_to_test":
+            if candidate_class == "authorization":
+                add_many(["auth_test_access", "replay_http_sequence", "property_mutation_test", "akto_inventory_discovery", "akto_authz_scan", "astf_top10_suite"])
+            elif candidate_class == "injection":
+                add_many(["schemathesis_negative_test", "injection_test", "reflection_probe", "path_fuzz_probe", "runtime_inventory", "data_exposure_test", "cats_fuzz_test", "astf_top10_suite"])
+            else:
+                add_many(["replay_http_sequence", "logic_test", "bounded_burst_helper", "resource_abuse_test", "schemathesis_stateful_test", "runtime_inventory", "akto_inventory_discovery", "akto_authz_scan", "restler_fuzz", "cats_fuzz_test"])
+        add_many(allowed_tools)
+        add_many([tool_preference.get("preferred_tool")])
+        add_many(tool_preference.get("fallback_tools") or [])
+        return merged
 
     def _required_capabilities(self, candidate_class: str, family_id: str, endpoint) -> list[str]:
         if candidate_class == "authorization":
@@ -508,12 +646,16 @@ class TaskGenerator:
                 if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
                     return ["auto_provision"]
                 return ["auth_probe_entrypoints"]
+            if family_id == "object_authorization":
+                if not capabilities.get("has_auth_profiles"):
+                    if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
+                        return ["auto_provision", "create_test_object"]
+                    return ["auth_probe_entrypoints", "create_test_object"]
+                return ["create_test_object", "auto_provision"]
             if not capabilities.get("has_auth_profiles"):
                 if capabilities.get("has_register_endpoint") and capabilities.get("has_login_endpoint"):
                     return ["auto_provision"]
                 return ["auth_probe_entrypoints"]
-            if family_id == "object_authorization":
-                return ["create_test_object"]
             return ["capture_authenticated_traffic"]
         if candidate_class == "injection":
             return ["input_shape_probe", "capture_authenticated_traffic"]

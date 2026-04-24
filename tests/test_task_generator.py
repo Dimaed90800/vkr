@@ -50,7 +50,9 @@ def test_generator_builds_authorization_task_from_object_endpoint() -> None:
     assert task["params"]["path_params"] == ["id"]
     assert task["auth_context"]["owner_role"] == "user_a"
     assert task["auth_context"]["other_role"] == "user_b"
-    assert task["allowed_tools"] == ["auth_test_access"]
+    assert "auth_test_access" in task["allowed_tools"]
+    assert "akto_authz_scan" in task["allowed_tools"]
+    assert "astf_top10_suite" in task["allowed_tools"]
     assert task["priority"] == 91
 
 
@@ -91,3 +93,32 @@ def test_generator_builds_multiple_task_classes() -> None:
     assert "authorization" in classes
     assert "injection" in classes
     assert tasks[0]["priority"] >= tasks[1]["priority"] >= tasks[2]["priority"]
+
+
+def test_generator_merges_preferred_and_fallback_tools_into_allowed_tools() -> None:
+    surface = NormalizedApiSurface(
+        endpoints=[
+            NormalizedEndpoint(
+                path="/checkout/orders",
+                method="POST",
+                body_fields=["cartId", "paymentId"],
+                auth_required=False,
+                resource_signals=ResourceSignals(),
+                candidate_scores=CandidateScores(
+                    authorization=0.1,
+                    injection=0.1,
+                    business_logic=0.9,
+                ),
+                candidate_classes=["business_logic"],
+            )
+        ]
+    )
+
+    tasks = TaskGenerator().generate(surface, roles=[])
+    task = next(item for item in tasks if item["class"] == "business_logic")
+
+    assert task["preferred_tool"] in task["allowed_tools"]
+    assert "schemathesis_stateful_test" in task["allowed_tools"]
+    assert "restler_fuzz" in task["allowed_tools"]
+    assert "akto_authz_scan" in task["allowed_tools"]
+    assert "logic_test" in task["allowed_tools"]

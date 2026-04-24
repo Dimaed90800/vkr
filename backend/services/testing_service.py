@@ -1393,6 +1393,7 @@ class TestingService:
                 target_url=request.execution_context.target_url,
                 allowed_hosts=list(request.execution_context.allowed_hosts or []),
                 roles=[],
+                allow_autonomous_capture=True,
                 max_duration_sec=min(int(request.execution_context.max_duration_sec or 30), 30),
                 max_requests=min(int(request.execution_context.max_requests or 20), 20),
                 user_prompt=str(request.execution_context.user_prompt or ""),
@@ -1472,7 +1473,189 @@ class TestingService:
             ],
         )
 
+    async def import_har_capture(self, request: ToolTestRequest) -> ToolTestResponse:
+        self._emit_direct_preparation_route_dispatch(request, delegated_tool="import_har_capture")
+        raw_entries = request.arguments.get("har_entries")
+        entries = raw_entries if isinstance(raw_entries, list) else list(request.execution_context.traffic_requests or [])
+        normalized_entries = []
+        observed_paths: set[str] = set()
+        for item in entries[:50]:
+            if not isinstance(item, Mapping):
+                continue
+            method = str(item.get("method") or item.get("request", {}).get("method") or "GET").upper()
+            url = str(item.get("url") or item.get("request", {}).get("url") or "").strip()
+            if not url:
+                continue
+            path = urlparse(url).path or "/"
+            status_code = item.get("status_code")
+            if status_code is None:
+                status_code = item.get("response", {}).get("status")
+            normalized_entries.append({"method": method, "url": url, "path": path, "status_code": status_code})
+            observed_paths.add(path)
+        indicators = ["traffic_imported"] if normalized_entries else ["traffic_import_empty"]
+        if normalized_entries:
+            indicators.append("runtime_inventory_enriched")
+        return ToolTestResponse(
+            request_summary={"task_id": request.task.id, "action": "import_har_capture", "entry_count": len(normalized_entries)},
+            response_summary={
+                "status": "import_completed" if normalized_entries else "partial",
+                "imported_entry_count": len(normalized_entries),
+                "observed_endpoint_count": len(observed_paths),
+            },
+            raw_status="ok" if normalized_entries else "partial",
+            indicators=indicators,
+            artifacts=[
+                Artifact(type="imported_har_entries", value=normalized_entries[:20]),
+                Artifact(type="runtime_inventory_candidates", value=sorted(observed_paths)),
+            ],
+        )
+
+    async def runtime_inventory(self, request: ToolTestRequest) -> ToolTestResponse:
+        traffic_requests = list(request.execution_context.traffic_requests or [])
+        inventory: dict[str, dict[str, Any]] = {}
+        def add_endpoint(path: str, method: str, source: str) -> None:
+            normalized_path = str(path or "/").strip() or "/"
+            normalized_method = str(method or "GET").upper()
+            entry = inventory.setdefault(normalized_path, {"methods": [], "sources": []})
+            if normalized_method not in entry["methods"]:
+                entry["methods"].append(normalized_method)
+            if source not in entry["sources"]:
+                entry["sources"].append(source)
+        task_endpoint = str(request.task.endpoint or "").strip()
+        if task_endpoint:
+            add_endpoint(task_endpoint, request.task.method, "task")
+        for item in traffic_requests[:100]:
+            if not isinstance(item, Mapping):
+                continue
+            method = str(item.get("method") or item.get("request", {}).get("method") or "GET")
+            url = str(item.get("url") or item.get("request", {}).get("url") or "").strip()
+            if url:
+                add_endpoint(urlparse(url).path or "/", method, "traffic")
+        for link in request.execution_context.harvested_links[:100]:
+            if isinstance(link, str) and link.strip():
+                add_endpoint(urlparse(link).path or "/", "GET", "harvested_link")
+        for key in list(request.execution_context.prepared_objects.keys())[:50]:
+            add_endpoint(str(key), "GET", "prepared_object")
+        inventory_rows = [
+            {"path": path, "methods": sorted(value["methods"]), "sources": sorted(value["sources"])}
+            for path, value in sorted(inventory.items())
+        ]
+        indicators = ["runtime_inventory_built"] if inventory_rows else ["runtime_inventory_empty"]
+        if traffic_requests:
+            indicators.append("traffic_inventory_used")
+        return ToolTestResponse(
+            request_summary={"task_id": request.task.id, "action": "runtime_inventory"},
+            response_summary={"status": "inventory_completed" if inventory_rows else "partial", "endpoint_count": len(inventory_rows)},
+            raw_status="ok" if inventory_rows else "partial",
+            indicators=indicators,
+            artifacts=[Artifact(type="runtime_inventory", value=inventory_rows[:40])],
+        )
+
+    async def replay_http_sequence(self, request: ToolTestRequest) -> ToolTestResponse:
+        sequence = request.arguments.get("sequence") if isinstance(request.arguments.get("sequence"), list) else []
+        if not sequence:
+            sequence = [{"method": request.task.method, "endpoint": request.task.endpoint, "headers": request.arguments.get("headers") or {}, "json_body": request.arguments.get("json_body")}]
+        max_steps = max(1, min(int(request.execution_context.max_requests or 5), len(sequence), 5))
+        results = []
+        success_count = 0
+        for item in sequence[:max_steps]:
+            if not isinstance(item, Mapping):
+                continue
+            endpoint = self._resolve_url(str(request.execution_context.target_url), str(item.get("endpoint") or item.get("url") or request.task.endpoint))
+            self._validate_scope(request, endpoint)
+            method = str(item.get("method") or request.task.method or "GET").upper()
+            headers = dict(item.get("headers") or request.arguments.get("headers") or self._preferred_role_headers(request))
+            query_params = dict(item.get("query_params") or {})
+            json_body = item.get("json_body")
+            result = await self.http_client.execute(method=method, url=endpoint, headers=headers, query_params=query_params, json_body=json_body)
+            results.append({"method": method, "url": endpoint, "status_code": result.status_code, "error": result.error})
+            if result.error is None and (result.status_code or 0) < 500:
+                success_count += 1
+        indicators = ["replay_sequence_completed"]
+        if success_count == len(results) and results:
+            indicators.append("replay_successful_responses")
+        if any((item.get("status_code") or 0) >= 500 for item in results):
+            indicators.append("server_error_signal")
+        return ToolTestResponse(
+            request_summary={"task_id": request.task.id, "action": "replay_http_sequence", "step_count": len(results)},
+            response_summary={"status": "replay_completed" if results else "partial", "step_count": len(results), "success_count": success_count},
+            raw_status="ok" if results else "partial",
+            indicators=indicators,
+            artifacts=[Artifact(type="replay_sequence", value=results)],
+        )
+
+    async def bounded_burst_helper(self, request: ToolTestRequest) -> ToolTestResponse:
+        burst_count = max(1, min(int(request.arguments.get("burst_count") or 5), int(request.execution_context.max_requests or 5), 10))
+        endpoint = self._resolve_url(str(request.execution_context.target_url), str(request.arguments.get("endpoint") or request.task.endpoint))
+        self._validate_scope(request, endpoint)
+        method = str(request.arguments.get("method") or request.task.method or "GET").upper()
+        headers = dict(request.arguments.get("headers") or self._preferred_role_headers(request))
+        query_params = dict(request.arguments.get("query_params") or {})
+        json_body = request.arguments.get("json_body")
+        statuses = []
+        for _ in range(burst_count):
+            result = await self.http_client.execute(method=method, url=endpoint, headers=headers, query_params=query_params, json_body=json_body)
+            statuses.append(result.status_code)
+        saw_429 = any(status == 429 for status in statuses)
+        saw_5xx = any((status or 0) >= 500 for status in statuses)
+        success_count = sum(1 for status in statuses if status and 200 <= status < 300)
+        indicators = ["bounded_burst_executed"]
+        if saw_429:
+            indicators.append("rate_limit_detected")
+        elif success_count >= min(3, burst_count):
+            indicators.extend(["no_rate_limit_detected", "repeated_success_without_throttle"])
+        if saw_5xx:
+            indicators.append("server_error_signal")
+        self._emit_worker_event(
+            request=request,
+            tool_name="bounded_burst_helper",
+            endpoint=endpoint,
+            method=method,
+            status="ok" if statuses else "partial",
+            evidence_strength="medium" if "no_rate_limit_detected" in indicators or "rate_limit_detected" in indicators else "weak",
+            indicators=indicators,
+            response_summary={
+                "finding_type_hint": request.task.subtype,
+                "burst_count": burst_count,
+                "success_count": success_count,
+                "saw_429": saw_429,
+                "saw_5xx": saw_5xx,
+                "status_codes": statuses,
+                "meaningful_rate_signal": bool(saw_429 or success_count >= min(3, burst_count) or saw_5xx),
+            },
+            artifacts={"status_codes": statuses},
+        )
+        return ToolTestResponse(
+            request_summary={"task_id": request.task.id, "action": "bounded_burst_helper", "endpoint": endpoint, "burst_count": burst_count},
+            response_summary={
+                "status": "burst_completed",
+                "burst_count": burst_count,
+                "success_count": success_count,
+                "saw_429": saw_429,
+                "saw_5xx": saw_5xx,
+                "status_codes": statuses,
+                "meaningful_rate_signal": bool(saw_429 or success_count >= min(3, burst_count) or saw_5xx),
+            },
+            raw_status="ok" if statuses else "partial",
+            indicators=indicators,
+            artifacts=[Artifact(type="bounded_burst", value={"status_codes": statuses, "burst_count": burst_count})],
+        )
+
     async def noop_outcome(self, request: ToolTestRequest) -> ToolTestResponse:
+        rescued_request, delegated_tool = self._rescue_noop_request(request)
+        if rescued_request is not None and delegated_tool:
+            self._emit_dispatch_event(
+                rescued_request,
+                event_type="dispatch_noop_rescued",
+                selected_execution_path="preparation" if self._is_preparation_task(rescued_request.task) else "worker",
+                delegated_tool=delegated_tool,
+            )
+            if delegated_tool in {"create_test_object", "auto_provision", "auth_probe_entrypoints", "workflow_probe", "input_shape_probe"}:
+                return await self._run_preparation_tool(rescued_request, delegated_tool)
+            if delegated_tool == "replay_http_sequence":
+                return await self.replay_http_sequence(rescued_request)
+            if delegated_tool == "auth_test_access":
+                return await self.test_access(rescued_request)
         return ToolTestResponse(
             request_summary={"task_id": request.task.id, "endpoint": request.task.endpoint, "action": "noop_outcome"},
             response_summary={
@@ -1484,6 +1667,59 @@ class TestingService:
             indicators=["capability_blocked"],
             artifacts=[Artifact(type="noop_outcome", value={"readiness": request.task.readiness})],
         )
+
+    def _rescue_noop_request(self, request: ToolTestRequest) -> tuple[ToolTestRequest | None, str | None]:
+        effective_request = request
+        if str(request.task.id or "").strip() == "__no_task__":
+            snapshot = request.execution_context.current_task_snapshot if isinstance(getattr(request.execution_context, "current_task_snapshot", None), dict) else {}
+            if isinstance(snapshot, dict) and str(snapshot.get("id") or "").strip() and str(snapshot.get("id") or "") != "__no_task__":
+                try:
+                    rescued_task = TaskModel.model_validate(snapshot)
+                except Exception:
+                    rescued_task = None
+                if rescued_task is None:
+                    return None, None
+                effective_request = request.model_copy(update={"task": rescued_task})
+            else:
+                return None, None
+        warning = effective_request.arguments.get("_parser_warning") if isinstance(effective_request.arguments, dict) else None
+        if not isinstance(warning, dict):
+            return None, None
+        rescue_tool = self._select_noop_rescue_tool(effective_request)
+        if not rescue_tool:
+            return None, None
+        rescued_arguments = dict(effective_request.arguments or {})
+        rescued_arguments.setdefault("_parser_rescued", True)
+        rescued_arguments.setdefault("_parser_rescue_reason", "noop_outcome")
+        if rescue_tool == "replay_http_sequence":
+            sequence = rescued_arguments.get("sequence")
+            if not isinstance(sequence, list) or not sequence:
+                endpoint = str(rescued_arguments.get("endpoint") or effective_request.task.endpoint or "").strip()
+                method = str(rescued_arguments.get("method") or effective_request.task.method or "GET").upper()
+                if endpoint:
+                    rescued_arguments["sequence"] = [{"method": method, "endpoint": endpoint}]
+        rescued_request = effective_request.model_copy(update={"tool_name": rescue_tool, "arguments": rescued_arguments})
+        return rescued_request, rescue_tool
+
+    def _select_noop_rescue_tool(self, request: ToolTestRequest) -> str | None:
+        strategy = str(request.task.test_strategy or "").strip().lower()
+        preferred = str(request.task.preferred_tool or (request.task.tool_preference.preferred_tool if request.task.tool_preference else "") or "").strip()
+        allowed = [str(item or "").strip() for item in (request.task.allowed_tools or []) if str(item or "").strip()]
+        fallback = [str(item or "").strip() for item in (request.task.fallback_tools or []) if str(item or "").strip()]
+        ordered = []
+        for item in ([preferred] if preferred else []) + allowed + fallback:
+            if item and item not in ordered:
+                ordered.append(item)
+        if self._is_preparation_task(request.task):
+            return self._select_preparation_tool(request, default_tool="create_test_object")
+        if strategy in {"create_object_then_replay", "list_then_select_object_then_replay", "object_specific_auth_probe"}:
+            if "replay_http_sequence" in ordered:
+                return "replay_http_sequence"
+            if "auth_test_access" in ordered:
+                return "auth_test_access"
+        if preferred:
+            return preferred
+        return ordered[0] if ordered else None
 
     def _emit_worker_event(
         self,
@@ -1585,8 +1821,18 @@ class TestingService:
         for item in request.execution_context.roles or []:
             if not isinstance(item, dict):
                 continue
-            role_name = str(item.get("name") or item.get("role") or "").strip()
-            if role_name:
+            candidate_names: list[str] = []
+            for key in ("name", "role", "username", "email", "owner_role", "other_role", "label"):
+                value = str(item.get(key) or "").strip()
+                if value and value not in candidate_names:
+                    candidate_names.append(value)
+            aliases = item.get("aliases")
+            if isinstance(aliases, list):
+                for alias in aliases:
+                    value = str(alias or "").strip()
+                    if value and value not in candidate_names:
+                        candidate_names.append(value)
+            for role_name in candidate_names:
                 profiles[role_name] = item
         return profiles
 

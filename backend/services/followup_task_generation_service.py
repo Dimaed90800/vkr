@@ -8,11 +8,13 @@ try:
     from backend.models.testing import TaskModel
     from backend.services.diagnostic_logging_service import DiagnosticLoggingService
     from backend.services.task_fingerprint import TaskFingerprintService
+    from backend.services.task_tooling_service import DEFAULT_TASK_TOOLING
 except ModuleNotFoundError:  # pragma: no cover
     from models.scheduling import SchedulerState
     from models.testing import TaskModel
     from services.diagnostic_logging_service import DiagnosticLoggingService
     from services.task_fingerprint import TaskFingerprintService
+    from services.task_tooling_service import DEFAULT_TASK_TOOLING
 
 
 class FollowupTaskGenerationService:
@@ -311,6 +313,20 @@ class FollowupTaskGenerationService:
             candidate.hypothesis_family = "object_authorization"
             candidate.subtype = "bola"
             candidate.params.requires_object_id_enrichment = True
+            candidate.prerequisites.requires_object_id = True
+            candidate.readiness = "needs_preparation"
+            candidate.allowed_tools = ["create_test_object"]
+            candidate.preparation_options = ["create_test_object"]
+            candidate.preferred_tool = "create_test_object"
+            candidate.strategy_family = "object_materialization"
+            candidate.recommended_next_step = "create_test_object"
+            if getattr(candidate, "tool_preference", None):
+                candidate.tool_preference.preferred_tool = "create_test_object"
+                candidate.tool_preference.fallback_tools = []
+            candidate = DEFAULT_TASK_TOOLING.normalize_task(candidate, explicit_allowed_tools=["create_test_object"])
+            candidate.allowed_tools = ["create_test_object"]
+            candidate.preparation_options = ["create_test_object"]
+            candidate.recommended_next_step = "create_test_object"
             followups.append(candidate)
         elif str(active_task.subtype or "") == "auth_bootstrap":
             followups.append(self._clone_task(active_task, "login_only_bootstrap_retry", allowed_tools=["auto_provision"], readiness="needs_preparation", priority_boost=8))
@@ -385,9 +401,40 @@ class FollowupTaskGenerationService:
 
     def _object_materialization_followups(self, active_task: TaskModel) -> list[TaskModel]:
         return [
-            self._clone_task(active_task, "create_object_then_replay", allowed_tools=["create_test_object"], readiness="needs_preparation", priority_boost=12),
-            self._clone_task(active_task, "list_then_select_object_then_replay", allowed_tools=["create_test_object"], readiness="needs_preparation", priority_boost=10),
+            self._materialization_followup(active_task, "create_object_then_replay", priority_boost=12),
+            self._materialization_followup(active_task, "list_then_select_object_then_replay", priority_boost=10),
         ]
+
+    def _materialization_followup(
+        self,
+        active_task: TaskModel,
+        strategy: str,
+        *,
+        priority_boost: int,
+    ) -> TaskModel:
+        candidate = self._clone_task(
+            active_task,
+            strategy,
+            allowed_tools=["create_test_object"],
+            readiness="needs_preparation",
+            priority_boost=priority_boost,
+        )
+        candidate.params.requires_object_id_enrichment = True
+        candidate.prerequisites.requires_object_id = True
+        candidate.readiness = "needs_preparation"
+        candidate.allowed_tools = ["create_test_object"]
+        candidate.preparation_options = ["create_test_object"]
+        candidate.preferred_tool = "create_test_object"
+        if getattr(candidate, "tool_preference", None):
+            candidate.tool_preference.preferred_tool = "create_test_object"
+            candidate.tool_preference.fallback_tools = []
+        candidate.strategy_family = "object_materialization"
+        candidate.recommended_next_step = "create_test_object"
+        candidate = DEFAULT_TASK_TOOLING.normalize_task(candidate, explicit_allowed_tools=["create_test_object"])
+        candidate.allowed_tools = ["create_test_object"]
+        candidate.preparation_options = ["create_test_object"]
+        candidate.recommended_next_step = "create_test_object"
+        return candidate
 
     def _business_logic_followups(
         self,
@@ -430,7 +477,7 @@ class FollowupTaskGenerationService:
         generation = int(task.followup_generation or 0) + 1
         suffix = re.sub(r"[^a-z0-9]+", "_", strategy.lower()).strip("_")[:32]
         new_id = f"{task.id}__{suffix}_{generation}"
-        cloned = task.model_copy(deep=True)
+        cloned = DEFAULT_TASK_TOOLING.mutable_task_copy(task)
         cloned.id = new_id
         cloned.parent_task_id = str(task.parent_task_id or task.id)
         cloned.origin_reason = "rework_followup"
@@ -439,9 +486,14 @@ class FollowupTaskGenerationService:
         cloned.test_strategy = strategy
         cloned.strategy_family = self._strategy_family_for(strategy, cloned.payload_family)
         cloned.allowed_tools = list(allowed_tools)
-        cloned.recommended_next_step = allowed_tools[0] if allowed_tools else cloned.recommended_next_step
-        cloned.readiness = readiness or ("needs_preparation" if allowed_tools and allowed_tools[0] in {"create_test_object", "workflow_probe", "input_shape_probe"} else "ready_to_test")
+        prep_tools = {"create_test_object", "workflow_probe", "input_shape_probe", "auto_provision", "auth_probe_entrypoints", "import_har_capture"}
+        cloned.readiness = readiness or ("needs_preparation" if any(str(item or "").strip() in prep_tools for item in (allowed_tools or [])) else "ready_to_test")
         cloned.retry_count = int(task.retry_count or 0) + 1
+        cloned = DEFAULT_TASK_TOOLING.normalize_task(cloned, explicit_allowed_tools=cloned.allowed_tools)
+        if strategy in {"create_object_then_replay", "list_then_select_object_then_replay", "object_specific_auth_probe"}:
+            cloned.params.requires_object_id_enrichment = True
+            cloned.prerequisites.requires_object_id = True
+            cloned.readiness = "needs_preparation"
         cloned.rework_hint = None
         cloned.priority = min(100, int(task.priority or 0) + priority_boost)
         cloned.payload_family = payload_family or task.payload_family

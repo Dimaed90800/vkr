@@ -81,12 +81,34 @@ def test_autonomous_traffic_capture_generates_surface_when_user_requests_missing
             requests=[],
             target_url="http://example.test",
             allowed_hosts=["example.test"],
+            allow_autonomous_capture=True,
         )
     )
 
     assert response.raw_metadata["generation_mode"] == "autonomous_anonymous"
     assert response.raw_metadata["generated_request_total"] == 1
     assert response.normalized_surface.endpoints[0].path == "/identity/api/v2/vehicle/{id}/location"
+
+
+def test_observed_traffic_import_without_requests_is_safe_noop(monkeypatch) -> None:
+    service = TrafficCaptureService()
+
+    def fail_if_called(request):
+        raise AssertionError("anonymous probing should require allow_autonomous_capture=True")
+
+    monkeypatch.setattr(service, "_generate_anonymous_requests", fail_if_called)
+
+    response = service.capture(
+        TrafficDiscoveryRequest(
+            requests=[],
+            target_url="http://example.test",
+            allowed_hosts=["example.test"],
+        )
+    )
+
+    assert response.raw_metadata["generation_mode"] == "empty_observed_traffic"
+    assert response.raw_metadata["observed_request_total"] == 0
+    assert response.normalized_surface.endpoints == []
 
 
 def test_capability_inference_with_no_roles_and_no_user_traffic() -> None:

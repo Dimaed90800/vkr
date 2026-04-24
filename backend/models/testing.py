@@ -24,6 +24,8 @@ class ExecutionContext(BaseModel):
     harvested_links: list[str] = Field(default_factory=list)
     prepared_objects: dict[str, Any] = Field(default_factory=dict)
     workflow_context: dict[str, Any] = Field(default_factory=dict)
+    graph_state: dict[str, Any] = Field(default_factory=dict)
+    current_task_snapshot: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuthContext(BaseModel):
@@ -50,6 +52,13 @@ class TaskPrerequisites(BaseModel):
     requires_workflow_state: bool = False
     requires_creator_candidate: bool = False
     requires_list_candidate: bool = False
+
+
+class ToolPreference(BaseModel):
+    preferred_tool: str | None = None
+    fallback_tools: list[str] = Field(default_factory=list)
+    artifact_requirements: list[str] = Field(default_factory=list)
+    budget_profile: str = "balanced"
 
 
 class TaskModel(BaseModel):
@@ -86,6 +95,12 @@ class TaskModel(BaseModel):
     payload_family: str | None = None
     resource_family: str | None = None
     context_source: str | None = None
+    worker_role: str | None = None
+    preferred_tool: str | None = None
+    fallback_tools: list[str] = Field(default_factory=list)
+    artifact_requirements: list[str] = Field(default_factory=list)
+    budget_profile: str = "balanced"
+    tool_preference: ToolPreference = Field(default_factory=ToolPreference)
 
     model_config = {"populate_by_name": True}
 
