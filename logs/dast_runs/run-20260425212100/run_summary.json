@@ -1,0 +1,93 @@
+{
+  "run_id": "run-20260425212100",
+  "event_counts": {
+    "executability_resolved": 80,
+    "task_executability_evaluated": 79,
+    "task_blocked_by_prerequisite": 5,
+    "planner_plan_completed": 11,
+    "scheduler_selection": 20,
+    "judge_input_source_selected": 23,
+    "judge_input_built": 23,
+    "judge_input_wrapper_fields_not_applicable": 23,
+    "followup_task_generated": 22,
+    "judge_verdict_finalized": 23,
+    "queue_update_processed": 23,
+    "followup_task_suppressed": 1,
+    "scheduler_no_task": 2,
+    "scheduler_stop_diagnostics": 2,
+    "run_stop": 2,
+    "followup_generation_attempt": 5,
+    "queue_enrichment_applied": 1
+  },
+  "component_counts": {
+    "scheduler": 190,
+    "planner": 11,
+    "judge_handoff": 69,
+    "followup": 28,
+    "judge": 23,
+    "queue_update": 24
+  },
+  "status_counts": {
+    "ok": 252,
+    "blocked": 15,
+    "selected": 20,
+    "generated": 22,
+    "success": 24,
+    "suppressed": 1,
+    "stop": 6,
+    "skipped": 5
+  },
+  "top_dead_end_reasons": {
+    "no_tasks_available": 3,
+    "missing_valid_baseline_path": 3
+  },
+  "top_failing_preparation_reasons": {
+    "create_failed": 1,
+    "placeholder_object_id": 1,
+    "unauthenticated_request_to_auth_required_endpoint": 1,
+    "missing_auth_context": 1,
+    "baseline_invalid_from_spec": 1,
+    "object_creation_failed": 3
+  },
+  "tasks_by_class": {
+    "authorization": 200,
+    "business_logic": 69,
+    "injection": 39
+  },
+  "tasks_by_readiness": {
+    "needs_preparation": 48,
+    "ready_to_test": 139
+  },
+  "blocked_by_reason": {
+    "missing_valid_baseline_path": 3
+  },
+  "executable_test_task_count": 2,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [
+    {
+      "id": "inj_blocked",
+      "endpoint": "/injection/inj_blocked",
+      "class": "injection",
+      "subtype": "workflow_bypass",
+      "reason": "missing_valid_baseline_path",
+      "missing_prerequisites": [
+        "baseline_invalid_from_spec"
+      ]
+    }
+  ],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "scheduler_selection",
+  "last_status": "selected",
+  "last_updated_at": "2026-04-25T21:21:00.324482+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0,
+  "total_tasks_generated": 3,
+  "pending_count": 2,
+  "runnable_count": 2,
+  "blocked_count": 0,
+  "stop_reason": "missing_valid_baseline_path",
+  "total_followups_generated": 0
+}

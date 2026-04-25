@@ -96,7 +96,9 @@ class CampaignService:
             ),
             counts=CampaignCounts(
                 operations=0,
-                corpus_items=0,
+                corpus_items=len(
+                    memory_store.corpus_by_campaign.get(campaign_id, [])
+                ),
                 pending_tasks=0,
                 confirmed_findings=confirmed_findings,
                 tool_runs=0,

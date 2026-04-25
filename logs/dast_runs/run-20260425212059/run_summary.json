@@ -1,0 +1,49 @@
+{
+  "run_id": "run-20260425212059",
+  "event_counts": {
+    "legacy_tool_dispatch_start": 1,
+    "task_executability_evaluated": 52,
+    "executability_resolved": 51,
+    "planner_plan_completed": 3,
+    "dispatch_noop_rescued": 1,
+    "dispatch_task_received": 1,
+    "dispatch_task_classified": 1,
+    "dispatch_preparation_path_selected": 1,
+    "task_blocked_by_prerequisite": 20
+  },
+  "component_counts": {
+    "wrapper": 1,
+    "scheduler": 123,
+    "planner": 3,
+    "dispatch": 4
+  },
+  "status_counts": {
+    "started": 1,
+    "ok": 70,
+    "blocked": 60
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {},
+  "tasks_by_class": {
+    "authorization": 91,
+    "business_logic": 36
+  },
+  "tasks_by_readiness": {
+    "needs_preparation": 93,
+    "ready_to_test": 34
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "task_executability_evaluated",
+  "last_status": "ok",
+  "last_updated_at": "2026-04-25T21:20:59.999883+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0,
+  "total_tasks_generated": 6
+}

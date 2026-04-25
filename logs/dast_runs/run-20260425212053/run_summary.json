@@ -1,0 +1,42 @@
+{
+  "run_id": "run-20260425212053",
+  "event_counts": {
+    "legacy_tool_dispatch_start": 2,
+    "dispatch_task_received": 2,
+    "dispatch_task_classified": 2,
+    "dispatch_preparation_path_selected": 2,
+    "preparation_dispatch_attempted": 2,
+    "preparation_dispatch_completed": 2
+  },
+  "component_counts": {
+    "wrapper": 2,
+    "dispatch": 6,
+    "worker": 4
+  },
+  "status_counts": {
+    "started": 2,
+    "ok": 10
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {},
+  "tasks_by_class": {
+    "business_logic": 5,
+    "injection": 5
+  },
+  "tasks_by_readiness": {
+    "needs_preparation": 6
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "preparation_dispatch_completed",
+  "last_status": "ok",
+  "last_updated_at": "2026-04-25T21:20:53.935798+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}

@@ -1,0 +1,41 @@
+{
+  "run_id": "run-test-runtime-helpers",
+  "event_counts": {
+    "dispatch_task_received": 1,
+    "dispatch_task_classified": 1,
+    "dispatch_preparation_path_selected": 1,
+    "worker_execution_completed": 1,
+    "evidence_built": 1,
+    "dispatch_noop_rescued": 1
+  },
+  "component_counts": {
+    "dispatch": 4,
+    "worker": 1,
+    "judge": 1
+  },
+  "status_counts": {
+    "ok": 6
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {},
+  "tasks_by_class": {
+    "injection": 3,
+    "business_logic": 3
+  },
+  "tasks_by_readiness": {
+    "needs_preparation": 4
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "dispatch_noop_rescued",
+  "last_status": "ok",
+  "last_updated_at": "2026-04-25T21:20:59.935691+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}

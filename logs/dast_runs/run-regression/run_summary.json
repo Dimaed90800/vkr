@@ -1,0 +1,29 @@
+{
+  "run_id": "run-regression",
+  "event_counts": {
+    "legacy_tool_dispatch_start": 3
+  },
+  "component_counts": {
+    "wrapper": 3
+  },
+  "status_counts": {
+    "started": 3
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {},
+  "tasks_by_class": {},
+  "tasks_by_readiness": {},
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "legacy_tool_dispatch_start",
+  "last_status": "started",
+  "last_updated_at": "2026-04-25T21:20:59.929229+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}

@@ -15,6 +15,11 @@ class MemoryStore:
         self.campaign_by_run_id: dict[str, str] = {}
         self.campaign_by_session_id: dict[int, str] = {}
 
+        self.corpus_items: dict[str, dict] = {}
+        self.corpus_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.resource_instances: dict[str, dict] = {}
+        self.resources_by_campaign: dict[str, list[str]] = defaultdict(list)
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -32,6 +37,33 @@ class MemoryStore:
 
     def resolve_campaign_id_by_session_id(self, session_id: int) -> str | None:
         return self.campaign_by_session_id.get(session_id)
+
+    def store_corpus_item(self, request_id: str, campaign_id: str, data: dict) -> None:
+        self.corpus_items[request_id] = data
+        self.corpus_by_campaign[campaign_id].append(request_id)
+
+    def get_corpus_item(self, request_id: str) -> dict | None:
+        return self.corpus_items.get(request_id)
+
+    def list_corpus_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.corpus_items[rid]
+            for rid in self.corpus_by_campaign.get(campaign_id, [])
+            if rid in self.corpus_items
+        ]
+
+    def store_resource_instance(
+        self, resource_instance_id: str, campaign_id: str, data: dict
+    ) -> None:
+        self.resource_instances[resource_instance_id] = data
+        self.resources_by_campaign[campaign_id].append(resource_instance_id)
+
+    def list_resources_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.resource_instances[rid]
+            for rid in self.resources_by_campaign.get(campaign_id, [])
+            if rid in self.resource_instances
+        ]
 
     def store_evidence(self, session_id: str, evidence) -> str:
         evidence_id = f"evidence-{uuid4().hex[:12]}"
