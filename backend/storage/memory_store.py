@@ -22,6 +22,10 @@ class MemoryStore:
 
         self.graphs_by_campaign: dict[str, dict] = {}
 
+        self.commands: dict[str, dict] = {}
+        self.commands_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.command_fingerprints: dict[str, set[str]] = defaultdict(set)
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -75,6 +79,20 @@ class MemoryStore:
 
     def replace_graph_for_campaign(self, campaign_id: str, data: dict) -> None:
         self.graphs_by_campaign[campaign_id] = data
+
+    def store_command(self, command_id: str, campaign_id: str, data: dict) -> None:
+        self.commands[command_id] = data
+        self.commands_by_campaign[campaign_id].append(command_id)
+
+    def get_command(self, command_id: str) -> dict | None:
+        return self.commands.get(command_id)
+
+    def list_commands_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.commands[cid]
+            for cid in self.commands_by_campaign.get(campaign_id, [])
+            if cid in self.commands
+        ]
 
     def store_evidence(self, session_id: str, evidence) -> str:
         evidence_id = f"evidence-{uuid4().hex[:12]}"
