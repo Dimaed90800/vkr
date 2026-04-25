@@ -3051,6 +3051,27 @@ workflow:
               }
 
 
+          def _dispatch_payload(state: dict, active: dict) -> dict:
+              execution_context = state.get("execution_context") or {}
+              if isinstance(execution_context, dict):
+                  if str(active.get("id") or "") == "__no_task__":
+                      execution_context.pop("current_task_snapshot", None)
+                      state.pop("active_task_snapshot", None)
+                  else:
+                      execution_context["current_task_snapshot"] = active
+                      state["active_task_snapshot"] = active
+                  state["execution_context"] = execution_context
+              return {
+                  "active_task_json": json.dumps(active, ensure_ascii=False),
+                  "task_class": str(active.get("class") or "authorization").lower(),
+                  "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
+                  "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
+                  "remaining_state_json": json.dumps(state, ensure_ascii=False),
+                  "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
+                  "max_retries": int(state.get("max_retries", 1) or 1),
+              }
+
+
 
           def _task_allowed_tools(task: dict) -> list:
               value = task.get("allowed_tools") or []
@@ -3164,15 +3185,7 @@ workflow:
                   state["scheduler_stop_reason"] = str(scheduler.get("selection_reason") or "")
                   state["last_selection_reason"] = fallback_reason
                   state["last_deferred_classes"] = scheduler.get("deferred_classes") or []
-                  return {
-                      "active_task_json": json.dumps(active, ensure_ascii=False),
-                      "task_class": str(active.get("class") or "authorization").lower(),
-                      "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
-                      "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
-                      "remaining_state_json": json.dumps(state, ensure_ascii=False),
-                      "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
-                      "max_retries": int(state.get("max_retries", 1) or 1),
-                  }
+                  return _dispatch_payload(state, active)
 
               if stop_reason:
                   state["raw_stop_reason_before_resolution"] = stop_reason
@@ -3184,15 +3197,7 @@ workflow:
                   state["stop_reason"] = resolution["resolved_final_stop_reason"]
                   _emit_stop(state, scheduler)
                   active = _no_task()
-                  return {
-                      "active_task_json": json.dumps(active, ensure_ascii=False),
-                      "task_class": "authorization",
-                      "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
-                      "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
-                      "remaining_state_json": json.dumps(state, ensure_ascii=False),
-                      "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
-                      "max_retries": int(state.get("max_retries", 1) or 1),
-                  }
+                  return _dispatch_payload(state, active)
 
               should_stop = bool(scheduler.get("should_stop"))
               if should_stop and executable_pending and _soft_stop_reason(scheduler.get("selection_reason") or state.get("stop_reason") or ""):
@@ -3205,15 +3210,7 @@ workflow:
                   state["scheduler_stop_reason"] = str(scheduler.get("selection_reason") or "")
                   state["last_selection_reason"] = fallback_reason
                   state["last_deferred_classes"] = scheduler.get("deferred_classes") or []
-                  return {
-                      "active_task_json": json.dumps(active, ensure_ascii=False),
-                      "task_class": str(active.get("class") or "authorization").lower(),
-                      "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
-                      "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
-                      "remaining_state_json": json.dumps(state, ensure_ascii=False),
-                      "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
-                      "max_retries": int(state.get("max_retries", 1) or 1),
-                  }
+                  return _dispatch_payload(state, active)
 
               if should_stop:
                   state["scheduler_stop_reason"] = str(scheduler.get('selection_reason') or 'no_runnable_tasks')
@@ -3224,15 +3221,7 @@ workflow:
                   state["stop_reason"] = resolution["resolved_final_stop_reason"]
                   _emit_stop(state, scheduler)
                   active = _no_task()
-                  return {
-                      "active_task_json": json.dumps(active, ensure_ascii=False),
-                      "task_class": "authorization",
-                      "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
-                      "remaining_state_json": json.dumps(state, ensure_ascii=False),
-                      "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
-                      "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
-                      "max_retries": int(state.get("max_retries", 1) or 1),
-                  }
+                  return _dispatch_payload(state, active)
 
               active = scheduler.get("next_task") or _no_task()
               if str(active.get("id") or "") == "__no_task__" and executable_pending:
@@ -3245,20 +3234,7 @@ workflow:
               state["scheduler_state"] = scheduler.get("scheduler_state") or state.get("scheduler_state") or {}
               state["last_selection_reason"] = state.get("last_selection_reason") or str(scheduler.get("selection_reason") or "")
               state["last_deferred_classes"] = scheduler.get("deferred_classes") or []
-              execution_context = state.get("execution_context") or {}
-              if isinstance(execution_context, dict):
-                  execution_context["current_task_snapshot"] = active
-                  state["execution_context"] = execution_context
-              state["active_task_snapshot"] = active
-              return {
-                  "active_task_json": json.dumps(active, ensure_ascii=False),
-                  "task_class": str(active.get("class") or "authorization").lower(),
-                  "remaining_tasks_json": json.dumps(state.get("pending_tasks") or [], ensure_ascii=False),
-                  "scheduler_state_json": json.dumps(state.get("scheduler_state") or {}, ensure_ascii=False),
-                  "remaining_state_json": json.dumps(state, ensure_ascii=False),
-                  "current_execution_context_json": json.dumps(state.get("execution_context") or {}, ensure_ascii=False),
-                  "max_retries": int(state.get("max_retries", 1) or 1),
-              }
+              return _dispatch_payload(state, active)
         code_language: python3
         dependencies: []
         desc: Pick the next task from unified state_json and route it to the appropriate tool-aware worker.
@@ -3644,6 +3620,13 @@ workflow:
                   dispatch_notes.append(f'preferred_tool_override:{tool_name}->{preferred_tool}')
                   tool_name = preferred_tool
                   template = _wrapper_template(preferred_tool) if preferred_tool in WRAPPER_TOOLS else template
+              wrapper_first_tools = ['schemathesis_stateful_test', 'restler_fuzz', 'restler_replay', 'schemathesis_negative_test']
+              if class_name == 'business_logic' and not needs_preparation:
+                  wrapper_tool = next((item for item in wrapper_first_tools if item in allowed_tools and item in DIRECT_TOOLS.get(worker_name, set())), '')
+                  if wrapper_tool and tool_name in {'bounded_burst_helper', 'workflow_probe', 'logic_test', 'replay_http_sequence'}:
+                      dispatch_notes.append(f'wrapper_first_override:{tool_name}->{wrapper_tool}')
+                      tool_name = wrapper_tool
+                      template = _wrapper_template(wrapper_tool)
               envelope = {'execution_context': execution_context, 'task': active_task, 'tool_name': tool_name, 'arguments': arguments}
               if tool_name in WRAPPER_TOOLS:
                   envelope.update({'run_id': execution_context.get('run_id'), 'target_url': execution_context.get('target_url'), 'openapi_url': execution_context.get('openapi_url'), 'openapi_spec_text': execution_context.get('openapi_spec_text'), 'roles_json': execution_context.get('roles') or [], 'task_metadata': {'worker_role': worker_name, 'template': template, 'dispatch_notes': dispatch_notes}, 'budgets': {'max_requests': execution_context.get('max_requests', 0), 'max_duration_sec': execution_context.get('max_duration_sec', 0), 'concurrency': 1}})
@@ -5206,8 +5189,19 @@ workflow:
                   else:
                       result.append(item)
               if not replaced:
-                  result.insert(0, task)
+                      result.insert(0, task)
               return result
+
+
+          def _has_executable_pending_tasks(tasks) -> bool:
+              for item in tasks or []:
+                  if not isinstance(item, dict):
+                      continue
+                  readiness = str(item.get("readiness") or "").strip()
+                  tools = item.get("allowed_tools") or []
+                  if readiness in {"ready_to_test", "needs_preparation"} and isinstance(tools, list) and any(str(tool or "").strip() for tool in tools):
+                      return True
+              return False
 
 
           def main(remaining_state_json: str, active_task_json: str, verdict_json: str, evidence_json: str, queue_body: str = "") -> dict:
@@ -5234,7 +5228,25 @@ workflow:
 
               task_id = str(task.get("id") or "")
               if task_id == "__no_task__":
-                  state["stop_reason"] = state.get("stop_reason") or "no_tasks"
+                  stop_reason = str(state.get("stop_reason") or state.get("final_stop_reason") or state.get("scheduler_stop_reason") or "").strip()
+                  hard_stop_reasons = {"budget_exceeded", "timeout", "no_tasks", "max_requests_exhausted", "max_duration_exceeded"}
+                  noop_ignored_count = int(state.get("noop_active_task_ignored_count") or 0)
+                  if (
+                      _has_executable_pending_tasks(state.get("pending_tasks") or [])
+                      and not stop_reason
+                      and noop_ignored_count < 1
+                  ):
+                      state["stop_reason"] = ""
+                      state["noop_active_task_ignored"] = True
+                      state["noop_active_task_ignored_count"] = noop_ignored_count + 1
+                      return {
+                          "state_json": json.dumps(state, ensure_ascii=False),
+                          "should_exit_loop": False,
+                      }
+                  if stop_reason in hard_stop_reasons or stop_reason:
+                      state["stop_reason"] = stop_reason
+                  else:
+                      state["stop_reason"] = "no_tasks"
                   return {
                       "state_json": json.dumps(state, ensure_ascii=False),
                       "should_exit_loop": True,

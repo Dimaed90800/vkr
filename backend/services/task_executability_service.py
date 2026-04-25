@@ -132,14 +132,15 @@ class TaskExecutabilityService:
                 prep_reason = prep_reason or "missing_object_materialization_path"
 
         if prerequisites.requires_valid_baseline and baseline_valid is False:
-            missing.append("baseline_invalid_from_spec")
-            baseline_tool, baseline_strategy = self._baseline_preparation_path(task)
-            if baseline_tool:
-                preferred_tool = preferred_tool or baseline_tool
-                preferred_strategy = preferred_strategy or baseline_strategy
-                prep_reason = prep_reason or "missing_valid_baseline_path"
-            else:
-                prep_reason = prep_reason or "missing_valid_baseline_path"
+            if not self._can_run_auth_probe_without_valid_baseline(task, auth_available, resolved_object_id):
+                missing.append("baseline_invalid_from_spec")
+                baseline_tool, baseline_strategy = self._baseline_preparation_path(task)
+                if baseline_tool:
+                    preferred_tool = preferred_tool or baseline_tool
+                    preferred_strategy = preferred_strategy or baseline_strategy
+                    prep_reason = prep_reason or "missing_valid_baseline_path"
+                else:
+                    prep_reason = prep_reason or "missing_valid_baseline_path"
 
         if prerequisites.requires_success_path:
             if not workflow_state_available and success_path_feasibility < self.SUCCESS_PATH_MIN_FEASIBILITY:
@@ -361,6 +362,41 @@ class TaskExecutabilityService:
         if task.class_name == "business_logic" and subtype in {"excessive_data_exposure"}:
             return True
         return False
+
+    def _can_run_auth_probe_without_valid_baseline(
+        self,
+        task: TaskModel,
+        auth_available: bool,
+        resolved_object_id: str | None,
+    ) -> bool:
+        if str(task.class_name or "").lower() != "authorization" or not auth_available:
+            return False
+        allowed = {str(item or "").strip().lower() for item in (task.allowed_tools or []) if str(item or "").strip()}
+        preferred = str(task.preferred_tool or (task.tool_preference.preferred_tool if task.tool_preference else "") or "").strip().lower()
+        direct_auth_tools = {"auth_test_access", "property_mutation_test", "replay_http_sequence"}
+        if not (direct_auth_tools.intersection(allowed) or preferred in direct_auth_tools):
+            return False
+        subtype = str(task.subtype or "").strip().lower()
+        family = str(task.hypothesis_family or "").strip().lower()
+        supported = {
+            "bola",
+            "property_level_authorization",
+            "mass_assignment",
+            "vertical_privilege",
+            "function_level_authorization",
+            "generic_access_control",
+        }
+        supported_families = {
+            "object_authorization",
+            "property_level_authorization",
+            "privileged_function_access",
+            "collection_access_control",
+        }
+        if subtype not in supported and family not in supported_families:
+            return False
+        if task.prerequisites.requires_object_id or task.params.requires_object_id_enrichment:
+            return bool(resolved_object_id or task.params.selected_object_id or task.params.object_id_candidates)
+        return True
 
     def _workflow_state_available(self, task: TaskModel, context: ExecutionContext, resolved_object_id: str | None) -> bool:
         hints = task.context_hints or {}

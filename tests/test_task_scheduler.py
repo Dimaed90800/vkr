@@ -231,6 +231,34 @@ def test_object_dependent_auth_rework_without_object_id_generates_materializatio
     assert all(task.recommended_next_step == "create_test_object" for task in updated.pending_tasks)
 
 
+def test_materialization_rework_prefers_list_path_after_create_failure() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("auth_video_create_failed", "authorization", 95)
+    active_task.hypothesis_family = "object_authorization"
+    active_task.subtype = "bola"
+    active_task.endpoint = "/identity/api/v2/user/videos/{video_id}"
+    active_task.method = "GET"
+    active_task.resource_family = "video"
+    active_task.params.path_params = ["video_id"]
+    active_task.params.object_param_name = "video_id"
+    active_task.params.requires_object_id_enrichment = True
+    active_task.test_strategy = "create_object_then_replay"
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[],
+        active_task=active_task,
+        verdict="rework",
+        rework_hint="Create failed; harvest an existing object from a list endpoint before replay.",
+        evidence={"response_summary": {"failure_reason": "create_failed"}, "indicators": []},
+        max_retries=1,
+        state=SchedulerState(),
+        fairness=FairnessConfig(max_consecutive_tasks_per_class=2),
+    )
+
+    assert updated.pending_tasks[0].test_strategy == "list_then_select_object_then_replay"
+    assert all(task.test_strategy != "create_object_then_replay" for task in updated.pending_tasks)
+
+
 def test_object_dependent_auth_rework_with_object_id_allows_privileged_replay() -> None:
     scheduler = TaskScheduler()
     active_task = _task("auth_video_ready", "authorization", 95)
@@ -873,6 +901,103 @@ def test_rework_before_confirmation_is_still_allowed() -> None:
     assert updated.pending_tasks[0].test_strategy == "privileged_function_replay"
 
 
+def test_business_stateful_followup_prefers_wrapper_before_bounded_burst() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("logic_rate", "business_logic", 80)
+    active_task.subtype = "rate_abuse"
+    active_task.hypothesis_family = "resource_abuse_rate_limit"
+    active_task.test_strategy = "bounded_rate_probe"
+    active_task.allowed_tools = ["bounded_burst_helper", "schemathesis_stateful_test", "restler_fuzz", "restler_replay"]
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[],
+        active_task=active_task,
+        verdict="rework",
+        rework_hint="Try a stateful runtime wrapper instead of repeating weak 404 burst traffic.",
+        evidence={
+            "response_summary": {
+                "tool_name": "bounded_burst_helper",
+                "evidence_strength": "weak",
+                "meaningful_rate_signal": False,
+                "status_codes": [404, 404, 404, 404, 404],
+            },
+            "indicators": ["bounded_burst_executed"],
+        },
+        max_retries=2,
+        state=SchedulerState(),
+        fairness=FairnessConfig(max_consecutive_tasks_per_class=2),
+    )
+
+    assert updated.queue_update_reason == "generated_rework_followups"
+    assert updated.pending_tasks[0].test_strategy == "cross_role_sequence_probe"
+    assert updated.pending_tasks[0].preferred_tool == "schemathesis_stateful_test"
+    assert updated.pending_tasks[0].allowed_tools[:3] == ["schemathesis_stateful_test", "restler_fuzz", "restler_replay"]
+    assert updated.pending_tasks[0].allowed_tools.index("schemathesis_stateful_test") < updated.pending_tasks[0].allowed_tools.index("bounded_burst_helper")
+
+
+def test_weak_bounded_burst_404_followup_does_not_repeat_same_probe() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("logic_rate_repeat", "business_logic", 80)
+    active_task.subtype = "rate_abuse"
+    active_task.hypothesis_family = "resource_abuse_rate_limit"
+    active_task.test_strategy = "cross_role_sequence_probe"
+    active_task.followup_generation = 1
+    active_task.retry_count = 2
+    active_task.allowed_tools = ["bounded_burst_helper", "schemathesis_stateful_test", "restler_fuzz"]
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[],
+        active_task=active_task,
+        verdict="rework",
+        rework_hint="Weak 404-only burst should not be repeated.",
+        evidence={
+            "response_summary": {
+                "tool_name": "bounded_burst_helper",
+                "evidence_strength": "weak",
+                "meaningful_rate_signal": False,
+                "status_codes": [404, 404, 404, 404, 404],
+            },
+            "indicators": ["bounded_burst_executed"],
+        },
+        max_retries=2,
+        state=SchedulerState(),
+        fairness=FairnessConfig(max_consecutive_tasks_per_class=2),
+    )
+
+    assert updated.generated_followup_task_ids == []
+    assert updated.requeued_task_id is None
+    assert updated.queue_update_reason == "rework_retry_limit_exceeded"
+
+
+def test_repeated_workflow_probe_preparation_possible_does_not_churn() -> None:
+    scheduler = TaskScheduler()
+    active_task = _task("logic_workflow_repeat", "business_logic", 80)
+    active_task.subtype = "workflow_bypass"
+    active_task.hypothesis_family = "invalid_transition"
+    active_task.test_strategy = "prepare_workflow_state_then_retry"
+    active_task.followup_generation = 2
+    active_task.retry_count = 2
+    active_task.allowed_tools = ["workflow_probe", "schemathesis_stateful_test", "restler_fuzz"]
+
+    updated = scheduler.update_queue_after_verdict(
+        tasks=[],
+        active_task=active_task,
+        verdict="rework",
+        rework_hint="Repeated workflow probe did not add context.",
+        evidence={
+            "response_summary": {"tool_name": "workflow_probe", "state_delta_summary": {}},
+            "indicators": ["preparation_possible"],
+        },
+        max_retries=2,
+        state=SchedulerState(),
+        fairness=FairnessConfig(max_consecutive_tasks_per_class=2),
+    )
+
+    assert updated.generated_followup_task_ids == []
+    assert updated.requeued_task_id is None
+    assert updated.queue_update_reason == "rework_retry_limit_exceeded"
+
+
 def test_queue_cleanup_prefers_highest_priority_semantic_duplicate() -> None:
     scheduler = TaskScheduler()
     base = TaskModel(
@@ -1452,3 +1577,69 @@ def test_authorization_property_tasks_do_not_block_on_missing_baseline_if_mutati
     assert response.next_task is not None
     assert response.next_task.id == "auth_prop"
     assert response.should_stop is False
+
+
+def test_object_auth_replay_does_not_block_on_missing_baseline_when_context_is_ready() -> None:
+    scheduler = TaskScheduler()
+    task = _task("auth_object", "authorization", 75)
+    task.subtype = "bola"
+    task.hypothesis_family = "object_authorization"
+    task.allowed_tools = ["auth_test_access", "replay_http_sequence"]
+    task.preferred_tool = "auth_test_access"
+    task.params.selected_object_id = "video-4"
+    task.params.object_id_candidates = ["video-4"]
+    task.params.requires_object_id_enrichment = True
+    task.prerequisites.requires_auth_context = True
+    task.prerequisites.requires_object_id = True
+    task.prerequisites.requires_valid_baseline = True
+    task.context_hints = {"baseline_valid": False, "spec_baseline_available": False}
+
+    response = scheduler.select_next_task(
+        [task],
+        state=SchedulerState(),
+        fairness=FairnessConfig(),
+        execution_context=ExecutionContext(
+            target_url="http://example.test",
+            capabilities={"has_auth_profiles": True, "has_multi_role_auth": True},
+            roles=[
+                {"role": "user_a", "token": "owner-token"},
+                {"role": "user_b", "token": "other-token"},
+            ],
+        ),
+    )
+
+    assert response.next_task is not None
+    assert response.next_task.id == "auth_object"
+    assert response.blocked_by_reason.get("missing_valid_baseline_path", 0) == 0
+
+
+def test_scheduler_can_select_non_auth_runtime_path_after_auth_is_established() -> None:
+    scheduler = TaskScheduler()
+    auth_task = _task("auth_loop", "authorization", 100)
+    runtime_task = _task("stateful_business", "business_logic", 60)
+    runtime_task.allowed_tools = ["schemathesis_stateful_test", "restler_fuzz"]
+    runtime_task.test_strategy = "stateful_runtime_probe"
+    runtime_task.readiness = "ready_to_test"
+
+    response = scheduler.select_next_task(
+        [auth_task, runtime_task],
+        state=SchedulerState(
+            class_budget_used={"authorization": 8, "business_logic": 6, "injection": 5},
+            class_tasks_completed={"authorization": 8},
+            last_executed_class="authorization",
+            consecutive_class_count=3,
+        ),
+        fairness=FairnessConfig(),
+        execution_context=ExecutionContext(
+            target_url="http://example.test",
+            capabilities={"has_auth_profiles": True, "has_multi_role_auth": True},
+            roles=[
+                {"role": "user_a", "token": "owner-token"},
+                {"role": "user_b", "token": "other-token"},
+            ],
+        ),
+    )
+
+    assert response.next_task is not None
+    assert response.next_task.id == "stateful_business"
+    assert response.selection_reason == "selected_non_auth_runtime_after_all_class_budgets_exhausted"

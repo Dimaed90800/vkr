@@ -21,6 +21,12 @@ class FollowupTaskGenerationService:
     MAX_FOLLOWUPS_PER_ROOT = 3
     MAX_ATTEMPTS_PER_ENDPOINT_FAMILY = 4
     MAX_RETRIES_PER_STRATEGY = 2
+    STATEFUL_WRAPPER_TOOLS = [
+        "schemathesis_stateful_test",
+        "restler_fuzz",
+        "restler_replay",
+        "schemathesis_negative_test",
+    ]
 
     HIGH_VALUE_FAMILIES = {
         "privileged_function_access",
@@ -247,7 +253,7 @@ class FollowupTaskGenerationService:
         if class_name == "authorization":
             return self._authorization_followups(active_task, response_summary, indicators, rework_hint, evidence=evidence)
         if class_name == "business_logic":
-            return self._business_logic_followups(active_task, response_summary, indicators, rework_hint)
+            return self._business_logic_followups(active_task, response_summary, indicators, rework_hint, evidence=evidence)
         return []
 
     def _preparation_followups(
@@ -260,9 +266,14 @@ class FollowupTaskGenerationService:
         if class_name == "authorization" and (
             self._requires_object_materialization(active_task)
             or {"invalid_object_id", "placeholder_object_id"}.intersection(indicators)
-            or str(response_summary.get("failure_reason") or "") in {"placeholder_object_id", "object_creation_failed", "object_harvest_failed", "object_id_missing", "creator_not_available", "list_not_available", "materialization_failed"}
+            or str(response_summary.get("failure_reason") or "") in {"placeholder_object_id", "object_creation_failed", "object_harvest_failed", "object_id_missing", "creator_not_available", "list_not_available", "materialization_failed", "create_failed", "unexpected_status_code"}
         ):
-            return self._object_materialization_followups(active_task)
+            suppress_create = self._suppress_create_materialization(active_task, response_summary)
+            return self._object_materialization_followups(
+                active_task,
+                prefer_list_first=self._prefer_list_materialization(active_task, response_summary),
+                suppress_create=suppress_create,
+            )
         if class_name == "authorization" and str(active_task.subtype or "") == "auth_bootstrap":
             if str(response_summary.get("failure_reason") or "") == "missing_auth_context":
                 return [self._clone_task(active_task, "reuse_existing_provisioned_roles", allowed_tools=["auth_test_access"], readiness="ready_to_test", priority_boost=9)]
@@ -306,7 +317,14 @@ class FollowupTaskGenerationService:
     ) -> list[TaskModel]:
         followups: list[TaskModel] = []
         if self._requires_object_materialization(active_task, evidence=evidence):
-            followups.extend(self._object_materialization_followups(active_task))
+            response_summary = (evidence or {}).get("response_summary") if isinstance(evidence, dict) else {}
+            followups.extend(
+                self._object_materialization_followups(
+                    active_task,
+                    prefer_list_first=self._prefer_list_materialization(active_task, response_summary if isinstance(response_summary, dict) else {}),
+                    suppress_create=self._suppress_create_materialization(active_task, response_summary if isinstance(response_summary, dict) else {}),
+                )
+            )
             return followups
         if str(active_task.hypothesis_family or "") == "collection_access_control" and not active_task.params.selected_object_id and self._resource_family(active_task) != "generic_resource":
             candidate = self._clone_task(active_task, "object_specific_auth_probe", allowed_tools=["create_test_object"], readiness="needs_preparation", priority_boost=12)
@@ -399,11 +417,41 @@ class FollowupTaskGenerationService:
             return None
         return normalized
 
-    def _object_materialization_followups(self, active_task: TaskModel) -> list[TaskModel]:
-        return [
-            self._materialization_followup(active_task, "create_object_then_replay", priority_boost=12),
-            self._materialization_followup(active_task, "list_then_select_object_then_replay", priority_boost=10),
-        ]
+    def _object_materialization_followups(
+        self,
+        active_task: TaskModel,
+        *,
+        prefer_list_first: bool = False,
+        suppress_create: bool = False,
+    ) -> list[TaskModel]:
+        list_followup = self._materialization_followup(active_task, "list_then_select_object_then_replay", priority_boost=10)
+        if suppress_create:
+            return [list_followup]
+        create_followup = self._materialization_followup(active_task, "create_object_then_replay", priority_boost=12)
+        if prefer_list_first:
+            list_followup.priority = max(int(create_followup.priority or 0) + 1, int(list_followup.priority or 0))
+            return [list_followup, create_followup]
+        return [create_followup, list_followup]
+
+    def _prefer_list_materialization(self, active_task: TaskModel, response_summary: dict[str, Any] | None = None) -> bool:
+        summary = response_summary or {}
+        failure_reason = str(summary.get("failure_reason") or "").strip().lower()
+        if failure_reason in {"create_failed", "unexpected_status_code", "object_creation_failed"}:
+            return True
+        endpoint = str(active_task.endpoint or "").strip().lower()
+        family = self._resource_family(active_task)
+        strategy = str(active_task.test_strategy or active_task.failed_strategy or "").strip().lower()
+        if "video" in endpoint or family == "video":
+            return True
+        return strategy == "create_object_then_replay" and int(active_task.retry_count or 0) > 0
+
+    def _suppress_create_materialization(self, active_task: TaskModel, response_summary: dict[str, Any] | None = None) -> bool:
+        summary = response_summary or {}
+        failure_reason = str(summary.get("failure_reason") or "").strip().lower()
+        if failure_reason in {"create_failed", "unexpected_status_code", "object_creation_failed"}:
+            return True
+        strategy = str(active_task.test_strategy or active_task.failed_strategy or "").strip().lower()
+        return strategy == "create_object_then_replay" and int(active_task.retry_count or 0) > 0
 
     def _materialization_followup(
         self,
@@ -442,8 +490,19 @@ class FollowupTaskGenerationService:
         response_summary: dict[str, Any],
         indicators: set[str],
         rework_hint: str | None,
+        evidence: dict[str, Any] | None = None,
     ) -> list[TaskModel]:
         followups: list[TaskModel] = []
+        if self._weak_bounded_burst_no_progress(active_task, response_summary, indicators, evidence=evidence):
+            if str(active_task.test_strategy or "").strip().lower() == "cross_role_sequence_probe" or int(active_task.followup_generation or 0) > 0:
+                return []
+            wrapper = self._stateful_wrapper_followup(active_task, priority_boost=9)
+            return [wrapper] if wrapper else []
+        if self._workflow_probe_no_context_gain(active_task, response_summary, indicators):
+            if int(active_task.followup_generation or 0) > 1:
+                return []
+            wrapper = self._stateful_wrapper_followup(active_task, priority_boost=7)
+            return [wrapper] if wrapper else []
         if str(response_summary.get("preparation_status") or "") == "baseline_invalid":
             followups.append(self._clone_task(active_task, "prepare_workflow_state_then_retry", allowed_tools=["workflow_probe"], readiness="needs_preparation", priority_boost=10))
             return followups
@@ -461,8 +520,72 @@ class FollowupTaskGenerationService:
                     followups.append(self._clone_task(active_task, "create_order_then_update_order", allowed_tools=["workflow_probe"], readiness="needs_preparation", priority_boost=10))
             if not bool((response_summary.get("state_delta_summary") or {}).get("prepared_context")):
                 followups.append(self._clone_task(active_task, "prepare_workflow_state_then_retry", allowed_tools=["workflow_probe"], readiness="needs_preparation", priority_boost=10))
-            followups.append(self._clone_task(active_task, "cross_role_sequence_probe", allowed_tools=["logic_test"], priority_boost=8))
+            wrapper = self._stateful_wrapper_followup(active_task, priority_boost=8)
+            followups.append(wrapper or self._clone_task(active_task, "cross_role_sequence_probe", allowed_tools=["logic_test"], priority_boost=8))
         return followups
+
+    def _stateful_wrapper_tools_for(self, task: TaskModel) -> list[str]:
+        available = [str(item or "").strip() for item in (task.allowed_tools or []) if str(item or "").strip()]
+        fallback = [str(item or "").strip() for item in (task.fallback_tools or []) if str(item or "").strip()]
+        preferred = str(task.preferred_tool or (task.tool_preference.preferred_tool if task.tool_preference else "") or "").strip()
+        candidates = [preferred, *available, *fallback, *self.STATEFUL_WRAPPER_TOOLS]
+        result: list[str] = []
+        for tool in candidates:
+            if tool in self.STATEFUL_WRAPPER_TOOLS and tool not in result:
+                result.append(tool)
+        return result
+
+    def _stateful_wrapper_followup(self, active_task: TaskModel, *, priority_boost: int) -> TaskModel | None:
+        tools = self._stateful_wrapper_tools_for(active_task)
+        if not tools:
+            return None
+        return self._clone_task(
+            active_task,
+            "cross_role_sequence_probe",
+            allowed_tools=tools + ["replay_http_sequence", "logic_test", "bounded_burst_helper"],
+            preferred_tool=tools[0],
+            priority_boost=priority_boost,
+        )
+
+    def _weak_bounded_burst_no_progress(
+        self,
+        active_task: TaskModel,
+        response_summary: dict[str, Any],
+        indicators: set[str],
+        evidence: dict[str, Any] | None = None,
+    ) -> bool:
+        evidence = evidence or {}
+        reason = evidence.get("reason") if isinstance(evidence.get("reason"), dict) else {}
+        tool_name = str(response_summary.get("tool_name") or evidence.get("tool_name") or reason.get("tool_name") or "").strip().lower()
+        strategy = str(active_task.test_strategy or "").strip().lower()
+        if tool_name != "bounded_burst_helper" and strategy != "bounded_rate_probe":
+            return False
+        statuses: list[int] = []
+        for value in response_summary.get("status_codes") or []:
+            try:
+                statuses.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        validation_like = bool(statuses) and all(400 <= status < 500 and status != 429 for status in statuses)
+        meaningful = bool(response_summary.get("meaningful_rate_signal"))
+        strength = str(response_summary.get("evidence_strength") or evidence.get("evidence_strength") or reason.get("evidence_strength") or "").strip().lower()
+        return validation_like and not meaningful and strength in {"", "weak"} and "rate_limit_detected" not in indicators
+
+    def _workflow_probe_no_context_gain(
+        self,
+        active_task: TaskModel,
+        response_summary: dict[str, Any],
+        indicators: set[str],
+    ) -> bool:
+        strategy = str(active_task.test_strategy or "").strip().lower()
+        if strategy != "prepare_workflow_state_then_retry" and str(response_summary.get("tool_name") or "").strip().lower() != "workflow_probe":
+            return False
+        if "preparation_possible" not in indicators:
+            return False
+        state_delta = response_summary.get("state_delta_summary") if isinstance(response_summary.get("state_delta_summary"), dict) else {}
+        prepared_context = bool(state_delta.get("prepared_context"))
+        workflow_hints = response_summary.get("workflow_hints") or response_summary.get("workflow_context")
+        return not prepared_context and not bool(workflow_hints)
 
     def _clone_task(
         self,
@@ -472,6 +595,7 @@ class FollowupTaskGenerationService:
         allowed_tools: list[str],
         readiness: str | None = None,
         payload_family: str | None = None,
+        preferred_tool: str | None = None,
         priority_boost: int = 0,
     ) -> TaskModel:
         generation = int(task.followup_generation or 0) + 1
@@ -486,6 +610,9 @@ class FollowupTaskGenerationService:
         cloned.test_strategy = strategy
         cloned.strategy_family = self._strategy_family_for(strategy, cloned.payload_family)
         cloned.allowed_tools = list(allowed_tools)
+        if preferred_tool:
+            cloned.preferred_tool = preferred_tool
+            cloned.tool_preference.preferred_tool = preferred_tool
         prep_tools = {"create_test_object", "workflow_probe", "input_shape_probe", "auto_provision", "auth_probe_entrypoints", "import_har_capture"}
         cloned.readiness = readiness or ("needs_preparation" if any(str(item or "").strip() in prep_tools for item in (allowed_tools or [])) else "ready_to_test")
         cloned.retry_count = int(task.retry_count or 0) + 1

@@ -73,11 +73,20 @@ class TaskScheduler:
             updated_state=scheduler_state,
         )
         if selection.selected_task_id is None and candidate_pool:
-            fallback_task = candidate_pool[0]
+            fallback_task = self._non_auth_runtime_fallback(
+                candidate_pool,
+                scheduler_state,
+                execution_context,
+            ) or candidate_pool[0]
+            fallback_reason = (
+                f"selected_non_auth_runtime_after_{selection.reason}"
+                if str(fallback_task.class_name or "").lower() != "authorization"
+                else f"selected_runnable_task_after_{selection.reason}"
+            )
             selection = SchedulerSelection(
                 selected_task_id=fallback_task.id,
                 selected_class=str(fallback_task.class_name or "").lower(),
-                reason=f"selected_runnable_task_after_{selection.reason}",
+                reason=fallback_reason,
                 deferred_classes=selection.deferred_classes,
                 skipped_task_ids=[task_id for task_id in selection.skipped_task_ids if task_id != fallback_task.id],
                 updated_state=self._advance_state(fallback_task, scheduler_state, count_class_budget=False),
@@ -1070,6 +1079,43 @@ class TaskScheduler:
             and self._is_class_budget_available(str(task.class_name or "").lower(), state, fairness)
             for task in tasks
         )
+
+    def _non_auth_runtime_fallback(
+        self,
+        candidate_pool: list[TaskModel],
+        state: SchedulerState,
+        execution_context: ExecutionContext | None,
+    ) -> TaskModel | None:
+        if not self._auth_established(execution_context):
+            return None
+        auth_budget_used = int(state.class_budget_used.get("authorization", 0) or 0)
+        auth_completed = int(state.class_tasks_completed.get("authorization", 0) or 0)
+        if auth_budget_used <= 0 and auth_completed <= 0 and state.last_executed_class != "authorization":
+            return None
+        runtime_tools = {
+            "schemathesis_negative_test",
+            "schemathesis_stateful_test",
+            "restler_fuzz",
+            "restler_replay",
+        }
+        non_auth_candidates = [
+            task
+            for task in candidate_pool
+            if str(task.class_name or "").lower() in {"business_logic", "injection"}
+            and str(task.readiness or "").lower() == "ready_to_test"
+            and runtime_tools.intersection({str(tool or "").strip().lower() for tool in (task.allowed_tools or [])})
+        ]
+        if not non_auth_candidates:
+            return None
+        return sorted(non_auth_candidates, key=lambda task: int(task.priority or 0), reverse=True)[0]
+
+    def _auth_established(self, execution_context: ExecutionContext | None) -> bool:
+        if execution_context is None:
+            return False
+        capabilities = execution_context.capabilities or {}
+        if capabilities.get("has_auth_profiles") or capabilities.get("has_multi_role_auth"):
+            return True
+        return any(self._has_auth_material(item) for item in (execution_context.roles or []) if isinstance(item, Mapping))
 
     def _advance_state(self, task: TaskModel, state: SchedulerState, *, count_class_budget: bool = True) -> SchedulerState:
         task_class = str(task.class_name or "").lower()

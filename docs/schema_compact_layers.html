@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <title>Compact multi-agent REST API DAST architecture</title>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10.9.5/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      themeVariables: {
+        fontFamily: "Inter, Arial, sans-serif",
+        lineColor: "#455a64",
+        primaryTextColor: "#1f2933"
+      },
+      flowchart: {
+        htmlLabels: true,
+        curve: "basis",
+        nodeSpacing: 54,
+        rankSpacing: 68
+      }
+    });
+  </script>
+  <style>
+    body {
+      font-family: Inter, Arial, sans-serif;
+      padding: 30px 20px;
+      background: #f4f7f6;
+      margin: 0;
+      display: flex;
+      justify-content: center;
+    }
+    .diagram-container {
+      background: #fff;
+      padding: 28px;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.06);
+      max-width: 1650px;
+      width: 100%;
+      overflow-x: auto;
+    }
+    h2 {
+      text-align: center;
+      color: #243746;
+      margin-top: 0;
+      margin-bottom: 22px;
+    }
+    .legend {
+      margin-top: 22px;
+      padding: 16px;
+      background: #eef2f5;
+      border-left: 4px solid #3498db;
+      font-size: 14px;
+      line-height: 1.65;
+      color: #34495e;
+    }
+    .legend code {
+      background: #e3e8ed;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+<div class="diagram-container">
+  <h2>Compact evidence-driven multi-agent REST API DAST architecture</h2>
+  <div class="mermaid">
+    flowchart TD
+      classDef input fill:#e8f4f8,stroke:#2980b9,stroke-width:2px,color:#000
+      classDef dify fill:#fdebd0,stroke:#f39c12,stroke-width:2px,color:#000
+      classDef backend fill:#e8f8f5,stroke:#1abc9c,stroke-width:2px,color:#000
+      classDef store fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
+      classDef layer fill:#f4f6f6,stroke:#607d8b,stroke-width:2px,color:#000
+      classDef judge fill:#f5eef8,stroke:#9b59b6,stroke-width:2px,color:#000
+      classDef report fill:#ebdef0,stroke:#8e44ad,stroke-width:2px,color:#000
+
+      User["User input<br/>target_url, toolbox_url, OpenAPI/Swagger, roles, limits"]:::input
+
+      subgraph Dify["Dify orchestration layer"]
+        Normalize["Normalize Input"]:::dify
+        CreateCampaign["Create Campaign<br/>campaign_id"]:::dify
+        Intake["Ingest Surface<br/>OpenAPI + discovery + traffic"]:::dify
+        Planner["Graph Planner / Router<br/>compact state summary only"]:::dify
+        Loop["Main Executor Loop<br/>one bounded task per iteration"]:::dify
+        WorkerSelector["Worker Command Selector<br/>strict JSON command"]:::dify
+        Reporter["Reporter Agent<br/>confirmed findings only"]:::report
+      end
+
+      subgraph State["Backend state layer"]
+        Campaign[("Campaign State")]:::store
+        ApiGraph[("API Graph")]:::store
+        DepGraph[("Dependency Graph")]:::store
+        Corpus[("Request / Response Corpus")]:::store
+        Queue[("Task Queue")]:::store
+        Evidence[("Evidence Store<br/>replay packs, diffs, raw artifacts")]:::store
+        Findings[("Confirmed Findings")]:::store
+        Scheduler["Scheduler<br/>fairness, budgets, novelty"]:::backend
+        EvidenceBuilder["Evidence Normalizer<br/>build replay-ready evidence pack"]:::backend
+        QueueUpdater["Queue Updater<br/>confirmed / rejected / rework"]:::backend
+      end
+
+      WorkerLayer["<b>Strategy Worker Layer</b><br/><br/>Access Control Worker<br/>Contract / Negative Testing Worker<br/>Stateful / Business Flow Worker<br/>Discovery / Inventory Worker<br/>Misconfiguration Worker<br/>SSRF / External Interaction Worker<br/><br/><i>Worker выбирает стратегию, но не подтверждает finding.</i>"]:::layer
+
+      ToolLayer["<b>Tool Layer / Bounded Tool Wrappers</b><br/><br/>OpenAPI Parser<br/>Custom Request Executor<br/>OWASP ZAP<br/>Schemathesis<br/>RESTler<br/>CATS<br/>Playwright<br/>mitmproxy<br/>nuclei<br/>httpx<br/>ffuf / Kiterunner<br/>Arjun<br/>jwt_tool<br/><br/><i>Инструменты выполняют команды и возвращают нормализуемые артефакты.</i>"]:::layer
+
+      Judge["Judge / Arbiter<br/>confirm / reject / rework"]:::judge
+      Out["Final README report"]:::input
+
+      User --> Normalize --> CreateCampaign --> Campaign
+      CreateCampaign --> Intake
+
+      Intake --> ToolLayer
+      ToolLayer --> ApiGraph
+      ToolLayer --> Corpus
+      ApiGraph --> DepGraph
+      Corpus --> DepGraph
+      ApiGraph --> Queue
+      DepGraph --> Queue
+      Corpus --> Queue
+
+      Queue --> Planner --> Loop
+      Loop --> Scheduler --> WorkerSelector
+      WorkerSelector --> WorkerLayer
+      WorkerLayer --> ToolLayer
+
+      ToolLayer --> EvidenceBuilder
+      EvidenceBuilder --> Evidence
+      Evidence --> Judge
+      Judge --> QueueUpdater
+      QueueUpdater -->|confirmed| Findings
+      QueueUpdater -->|rework| Queue
+      QueueUpdater -->|rejected| Queue
+      Findings --> Reporter --> Out
+  </div>
+  <div class="legend">
+    <strong>Почему схема стала компактнее:</strong> отдельные worker-ы и инструменты теперь сгруппированы в два слоя: <code>Strategy Worker Layer</code> и <code>Tool Layer</code>. Это убирает лишние пересекающиеся стрелки, но не теряет смысл архитектуры: Dify выбирает стратегию, backend хранит state/corpus/graph, инструменты выполняют ограниченные команды, а Judge единственный подтверждает уязвимости.
+  </div>
+</div>
+</body>
+</html>
