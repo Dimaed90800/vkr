@@ -128,3 +128,49 @@ report contains one confirmed finding
 ## Regression rule
 
 Before removing or rewriting any service, add tests around its current externally visible behavior.
+
+---
+
+### 9. Long-running ToolRun jobs
+
+```text
+test_start_async_tool_run_returns_tool_run_id
+test_running_tool_run_does_not_call_judge
+test_finished_tool_run_can_be_collected
+test_timeout_tool_run_returns_structured_error
+test_tool_run_artifacts_are_saved
+test_async_tool_result_created_only_after_collect
+```
+
+### 10. Observation triage
+
+```text
+test_unexpected_500_creates_observation_not_finding
+test_schema_mismatch_not_judged_without_impact
+test_auth_bypass_observation_marked_judge_worthy
+test_cross_role_signal_requires_ownership_proof
+test_observation_can_create_verification_task
+test_replay_minimized_payload_after_fuzzer_signal
+test_zap_alert_requires_replay_validation
+test_nuclei_match_stored_as_observation_first
+```
+
+### 11. Agent verification behavior
+
+```text
+test_agent_creates_prove_ownership_task_after_bola_rework
+test_agent_creates_cors_replay_after_zap_alert
+test_agent_creates_mass_assignment_followup_after_field_signal
+test_agent_creates_payload_minimization_after_single_500
+test_agent_does_not_confirm_finding_without_judge
+test_agent_emits_bounded_worker_command_only
+```
+
+### 12. Signal-to-proof E2E tests
+
+```text
+test_bola_signal_to_confirmed_finding_with_ownership_rework
+test_schemathesis_500_signal_to_replay_rework
+test_zap_cors_alert_to_validated_misconfiguration
+test_discovered_endpoint_to_inventory_auth_check
+```

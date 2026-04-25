@@ -220,3 +220,65 @@ curl -X POST http://127.0.0.1:8000/v1/auth/test-access \
 5. Убедиться, что `Discover Endpoints` вернул `normalized_surface`.
 6. Убедиться, что `Merge Surfaces` отдал merged surface even if OpenAPI empty.
 7. Убедиться, что `Plan Tasks` вернул задачи и дальше пайплайн дошел до `Judge` и `Reporter`.
+
+---
+
+## 9. New E2E scenario: async fuzzing + verification
+
+This scenario validates that long-running fuzzers do not send raw output directly to Judge.
+
+Expected flow:
+
+```text
+1. Create campaign.
+2. Ingest OpenAPI.
+3. Plan contract_fuzzing task.
+4. Worker starts Schemathesis ToolRun.
+5. Backend returns tool_run_id.
+6. Dify/backend polls until finished.
+7. ToolResult creates unexpected_500 observation.
+8. Agent creates replay_minimized_payload verification task.
+9. custom_request_executor replays minimized payload.
+10. EvidenceBuilder decides whether the observation is judge-worthy.
+11. Judge returns rework/rejected/confirmed.
+```
+
+Important assertions:
+
+```text
+- Judge is not called while ToolRun status is running.
+- Raw Schemathesis output is stored as artifact.
+- Single 500 does not become confirmed finding directly.
+- Replay/minimization is performed through custom_request_executor.
+```
+
+## 10. New E2E scenario: signal-to-exploitation BOLA
+
+This scenario validates that agents do not merely launch tools; they complete proof.
+
+Expected flow:
+
+```text
+1. Corpus has successful user_a request for object vehicleId=veh-123.
+2. Access Control Worker creates role_swap_object_access command.
+3. Backend executes user_a and user_b requests.
+4. Judge returns rework because ownership_proof is missing.
+5. Verification/Rework Agent creates prove_ownership command.
+6. Backend executes owner/attacker collection checks.
+7. EvidenceBuilder creates EvidencePack with:
+   - baseline owner access;
+   - attacker access;
+   - ownership proof;
+   - negative control;
+   - replay steps.
+8. Judge confirms BOLA.
+9. Report includes only confirmed finding.
+```
+
+Important assertions:
+
+```text
+- First cross-role 200 is not enough without ownership proof.
+- Rework creates bounded follow-up task.
+- Confirmed finding is created only after Judge verdict.
+```

@@ -2832,3 +2832,153 @@ Judge:
 Reporter:
   writes only confirmed findings
 ```
+
+---
+
+# Additional phase: Observation Triage and Verification Planning
+
+After tool execution, the system must not send raw tool output directly to Judge.
+
+Correct pipeline:
+
+```text
+ToolResult
+  ↓
+Raw artifact storage
+  ↓
+Request corpus update
+  ↓
+API graph / dependency graph update
+  ↓
+Observation normalization
+  ↓
+Observation triage
+  ↓
+Verification planning if proof is incomplete
+  ↓
+EvidencePack only for judge-worthy candidates
+  ↓
+Judge
+```
+
+## Why this phase is needed
+
+Tools and fuzzers produce signals, not final vulnerabilities.
+
+Examples:
+
+```text
+Schemathesis 500 -> unexpected_500 observation
+ZAP CORS alert -> zap_alert observation
+RESTler sequence -> reusable corpus seed / dependency edge
+ffuf result -> discovered_endpoint observation
+Arjun result -> hidden_parameter observation
+```
+
+A signal becomes a confirmed finding only after:
+
+```text
+- agent plans verification;
+- backend executes bounded replay/proof commands;
+- EvidenceBuilder creates replay-ready EvidencePack;
+- Judge confirms the evidence.
+```
+
+## Updated loop pseudocode
+
+```python
+task = backend.get_next_task(campaign_id)
+
+worker_command = agent.select_worker_command(
+    task=task,
+    compact_context=backend.get_compact_context(campaign_id)
+)
+
+tool_execution = backend.execute_or_start_tool(
+    campaign_id=campaign_id,
+    task_id=task["task_id"],
+    command=worker_command
+)
+
+if tool_execution["execution_mode"] == "async" and tool_execution["status"] in ["accepted", "queued", "running"]:
+    backend.mark_task_waiting_for_tool(
+        campaign_id=campaign_id,
+        task_id=task["task_id"],
+        tool_run_id=tool_execution["tool_run_id"]
+    )
+    # Judge is not called while the tool is running.
+    continue
+
+if tool_execution["execution_mode"] == "async" and tool_execution["status"] == "finished":
+    tool_result = backend.collect_tool_result(
+        campaign_id=campaign_id,
+        tool_run_id=tool_execution["tool_run_id"]
+    )
+else:
+    tool_result = tool_execution["tool_result"]
+
+backend.ingest_tool_result_into_corpus(campaign_id, tool_result)
+backend.update_graph_from_tool_result(campaign_id, tool_result)
+
+observations = backend.normalize_observations(campaign_id, tool_result)
+
+verification_plan = agent.triage_observations(
+    task=task,
+    observations=observations,
+    compact_context=backend.get_compact_context(campaign_id)
+)
+
+if verification_plan["requires_more_actions"]:
+    backend.enqueue_verification_tasks(campaign_id, verification_plan)
+    continue
+
+evidence_packs = backend.build_evidence_packs_from_observations(
+    campaign_id=campaign_id,
+    task_id=task["task_id"],
+    observations=observations
+)
+
+for evidence in evidence_packs:
+    verdict = judge.evaluate(evidence)
+    backend.apply_judge_verdict(
+        campaign_id=campaign_id,
+        task_id=task["task_id"],
+        evidence_id=evidence["evidence_id"],
+        verdict=verdict
+    )
+```
+
+## Agent role clarification
+
+Agents should not merely launch tools.
+
+Agents should:
+
+```text
+- interpret observations;
+- create hypotheses;
+- choose verification strategy;
+- select seed requests from corpus;
+- choose roles/object IDs/fields;
+- request replay, role swap, ownership proof, payload minimization, or impact checks;
+- produce one bounded WorkerCommand or VerificationPlan.
+```
+
+Backend should:
+
+```text
+- validate every command;
+- execute tools safely;
+- store raw artifacts;
+- update corpus and graph;
+- build EvidencePack;
+- apply Judge verdict.
+```
+
+Judge should:
+
+```text
+- receive EvidencePack only;
+- not read raw scanner output;
+- confirm only reproducible, security-relevant findings.
+```

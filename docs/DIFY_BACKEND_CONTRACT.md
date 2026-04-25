@@ -166,3 +166,106 @@ Dify should display the final backend-provided stop reason.
 Report node must call backend report context and write only confirmed findings.
 
 Rejected/rework/inconclusive candidates can be mentioned only in a limitations section, not as vulnerabilities.
+
+---
+
+## Long-running ToolRun contract
+
+Some tools are too long-running to be treated as immediate HTTP calls.
+
+Long-running tools include:
+
+```text
+RESTler
+Schemathesis with many examples
+CATS
+OWASP ZAP active scan
+nuclei with many templates
+ffuf / Kiterunner with large wordlists
+Playwright crawl
+```
+
+For these tools, Dify must use the `ToolRun` flow:
+
+```text
+Execute Worker Command
+  ↓
+if execution_mode == "sync" and status == "finished":
+    Build Evidence Pack if there are judge-worthy observations
+    Judge Evidence
+
+if execution_mode == "async" and status in ["accepted", "queued", "running"]:
+    Store tool_run_id
+    Poll ToolRun status
+    Do not call Judge yet
+
+if async ToolRun status == "finished":
+    Collect ToolResult
+    Normalize Observations
+    Update Corpus / Graph
+    Build Evidence only for judge-worthy candidates
+    Judge EvidencePack
+```
+
+Required endpoints:
+
+```text
+POST /v1/tools/runs/start
+GET  /v1/tools/runs/{tool_run_id}
+POST /v1/tools/runs/{tool_run_id}/collect
+POST /v1/observations/triage
+```
+
+Compatibility is allowed: `POST /v1/tools/execute` may internally start a ToolRun and return either a finished `ToolResult` or an accepted `ToolRun`.
+
+Rules:
+
+```text
+- Judge must not be called while ToolRun is running.
+- Judge receives EvidencePack, not raw fuzzing output.
+- Raw scanner/fuzzer output must stay in backend artifacts.
+- Ordinary scanner findings are observations, not confirmed findings.
+- Fuzzer cases usually require replay/minimization before Judge.
+```
+
+## Agent verification contract
+
+Agents are not just tool launchers.
+
+Agents should:
+
+```text
+- interpret tool signals;
+- create vulnerability hypotheses;
+- plan verification/exploitation steps;
+- choose seed requests from corpus;
+- choose roles/object IDs/fields;
+- request replay, role swap, ownership proof, payload minimization, or impact checks;
+- emit one bounded WorkerCommand or VerificationPlan.
+```
+
+Agents must not:
+
+```text
+- execute tools directly;
+- create confirmed findings;
+- bypass backend validation;
+- write to corpus/graph directly;
+- send raw scanner output to Judge.
+```
+
+Correct flow:
+
+```text
+Tool signal
+  ↓
+Observation
+  ↓
+Agent triage / VerificationPlan
+  ↓
+Backend executes bounded command
+  ↓
+EvidenceBuilder creates EvidencePack
+  ↓
+Judge confirms/reworks/rejects
+```

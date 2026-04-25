@@ -337,3 +337,227 @@ business_logic -> stateful_flow
   "limitations": []
 }
 ```
+
+---
+
+# Additional contracts: ToolRun, Observation, VerificationPlan
+
+## ToolRun
+
+`ToolRun` is the runtime record for a tool execution. Short tools can finish synchronously. Long-running tools must return `tool_run_id` first and finish later.
+
+Long-running tools include:
+
+```text
+RESTler
+Schemathesis with many examples
+CATS
+OWASP ZAP active scan
+nuclei with many templates
+ffuf / Kiterunner with large wordlists
+Playwright crawl
+```
+
+Example:
+
+```json
+{
+  "schema_version": "tool-run/v1",
+  "tool_run_id": "toolrun_...",
+  "campaign_id": "cmp_...",
+  "task_id": "task_...",
+  "command_id": "cmd_...",
+  "tool_name": "schemathesis",
+  "execution_mode": "async",
+  "status": "running",
+  "started_at": "2026-04-25T00:00:00Z",
+  "finished_at": null,
+  "progress": {
+    "requests_sent": 42,
+    "max_requests": 100,
+    "elapsed_sec": 27
+  },
+  "result_ready": false,
+  "artifact_refs": []
+}
+```
+
+Allowed statuses:
+
+```text
+accepted
+queued
+running
+finished
+failed
+timeout
+cancelled
+skipped
+```
+
+The Judge must not be called while `ToolRun.status` is `accepted`, `queued`, or `running`.
+
+---
+
+## Observation
+
+`Observation` is a normalized signal produced from tool output. It is not a confirmed vulnerability.
+
+Examples of observations:
+
+```text
+unexpected_500
+schema_mismatch
+auth_anomaly
+cross_role_access_signal
+zap_alert
+nuclei_match
+discovered_endpoint
+hidden_parameter
+sensitive_field_seen
+state_changed_after_invalid_payload
+```
+
+Example:
+
+```json
+{
+  "schema_version": "observation/v1",
+  "observation_id": "obs_...",
+  "campaign_id": "cmp_...",
+  "tool_run_id": "toolrun_...",
+  "task_id": "task_...",
+  "type": "unexpected_500",
+  "operation_id": "op_create_order",
+  "request_id": "req_...",
+  "confidence": 0.7,
+  "security_relevance": "unknown",
+  "judge_worthy": false,
+  "recommended_next_action": "replay_minimized_payload",
+  "artifact_refs": [
+    "artifact://toolrun_.../case_001.json"
+  ]
+}
+```
+
+Rules:
+
+```text
+ordinary 400/404/422 -> store but do not judge;
+single 500 -> observation, usually replay/rework first;
+auth bypass signal -> may be judge-worthy;
+cross-role access signal -> usually requires ownership proof;
+ZAP/nuclei alert -> requires replay/impact check before confirmation.
+```
+
+---
+
+## VerificationPlan
+
+`VerificationPlan` describes how an agent plans to turn a signal into proof.
+
+The agent does not confirm the vulnerability. It creates a controlled plan for backend execution.
+
+Example:
+
+```json
+{
+  "schema_version": "verification-plan/v1",
+  "campaign_id": "cmp_...",
+  "parent_observation_id": "obs_...",
+  "parent_task_id": "task_...",
+  "goal": "prove_ownership",
+  "worker_class": "access_control",
+  "strategy": "prove_ownership",
+  "required_evidence": [
+    "owner_collection_contains_object",
+    "attacker_collection_does_not_contain_object"
+  ],
+  "commands": [
+    {
+      "tool_name": "custom_request_executor",
+      "strategy": "collection_check",
+      "inputs": {
+        "owner_role": "user_a",
+        "attacker_role": "user_b",
+        "object_id": "123"
+      },
+      "budget": {
+        "max_requests": 3,
+        "timeout_sec": 30
+      }
+    }
+  ]
+}
+```
+
+Typical verification plans:
+
+```text
+prove_ownership
+replay_minimized_payload
+cors_replay_validation
+mass_assignment_followup
+admin_endpoint_low_privilege_replay
+jwt_tamper_replay
+ssrf_callback_confirmation
+undocumented_endpoint_auth_check
+```
+
+---
+
+## Tool execution response
+
+`POST /v1/tools/execute` may return either a finished `ToolResult` or an accepted `ToolRun`.
+
+Synchronous response:
+
+```json
+{
+  "status": "finished",
+  "execution_mode": "sync",
+  "tool_result": {
+    "schema_version": "tool-result/v1",
+    "tool_run_id": "toolrun_...",
+    "status": "finished"
+  }
+}
+```
+
+Asynchronous response:
+
+```json
+{
+  "status": "accepted",
+  "execution_mode": "async",
+  "tool_run_id": "toolrun_...",
+  "campaign_id": "cmp_...",
+  "task_id": "task_...",
+  "tool_name": "schemathesis",
+  "poll_after_sec": 5
+}
+```
+
+The workflow must collect the final result later:
+
+```http
+GET /v1/tools/runs/{tool_run_id}
+POST /v1/tools/runs/{tool_run_id}/collect
+```
+
+---
+
+## Updated processing rule
+
+```text
+ToolResult does not automatically go to Judge.
+
+ToolResult
+  -> raw artifact storage
+  -> request corpus update
+  -> API/dependency graph update
+  -> Observation normalization
+  -> VerificationPlan if more proof is needed
+  -> EvidencePack only for judge-worthy candidates
+  -> Judge
+```

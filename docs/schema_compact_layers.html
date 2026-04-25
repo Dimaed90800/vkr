@@ -36,7 +36,7 @@
       padding: 28px;
       border-radius: 12px;
       box-shadow: 0 10px 30px rgba(0,0,0,.06);
-      max-width: 1650px;
+      max-width: 1780px;
       width: 100%;
       overflow-x: auto;
     }
@@ -72,6 +72,8 @@
       classDef backend fill:#e8f8f5,stroke:#1abc9c,stroke-width:2px,color:#000
       classDef store fill:#fff9c4,stroke:#fbc02d,stroke-width:2px,color:#000
       classDef layer fill:#f4f6f6,stroke:#607d8b,stroke-width:2px,color:#000
+      classDef async fill:#e3f2fd,stroke:#1976d2,stroke-width:2px,color:#000
+      classDef triage fill:#f1f8e9,stroke:#689f38,stroke-width:2px,color:#000
       classDef judge fill:#f5eef8,stroke:#9b59b6,stroke-width:2px,color:#000
       classDef report fill:#ebdef0,stroke:#8e44ad,stroke-width:2px,color:#000
 
@@ -82,8 +84,9 @@
         CreateCampaign["Create Campaign<br/>campaign_id"]:::dify
         Intake["Ingest Surface<br/>OpenAPI + discovery + traffic"]:::dify
         Planner["Graph Planner / Router<br/>compact state summary only"]:::dify
-        Loop["Main Executor Loop<br/>one bounded task per iteration"]:::dify
-        WorkerSelector["Worker Command Selector<br/>strict JSON command"]:::dify
+        Loop["Main Executor Loop<br/>one bounded task or ToolRun per iteration"]:::dify
+        WorkerSelector["Worker Command Selector<br/>strict JSON WorkerCommand"]:::dify
+        VerificationAgent["Verification / Rework Agent<br/>interprets signals and plans proof steps"]:::dify
         Reporter["Reporter Agent<br/>confirmed findings only"]:::report
       end
 
@@ -93,48 +96,60 @@
         DepGraph[("Dependency Graph")]:::store
         Corpus[("Request / Response Corpus")]:::store
         Queue[("Task Queue")]:::store
-        Evidence[("Evidence Store<br/>replay packs, diffs, raw artifacts")]:::store
+        ToolRuns[("ToolRun Store<br/>status, progress, artifacts")]:::store
+        Observations[("Observation Store<br/>signals, triage, candidates")]:::store
+        Evidence[("Evidence Store<br/>replay packs, diffs, raw artifact refs")]:::store
         Findings[("Confirmed Findings")]:::store
         Scheduler["Scheduler<br/>fairness, budgets, novelty"]:::backend
-        EvidenceBuilder["Evidence Normalizer<br/>build replay-ready evidence pack"]:::backend
-        QueueUpdater["Queue Updater<br/>confirmed / rejected / rework"]:::backend
+        CommandValidator["Command Validator<br/>scope, budget, allowed_tools"]:::backend
+        EvidenceBuilder["Evidence Builder<br/>build replay-ready evidence pack"]:::backend
+        JudgeApply["JudgeApply / Queue Updater<br/>confirmed / rejected / rework"]:::backend
       end
 
-      WorkerLayer["<b>Strategy Worker Layer</b><br/><br/>Access Control Worker<br/>Contract / Negative Testing Worker<br/>Stateful / Business Flow Worker<br/>Discovery / Inventory Worker<br/>Misconfiguration Worker<br/>SSRF / External Interaction Worker<br/><br/><i>Worker выбирает стратегию, но не подтверждает finding.</i>"]:::layer
+      WorkerLayer["<b>Strategy Worker Layer</b><br/><br/>Access Control Worker<br/>Contract / Negative Testing Worker<br/>Stateful / Business Flow Worker<br/>Discovery / Inventory Worker<br/>Misconfiguration Worker<br/>SSRF / External Interaction Worker<br/><br/><i>Workers interpret context, choose strategy, and emit one bounded WorkerCommand. They never confirm findings.</i>"]:::layer
 
-      ToolLayer["<b>Tool Layer / Bounded Tool Wrappers</b><br/><br/>OpenAPI Parser<br/>Custom Request Executor<br/>OWASP ZAP<br/>Schemathesis<br/>RESTler<br/>CATS<br/>Playwright<br/>mitmproxy<br/>nuclei<br/>httpx<br/>ffuf / Kiterunner<br/>Arjun<br/>jwt_tool<br/><br/><i>Инструменты выполняют команды и возвращают нормализуемые артефакты.</i>"]:::layer
+      ToolLayer["<b>Tool Layer / Bounded Tool Wrappers</b><br/><br/>OpenAPI Parser<br/>Custom Request Executor<br/>OWASP ZAP<br/>Schemathesis<br/>RESTler<br/>CATS<br/>Playwright<br/>mitmproxy<br/>nuclei<br/>httpx<br/>ffuf / Kiterunner<br/>Arjun<br/>jwt_tool<br/><br/><i>Tools execute bounded commands/jobs and produce artifacts, HTTP exchanges, and observations.</i>"]:::layer
 
-      Judge["Judge / Arbiter<br/>confirm / reject / rework"]:::judge
-      Out["Final README report"]:::input
+      AsyncLayer["<b>ToolRun Job Layer</b><br/><br/>sync: custom replay, httpx probe, header check<br/>async: RESTler, Schemathesis, CATS, ZAP active scan, nuclei, ffuf/Kiterunner, Playwright crawl<br/><br/><i>Long-running tools return tool_run_id first. Judge is not called while ToolRun is running.</i>"]:::async
 
-      User --> Normalize --> CreateCampaign --> Campaign
-      CreateCampaign --> Intake
+      TriageLayer["<b>Observation / Signal Triage</b><br/><br/>unexpected_500<br/>schema_mismatch<br/>auth_anomaly<br/>cross_role_access_signal<br/>zap_alert<br/>nuclei_match<br/>discovered_endpoint<br/>hidden_parameter<br/><br/><i>Signals are stored and triaged. Only judge-worthy candidates become EvidencePacks.</i>"]:::triage
 
-      Intake --> ToolLayer
-      ToolLayer --> ApiGraph
-      ToolLayer --> Corpus
-      ApiGraph --> DepGraph
-      Corpus --> DepGraph
-      ApiGraph --> Queue
-      DepGraph --> Queue
-      Corpus --> Queue
+      Judge["Judge / Arbiter<br/>EvidencePack only<br/>confirm / reject / rework"]:::judge
 
-      Queue --> Planner --> Loop
-      Loop --> Scheduler --> WorkerSelector
-      WorkerSelector --> WorkerLayer
-      WorkerLayer --> ToolLayer
-
-      ToolLayer --> EvidenceBuilder
-      EvidenceBuilder --> Evidence
-      Evidence --> Judge
-      Judge --> QueueUpdater
-      QueueUpdater -->|confirmed| Findings
-      QueueUpdater -->|rework| Queue
-      QueueUpdater -->|rejected| Queue
-      Findings --> Reporter --> Out
+      User --> Normalize --> CreateCampaign --> Intake --> Planner --> Loop
+      CreateCampaign --> Campaign
+      Intake --> ApiGraph
+      Intake --> Corpus
+      Intake --> DepGraph
+      Planner --> Scheduler --> Queue
+      Loop --> Scheduler
+      Scheduler --> WorkerSelector --> WorkerLayer --> CommandValidator --> ToolLayer --> AsyncLayer
+      AsyncLayer --> ToolRuns
+      AsyncLayer --> TriageLayer
+      TriageLayer --> Observations
+      TriageLayer --> Corpus
+      TriageLayer --> ApiGraph
+      TriageLayer --> DepGraph
+      TriageLayer --> VerificationAgent
+      VerificationAgent -->|needs more proof| Queue
+      TriageLayer -->|judge-worthy candidate| EvidenceBuilder
+      EvidenceBuilder --> Evidence --> Judge
+      Judge --> JudgeApply
+      JudgeApply -->|confirmed| Findings --> Reporter
+      JudgeApply -->|rework| Queue
+      JudgeApply -->|rejected / inconclusive| Observations
+      Reporter --> User
   </div>
   <div class="legend">
-    <strong>Почему схема стала компактнее:</strong> отдельные worker-ы и инструменты теперь сгруппированы в два слоя: <code>Strategy Worker Layer</code> и <code>Tool Layer</code>. Это убирает лишние пересекающиеся стрелки, но не теряет смысл архитектуры: Dify выбирает стратегию, backend хранит state/corpus/graph, инструменты выполняют ограниченные команды, а Judge единственный подтверждает уязвимости.
+    <strong>Ключевое уточнение:</strong>
+    агенты не являются просто кнопками запуска инструментов. Инструменты дают <code>signals/observations</code>,
+    агенты интерпретируют их и планируют verification/exploitation, backend выполняет bounded commands/jobs,
+    а Judge получает только <code>EvidencePack</code>, а не raw scanner output.
+    <br/><br/>
+    <strong>Для долгих инструментов:</strong>
+    RESTler, Schemathesis, CATS, ZAP active scan, nuclei, ffuf/Kiterunner и Playwright crawl запускаются как
+    <code>ToolRun jobs</code>. Сначала возвращается <code>tool_run_id</code>, затем backend собирает результат,
+    нормализует observations, обновляет corpus/graph и только после этого строит EvidencePack.
   </div>
 </div>
 </body>

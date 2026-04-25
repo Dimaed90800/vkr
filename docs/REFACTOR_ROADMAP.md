@@ -382,3 +382,103 @@ Only after tests pass:
 - remove duplicate logic gradually.
 - keep experiment endpoints if needed for diploma comparison.
 ```
+
+---
+
+## Phase 5.5 — Long-running ToolRun jobs
+
+Goal: support fuzzers and scanners as asynchronous jobs.
+
+Add:
+
+```text
+ToolRun model
+start/status/collect endpoints
+artifact storage for raw outputs
+status: accepted/queued/running/finished/failed/timeout/cancelled
+polling support for Dify/backend loop
+```
+
+Recommended endpoints:
+
+```text
+POST /v1/tools/runs/start
+GET  /v1/tools/runs/{tool_run_id}
+POST /v1/tools/runs/{tool_run_id}/collect
+```
+
+Rules:
+
+```text
+- Schemathesis/ZAP/RESTler/CATS/nuclei/ffuf/Kiterunner/Playwright crawl can return tool_run_id.
+- Judge is not called while ToolRun is running.
+- ToolResult is produced only after collect or finished synchronous execution.
+- Raw output is stored as artifact references, not passed through Dify.
+```
+
+Acceptance criteria:
+
+```text
+- A long-running tool can return accepted + tool_run_id.
+- ToolRun status can be polled.
+- Finished ToolRun can be collected into ToolResult v1.
+- Running ToolRun never triggers Judge.
+- Timeout creates structured ToolResult error.
+```
+
+## Phase 5.6 — Observation triage and verification planning
+
+Goal: separate raw tool results from judge-worthy evidence.
+
+Add:
+
+```text
+Observation model
+ObservationNormalizer
+ObservationTriage service
+VerificationPlan model
+verification task generation
+```
+
+Rules:
+
+```text
+- ordinary 400/404/422 are stored but not judged;
+- single 500 becomes observation and usually replay/minimization candidate;
+- ZAP/nuclei alerts become observations and require validation;
+- auth bypass or cross-role signals may become judge-worthy after proof;
+- missing proof creates verification tasks, not confirmed findings.
+```
+
+Acceptance criteria:
+
+```text
+- ToolResult can create Observations.
+- Observations can be marked judge_worthy=true/false.
+- Observations can create follow-up verification tasks.
+- EvidencePack is built only from judge-worthy observations or completed verification plans.
+```
+
+## Phase 5.7 — Agent verification behavior
+
+Goal: make agents verification planners, not just tool launchers.
+
+Agents should:
+
+```text
+- interpret observations;
+- create hypotheses;
+- select seed requests;
+- choose roles/object IDs/fields;
+- plan replay, role swap, ownership proof, minimization, impact check;
+- emit WorkerCommand or VerificationPlan.
+```
+
+Acceptance criteria:
+
+```text
+- BOLA rework can create prove_ownership task.
+- CORS alert can create cors_replay_validation task.
+- Schemathesis 500 can create replay_minimized_payload task.
+- Agent cannot create confirmed finding directly.
+```
