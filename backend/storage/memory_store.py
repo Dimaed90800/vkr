@@ -26,6 +26,12 @@ class MemoryStore:
         self.commands_by_campaign: dict[str, list[str]] = defaultdict(list)
         self.command_fingerprints: dict[str, set[str]] = defaultdict(set)
 
+        self.tool_runs: dict[str, dict] = {}
+        self.tool_runs_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.tool_results: dict[str, dict] = {}
+        self.artifacts: dict[str, dict] = {}
+        self.artifacts_by_run: dict[str, list[str]] = defaultdict(list)
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -92,6 +98,44 @@ class MemoryStore:
             self.commands[cid]
             for cid in self.commands_by_campaign.get(campaign_id, [])
             if cid in self.commands
+        ]
+
+    def store_tool_run(self, tool_run_id: str, campaign_id: str, data: dict) -> None:
+        self.tool_runs[tool_run_id] = data
+        self.tool_runs_by_campaign[campaign_id].append(tool_run_id)
+
+    def get_tool_run(self, tool_run_id: str) -> dict | None:
+        return self.tool_runs.get(tool_run_id)
+
+    def update_tool_run(self, tool_run_id: str, data: dict) -> None:
+        if tool_run_id in self.tool_runs:
+            self.tool_runs[tool_run_id].update(data)
+
+    def list_tool_runs_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.tool_runs[rid]
+            for rid in self.tool_runs_by_campaign.get(campaign_id, [])
+            if rid in self.tool_runs
+        ]
+
+    def store_tool_result(self, tool_run_id: str, data: dict) -> None:
+        self.tool_results[tool_run_id] = data
+
+    def get_tool_result(self, tool_run_id: str) -> dict | None:
+        return self.tool_results.get(tool_run_id)
+
+    def store_artifact(self, artifact_id: str, tool_run_id: str, data: dict) -> None:
+        self.artifacts[artifact_id] = data
+        self.artifacts_by_run[tool_run_id].append(artifact_id)
+
+    def get_artifact(self, artifact_id: str) -> dict | None:
+        return self.artifacts.get(artifact_id)
+
+    def list_artifacts_by_run(self, tool_run_id: str) -> list[dict]:
+        return [
+            self.artifacts[aid]
+            for aid in self.artifacts_by_run.get(tool_run_id, [])
+            if aid in self.artifacts
         ]
 
     def store_evidence(self, session_id: str, evidence) -> str:

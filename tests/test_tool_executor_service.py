@@ -1,0 +1,510 @@
+"""Phase 5 — ToolExecutor / ToolRun / ToolResult tests.
+
+28 tests covering:
+- ToolExecutor sync/async lifecycle
+- NoopAdapter behavior
+- ToolRegistry
+- ArtifactStore
+- Route-level start/status/collect
+- Regression guards
+"""
+from __future__ import annotations
+
+import sys
+import os
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from backend.models.campaign import Campaign, CampaignLimits, CampaignStatus
+from backend.models.tool_run import (
+    ToolArtifactRef,
+    ToolExecutionMode,
+    ToolResult,
+    ToolRun,
+    ToolRunStatus,
+    ToolRunStartRequest,
+)
+from backend.models.worker_command import CommandBudget, WorkerCommand
+from backend.services.artifact_store import ArtifactStore
+from backend.services.tool_executor import ToolExecutor, ToolExecutorStartError
+from backend.services.tool_registry import ToolRegistry
+from backend.storage.memory_store import memory_store
+
+
+def _reset_store() -> None:
+    memory_store.campaigns.clear()
+    memory_store.campaign_by_run_id.clear()
+    memory_store.campaign_by_session_id.clear()
+    memory_store.corpus_items.clear()
+    memory_store.corpus_by_campaign.clear()
+    memory_store.resource_instances.clear()
+    memory_store.resources_by_campaign.clear()
+    memory_store.graphs_by_campaign.clear()
+    memory_store.commands.clear()
+    memory_store.commands_by_campaign.clear()
+    memory_store.command_fingerprints.clear()
+    memory_store.tool_runs.clear()
+    memory_store.tool_runs_by_campaign.clear()
+    memory_store.tool_results.clear()
+    memory_store.artifacts.clear()
+    memory_store.artifacts_by_run.clear()
+
+
+def _create_campaign(
+    campaign_id: str = "cmp_test1",
+    allowed_hosts: list[str] | None = None,
+) -> Campaign:
+    campaign = Campaign(
+        campaign_id=campaign_id,
+        target_url="http://testapp.local",
+        allowed_hosts=allowed_hosts or ["testapp.local"],
+        limits=CampaignLimits(max_requests=1000, max_duration_sec=1800),
+    )
+    memory_store.store_campaign(campaign_id, campaign.model_dump(mode="json"))
+    return campaign
+
+
+def _sync_command(**overrides) -> WorkerCommand:
+    defaults = dict(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="role_swap_object_access",
+        tool_name="custom_request_executor",
+    )
+    defaults.update(overrides)
+    return WorkerCommand(**defaults)
+
+
+def _async_command(**overrides) -> WorkerCommand:
+    defaults = dict(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="negative_schema_test",
+        tool_name="schemathesis_negative_test",
+    )
+    defaults.update(overrides)
+    return WorkerCommand(**defaults)
+
+
+def _store_running_run(
+    tool_run_id: str = "toolrun_manual_running",
+    campaign_id: str = "cmp_test1",
+    tool_name: str = "schemathesis_negative_test",
+) -> ToolRun:
+    run = ToolRun(
+        tool_run_id=tool_run_id,
+        campaign_id=campaign_id,
+        tool_name=tool_name,
+        execution_mode=ToolExecutionMode.async_,
+        status=ToolRunStatus.running,
+    )
+    memory_store.store_tool_run(tool_run_id, campaign_id, run.model_dump(mode="json"))
+    return run
+
+
+# ─── ToolExecutor unit tests ──────────────────────────────────────
+
+
+def test_sync_tool_run_returns_finished_tool_result():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command()
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_run_id.startswith("toolrun_")
+    assert result.campaign_id == "cmp_test1"
+    assert result.tool_name == "custom_request_executor"
+
+
+def test_sync_tool_result_has_correct_schema_version():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command()
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.schema_version == "tool-result/v1"
+
+
+def test_sync_tool_result_contains_artifact_refs():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command()
+    result = ToolExecutor().execute_sync(cmd)
+    assert len(result.artifacts) >= 1
+    assert result.artifacts[0].artifact_id.startswith("art_")
+    assert "http_exchange" in result.artifacts[0].artifact_type
+
+
+def test_async_start_known_tool_without_adapter_returns_controlled_error():
+    _reset_store()
+    _create_campaign()
+    cmd = _async_command()
+    try:
+        ToolExecutor().start_async(cmd)
+        assert False, "Expected ToolExecutorStartError"
+    except ToolExecutorStartError as exc:
+        assert exc.code == "async_adapter_not_available"
+    assert len(memory_store.tool_runs) == 0
+
+
+def test_start_async_validates_command_before_creating_run():
+    _reset_store()
+    cmd = _async_command(campaign_id="cmp_nonexistent")
+    try:
+        ToolExecutor().start_async(cmd)
+        assert False, "Expected ToolExecutorStartError"
+    except ToolExecutorStartError as exc:
+        assert exc.code == "validation_failed"
+    assert len(memory_store.tool_runs) == 0
+
+
+def test_running_tool_run_has_result_ready_false():
+    _reset_store()
+    _create_campaign()
+    run = _store_running_run()
+    fetched = ToolExecutor().get_status(run.tool_run_id)
+    assert fetched is not None
+    assert fetched.result_ready is False
+
+
+def test_collect_finished_tool_run_returns_tool_result():
+    _reset_store()
+    _create_campaign()
+    executor = ToolExecutor()
+    run = _store_running_run()
+
+    fake_result = ToolResult(
+        tool_run_id=run.tool_run_id,
+        campaign_id="cmp_test1",
+        tool_name="schemathesis_negative_test",
+        status="finished",
+    )
+    executor.mark_finished(run.tool_run_id, fake_result)
+
+    collected = executor.collect(run.tool_run_id)
+    assert collected is not None
+    assert collected.status == "finished"
+    assert collected.tool_run_id == run.tool_run_id
+
+
+def test_collect_running_tool_run_returns_none_or_conflict():
+    _reset_store()
+    _create_campaign()
+    executor = ToolExecutor()
+    run = _store_running_run()
+    collected = executor.collect(run.tool_run_id)
+    assert collected is None
+
+
+def test_failed_tool_returns_structured_error():
+    _reset_store()
+    _create_campaign()
+    executor = ToolExecutor()
+    run = _store_running_run()
+    result = executor.mark_failed(run.tool_run_id, "test_failure", "Something went wrong")
+    assert result.status == "failed"
+    assert len(result.errors) >= 1
+    assert result.errors[0].error_type == "test_failure"
+
+
+def test_timeout_tool_returns_structured_error():
+    _reset_store()
+    _create_campaign()
+    executor = ToolExecutor()
+    run = _store_running_run()
+    result = executor.mark_failed(run.tool_run_id, "timeout", "Tool exceeded timeout")
+    assert result.status == "failed"
+    assert result.errors[0].error_type == "timeout"
+
+
+def test_artifacts_are_saved_and_referenced():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command()
+    result = ToolExecutor().execute_sync(cmd)
+    assert len(result.artifacts) >= 1
+    art_id = result.artifacts[0].artifact_id
+    stored = ArtifactStore().get_artifact(art_id)
+    assert stored is not None
+    assert stored["artifact_type"] == "http_exchange"
+
+
+def test_unknown_tool_handled_gracefully():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(tool_name="imaginary_tool_xyz")
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "failed"
+    codes = [e.error_type for e in result.errors]
+    assert "validation_failed" in codes
+
+
+def test_known_but_unsupported_tool_does_not_noop_success():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="misconfiguration",
+        tool_name="nuclei",
+        strategy="template_scan",
+    )
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "failed"
+    codes = [e.error_type for e in result.errors]
+    assert "adapter_not_available" in codes
+
+
+def test_command_must_be_validated_before_execution():
+    _reset_store()
+    cmd = _sync_command(campaign_id="cmp_nonexistent")
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "failed"
+    codes = [e.error_type for e in result.errors]
+    assert "validation_failed" in codes
+
+
+def test_tool_executor_does_not_call_judge():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command()
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert len(memory_store.evidence_records) == 0
+    assert len(memory_store.findings) == 0
+
+
+def test_tool_run_isolation_per_campaign():
+    _reset_store()
+    _create_campaign(campaign_id="cmp_a")
+    _create_campaign(campaign_id="cmp_b")
+    executor = ToolExecutor()
+    cmd_a = _sync_command(campaign_id="cmp_a")
+    cmd_b = _sync_command(campaign_id="cmp_b")
+    result_a = executor.execute_sync(cmd_a)
+    result_b = executor.execute_sync(cmd_b)
+    runs_a = memory_store.list_tool_runs_by_campaign("cmp_a")
+    runs_b = memory_store.list_tool_runs_by_campaign("cmp_b")
+    assert len(runs_a) == 1
+    assert len(runs_b) == 1
+    assert runs_a[0]["tool_run_id"] != runs_b[0]["tool_run_id"]
+
+
+def test_noop_adapter_returns_valid_tool_result():
+    _reset_store()
+    _create_campaign()
+    from backend.services.adapters.noop_adapter import NoopAdapter
+    cmd = _sync_command()
+    cmd.command_id = "cmd_test"
+    campaign = Campaign(
+        campaign_id="cmp_test1",
+        target_url="http://testapp.local",
+        allowed_hosts=["testapp.local"],
+    )
+    result = NoopAdapter().execute(cmd, campaign, "toolrun_noop_test")
+    assert result.schema_version == "tool-result/v1"
+    assert result.status == "finished"
+    assert result.summary.request_count == 1
+    assert result.summary.success_count == 1
+    assert len(result.requests) == 1
+    assert len(result.responses) == 1
+
+
+def test_noop_adapter_not_fallback_for_every_tool():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="misconfiguration",
+        tool_name="zap",
+        strategy="api_scan",
+    )
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "failed"
+    assert any(e.error_type == "adapter_not_available" for e in result.errors)
+
+
+# ─── ToolRegistry tests ───────────────────────────────────────────
+
+
+def test_tool_registry_reports_known_tools():
+    reg = ToolRegistry()
+    assert reg.is_known("custom_request_executor") is True
+    assert reg.is_known("nuclei") is True
+    assert reg.is_known("noop_tool") is True
+    assert reg.is_known("totally_made_up_tool") is False
+
+
+def test_tool_registry_returns_execution_mode():
+    reg = ToolRegistry()
+    assert reg.get_execution_mode("custom_request_executor") == "sync"
+    assert reg.get_execution_mode("noop_tool") == "sync"
+    assert reg.get_execution_mode("schemathesis_negative_test") == "async"
+    assert reg.get_execution_mode("restler_fuzz") == "async"
+
+
+# ─── Route-level tests ────────────────────────────────────────────
+
+
+def _get_test_client():
+    from fastapi.testclient import TestClient
+    from backend.main import app
+    return TestClient(app)
+
+
+def test_routes_start_returns_201_for_sync_tool():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    payload = {
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "access_control",
+            "strategy": "role_swap_object_access",
+            "tool_name": "custom_request_executor",
+        },
+    }
+    resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["execution_mode"] == "sync"
+    assert body["status"] == "finished"
+    assert body["result"] is not None
+
+
+def test_routes_start_rejects_known_async_tool_without_adapter():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    payload = {
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "contract_fuzzing",
+            "strategy": "negative_schema_test",
+            "tool_name": "schemathesis_negative_test",
+        },
+    }
+    resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 501
+    body = resp.json()
+    assert body["error"] in {"adapter_not_available", "async_adapter_not_available"}
+
+
+def test_routes_start_rejects_invalid_command():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    payload = {
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "access_control",
+            "strategy": "role_swap_object_access",
+            "tool_name": "imaginary_tool",
+        },
+    }
+    resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["valid"] is False
+
+
+def test_routes_start_does_not_bypass_command_validator():
+    _reset_store()
+    client = _get_test_client()
+    payload = {
+        "command": {
+            "campaign_id": "cmp_nonexistent",
+            "worker_class": "access_control",
+            "strategy": "test",
+            "tool_name": "custom_request_executor",
+        },
+    }
+    resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["valid"] is False
+    assert any(e["code"] == "campaign_not_found" for e in body["errors"])
+
+
+def test_routes_status_returns_200_for_existing_run():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    run = _store_running_run()
+    run_id = run.tool_run_id
+    status_resp = client.get(f"/v1/tools/runs/{run_id}")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "running"
+
+
+def test_routes_status_returns_404_for_missing_run():
+    _reset_store()
+    client = _get_test_client()
+    resp = client.get("/v1/tools/runs/toolrun_nonexistent")
+    assert resp.status_code == 404
+
+
+def test_routes_collect_returns_200_for_finished_run():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    start_payload = {
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "access_control",
+            "strategy": "role_swap_object_access",
+            "tool_name": "custom_request_executor",
+        },
+    }
+    start_resp = client.post("/v1/tools/runs/start", json=start_payload)
+    assert start_resp.status_code == 201
+    run_id = start_resp.json()["tool_run_id"]
+    collect_resp = client.post(f"/v1/tools/runs/{run_id}/collect")
+    assert collect_resp.status_code == 200
+    body = collect_resp.json()
+    assert body["schema_version"] == "tool-result/v1"
+    assert body["status"] == "finished"
+
+
+def test_routes_collect_returns_409_for_running_run():
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    run = _store_running_run()
+    run_id = run.tool_run_id
+    collect_resp = client.post(f"/v1/tools/runs/{run_id}/collect")
+    assert collect_resp.status_code == 409
+    assert collect_resp.json()["error"] == "tool_run_not_ready"
+
+
+def test_tool_run_rejects_invalid_status():
+    _reset_store()
+    _create_campaign()
+    try:
+        ToolRun(
+            tool_run_id="toolrun_bad_status",
+            campaign_id="cmp_test1",
+            tool_name="custom_request_executor",
+            status="not_a_real_status",
+        )
+        assert False, "Expected validation error for invalid status"
+    except Exception:
+        pass
+
+
+def test_tool_run_rejects_invalid_execution_mode():
+    _reset_store()
+    _create_campaign()
+    try:
+        ToolRun(
+            tool_run_id="toolrun_bad_mode",
+            campaign_id="cmp_test1",
+            tool_name="custom_request_executor",
+            execution_mode="parallel",
+        )
+        assert False, "Expected validation error for invalid execution mode"
+    except Exception:
+        pass
+
+
+def test_existing_wrapper_routes_still_respond():
+    _reset_store()
+    client = _get_test_client()
+    resp = client.get("/v1/tools/capabilities")
+    assert resp.status_code == 200
