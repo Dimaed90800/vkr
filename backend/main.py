@@ -6,6 +6,7 @@ try:
     from backend.api.routes_graph import router as graph_router
     from backend.api.routes_workers import workers_router
     from backend.api.routes_tool_runs import tool_runs_router
+    from backend.api.routes_observations import observations_router, verification_plans_router
     from backend.api.routes_discovery import router as discovery_router
     from backend.api.routes_planning import router as planning_router
     from backend.api.routes_recon import router as recon_router
@@ -24,6 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from api.routes_graph import router as graph_router
     from api.routes_workers import workers_router
     from api.routes_tool_runs import tool_runs_router
+    from api.routes_observations import observations_router, verification_plans_router
     from api.routes_discovery import router as discovery_router
     from api.routes_planning import router as planning_router
     from api.routes_recon import router as recon_router
@@ -58,6 +60,8 @@ app.include_router(tool_wrappers_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
 app.include_router(workers_router)
 app.include_router(tool_runs_router)
+app.include_router(observations_router)
+app.include_router(verification_plans_router)
 
 
 @app.get("/", response_model=HealthResponse)

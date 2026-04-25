@@ -32,6 +32,12 @@ class MemoryStore:
         self.artifacts: dict[str, dict] = {}
         self.artifacts_by_run: dict[str, list[str]] = defaultdict(list)
 
+        self.observations: dict[str, dict] = {}
+        self.observations_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.observations_by_tool_run: dict[str, list[str]] = defaultdict(list)
+        self.verification_plans: dict[str, dict] = {}
+        self.verification_plans_by_campaign: dict[str, list[str]] = defaultdict(list)
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -136,6 +142,51 @@ class MemoryStore:
             self.artifacts[aid]
             for aid in self.artifacts_by_run.get(tool_run_id, [])
             if aid in self.artifacts
+        ]
+
+    def store_observation(
+        self, observation_id: str, campaign_id: str, tool_run_id: str, data: dict,
+    ) -> None:
+        self.observations[observation_id] = data
+        self.observations_by_campaign[campaign_id].append(observation_id)
+        if tool_run_id:
+            self.observations_by_tool_run[tool_run_id].append(observation_id)
+
+    def get_observation(self, observation_id: str) -> dict | None:
+        return self.observations.get(observation_id)
+
+    def update_observation(self, observation_id: str, data: dict) -> None:
+        if observation_id in self.observations:
+            self.observations[observation_id].update(data)
+
+    def list_observations_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.observations[oid]
+            for oid in self.observations_by_campaign.get(campaign_id, [])
+            if oid in self.observations
+        ]
+
+    def list_observations_by_tool_run(self, tool_run_id: str) -> list[dict]:
+        return [
+            self.observations[oid]
+            for oid in self.observations_by_tool_run.get(tool_run_id, [])
+            if oid in self.observations
+        ]
+
+    def store_verification_plan(
+        self, plan_id: str, campaign_id: str, data: dict,
+    ) -> None:
+        self.verification_plans[plan_id] = data
+        self.verification_plans_by_campaign[campaign_id].append(plan_id)
+
+    def get_verification_plan(self, plan_id: str) -> dict | None:
+        return self.verification_plans.get(plan_id)
+
+    def list_verification_plans_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.verification_plans[pid]
+            for pid in self.verification_plans_by_campaign.get(campaign_id, [])
+            if pid in self.verification_plans
         ]
 
     def store_evidence(self, session_id: str, evidence) -> str:

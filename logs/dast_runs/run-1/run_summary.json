@@ -1,29 +1,29 @@
 {
   "run_id": "run-1",
   "event_counts": {
-    "queue_enrichment_applied": 14,
-    "task_executability_evaluated": 14,
-    "executability_resolved": 14,
-    "scheduler_selection": 7
+    "queue_enrichment_applied": 16,
+    "task_executability_evaluated": 16,
+    "executability_resolved": 16,
+    "scheduler_selection": 8
   },
   "component_counts": {
-    "queue_update": 14,
-    "scheduler": 35
+    "queue_update": 16,
+    "scheduler": 40
   },
   "status_counts": {
-    "success": 14,
-    "ok": 28,
-    "selected": 7
+    "success": 16,
+    "ok": 32,
+    "selected": 8
   },
   "top_dead_end_reasons": {},
   "top_failing_preparation_reasons": {},
   "tasks_by_class": {
-    "authorization": 28,
-    "business_logic": 14
+    "authorization": 32,
+    "business_logic": 16
   },
   "tasks_by_readiness": {
-    "ready_to_test": 14,
-    "needs_preparation": 14
+    "ready_to_test": 16,
+    "needs_preparation": 16
   },
   "blocked_by_reason": {},
   "executable_test_task_count": 1,
@@ -35,7 +35,7 @@
   "_baseline_validation_failures": 0,
   "last_event_type": "queue_enrichment_applied",
   "last_status": "success",
-  "last_updated_at": "2026-04-25T22:52:13.959730+00:00",
+  "last_updated_at": "2026-04-25T23:14:00.978716+00:00",
   "object_materialization_success_rate": 0.0,
   "baseline_validation_failure_rate": 0.0,
   "pending_count": 2,
