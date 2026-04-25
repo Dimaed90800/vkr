@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 
 try:
+    from backend.api.routes_campaigns import router as campaigns_router
     from backend.api.routes_discovery import router as discovery_router
     from backend.api.routes_planning import router as planning_router
     from backend.api.routes_recon import router as recon_router
@@ -14,6 +15,7 @@ try:
     from backend.storage.memory_store import memory_store
     from backend.services.tool_wrappers import ToolWrapperService
 except ModuleNotFoundError:  # pragma: no cover
+    from api.routes_campaigns import router as campaigns_router
     from api.routes_discovery import router as discovery_router
     from api.routes_planning import router as planning_router
     from api.routes_recon import router as recon_router
@@ -34,6 +36,7 @@ app = FastAPI(
     description="Minimal FastAPI toolbox backend for Dify multi-agent REST API DAST workflows.",
 )
 
+app.include_router(campaigns_router, prefix="/v1")
 app.include_router(recon_router, prefix="/v1")
 app.include_router(discovery_router, prefix="/v1")
 app.include_router(traffic_discovery_router, prefix="/v1")
