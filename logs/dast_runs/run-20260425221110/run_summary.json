@@ -1,0 +1,44 @@
+{
+  "run_id": "run-20260425221110",
+  "event_counts": {
+    "legacy_tool_dispatch_start": 1,
+    "dispatch_task_received": 1,
+    "dispatch_task_classified": 1,
+    "dispatch_worker_path_selected": 1,
+    "worker_request_prepared": 1,
+    "worker_execution_completed": 1,
+    "evidence_built": 1
+  },
+  "component_counts": {
+    "wrapper": 1,
+    "dispatch": 3,
+    "worker": 2,
+    "judge": 1
+  },
+  "status_counts": {
+    "started": 1,
+    "ok": 4,
+    "success": 2
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {},
+  "tasks_by_class": {
+    "authorization": 6
+  },
+  "tasks_by_readiness": {
+    "ready_to_test": 3
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "evidence_built",
+  "last_status": "success",
+  "last_updated_at": "2026-04-25T22:11:10.995992+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}

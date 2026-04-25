@@ -1,0 +1,56 @@
+{
+  "run_id": "run-20260425221118",
+  "event_counts": {
+    "object_materialization_attempted": 6,
+    "list_candidate_selected": 5,
+    "object_materialization_failed": 2,
+    "object_materialization_finish": 2,
+    "object_task_blocked_due_to_placeholder_id": 2,
+    "legacy_tool_dispatch_start": 1,
+    "dispatch_task_received": 1,
+    "dispatch_task_classified": 1,
+    "dispatch_worker_path_selected": 1,
+    "object_materialization_start": 1,
+    "prep_baseline_synthesized": 1,
+    "object_materialization_creator_selected": 1,
+    "creator_candidate_selected": 1
+  },
+  "component_counts": {
+    "preparation": 19,
+    "worker": 2,
+    "wrapper": 1,
+    "dispatch": 3
+  },
+  "status_counts": {
+    "partial": 4,
+    "ok": 14,
+    "failed": 4,
+    "blocked": 2,
+    "started": 1
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {
+    "unexpected_status_code": 4,
+    "create_failed": 4,
+    "placeholder_object_id": 2
+  },
+  "tasks_by_class": {
+    "authorization": 24
+  },
+  "tasks_by_readiness": {
+    "ready_to_test": 3
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 7,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "object_task_blocked_due_to_placeholder_id",
+  "last_status": "blocked",
+  "last_updated_at": "2026-04-25T22:11:18.695053+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}

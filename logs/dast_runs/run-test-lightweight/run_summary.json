@@ -1,33 +1,33 @@
 {
   "run_id": "run-test-lightweight",
   "event_counts": {
-    "judge_input_source_selected": 1,
-    "judge_input_built": 1,
-    "judge_input_wrapper_fields_not_applicable": 1,
-    "followup_task_generated": 1,
-    "judge_verdict_finalized": 1,
-    "queue_update_processed": 1
+    "judge_input_source_selected": 2,
+    "judge_input_built": 2,
+    "judge_input_wrapper_fields_not_applicable": 2,
+    "followup_task_generated": 2,
+    "judge_verdict_finalized": 2,
+    "queue_update_processed": 2
   },
   "component_counts": {
-    "judge_handoff": 3,
-    "followup": 1,
-    "judge": 1,
-    "queue_update": 1
+    "judge_handoff": 6,
+    "followup": 2,
+    "judge": 2,
+    "queue_update": 2
   },
   "status_counts": {
-    "ok": 4,
-    "generated": 1,
-    "success": 1
+    "ok": 8,
+    "generated": 2,
+    "success": 2
   },
   "top_dead_end_reasons": {},
   "top_failing_preparation_reasons": {
-    "object_id_missing": 1
+    "object_id_missing": 2
   },
   "tasks_by_class": {
-    "authorization": 6
+    "authorization": 12
   },
   "tasks_by_readiness": {
-    "ready_to_test": 1
+    "ready_to_test": 2
   },
   "blocked_by_reason": {},
   "executable_test_task_count": 0,
@@ -39,7 +39,7 @@
   "_baseline_validation_failures": 0,
   "last_event_type": "queue_update_processed",
   "last_status": "ok",
-  "last_updated_at": "2026-04-25T21:21:00.306163+00:00",
+  "last_updated_at": "2026-04-25T22:11:23.812412+00:00",
   "object_materialization_success_rate": 0.0,
   "baseline_validation_failure_rate": 0.0
 }

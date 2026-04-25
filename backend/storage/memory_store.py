@@ -20,6 +20,8 @@ class MemoryStore:
         self.resource_instances: dict[str, dict] = {}
         self.resources_by_campaign: dict[str, list[str]] = defaultdict(list)
 
+        self.graphs_by_campaign: dict[str, dict] = {}
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -64,6 +66,15 @@ class MemoryStore:
             for rid in self.resources_by_campaign.get(campaign_id, [])
             if rid in self.resource_instances
         ]
+
+    def store_graph_for_campaign(self, campaign_id: str, data: dict) -> None:
+        self.graphs_by_campaign[campaign_id] = data
+
+    def get_graph_for_campaign(self, campaign_id: str) -> dict | None:
+        return self.graphs_by_campaign.get(campaign_id)
+
+    def replace_graph_for_campaign(self, campaign_id: str, data: dict) -> None:
+        self.graphs_by_campaign[campaign_id] = data
 
     def store_evidence(self, session_id: str, evidence) -> str:
         evidence_id = f"evidence-{uuid4().hex[:12]}"

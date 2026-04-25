@@ -3,6 +3,7 @@ from fastapi import FastAPI
 try:
     from backend.api.routes_campaigns import router as campaigns_router
     from backend.api.routes_corpus import router as corpus_router
+    from backend.api.routes_graph import router as graph_router
     from backend.api.routes_discovery import router as discovery_router
     from backend.api.routes_planning import router as planning_router
     from backend.api.routes_recon import router as recon_router
@@ -18,6 +19,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover
     from api.routes_campaigns import router as campaigns_router
     from api.routes_corpus import router as corpus_router
+    from api.routes_graph import router as graph_router
     from api.routes_discovery import router as discovery_router
     from api.routes_planning import router as planning_router
     from api.routes_recon import router as recon_router
@@ -40,6 +42,7 @@ app = FastAPI(
 
 app.include_router(campaigns_router, prefix="/v1")
 app.include_router(corpus_router, prefix="/v1")
+app.include_router(graph_router, prefix="/v1")
 app.include_router(recon_router, prefix="/v1")
 app.include_router(discovery_router, prefix="/v1")
 app.include_router(traffic_discovery_router, prefix="/v1")

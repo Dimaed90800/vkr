@@ -80,6 +80,8 @@ class CampaignService:
             memory_store.findings_by_session.get(campaign_id, [])
         )
         remaining_requests = max(campaign.limits.max_requests - used_requests, 0)
+        graph_blob = memory_store.get_graph_for_campaign(campaign_id) or {}
+        operations_count = int(graph_blob.get("operations_count") or 0)
 
         return CampaignSummary(
             campaign_id=campaign.campaign_id,
@@ -95,7 +97,7 @@ class CampaignService:
                 max_duration_sec=campaign.limits.max_duration_sec,
             ),
             counts=CampaignCounts(
-                operations=0,
+                operations=operations_count,
                 corpus_items=len(
                     memory_store.corpus_by_campaign.get(campaign_id, [])
                 ),

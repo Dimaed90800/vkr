@@ -1,0 +1,47 @@
+{
+  "run_id": "run-20260425221116",
+  "event_counts": {
+    "legacy_tool_dispatch_start": 2,
+    "dispatch_task_received": 2,
+    "dispatch_task_classified": 2,
+    "dispatch_worker_path_selected": 1,
+    "authenticated_context_missing": 1,
+    "dispatch_preparation_path_selected": 1,
+    "preparation_dispatch_attempted": 1,
+    "preparation_dispatch_completed": 1
+  },
+  "component_counts": {
+    "wrapper": 2,
+    "dispatch": 6,
+    "worker": 3
+  },
+  "status_counts": {
+    "started": 2,
+    "ok": 8,
+    "blocked": 1
+  },
+  "top_dead_end_reasons": {},
+  "top_failing_preparation_reasons": {
+    "missing_auth_context": 1
+  },
+  "tasks_by_class": {
+    "business_logic": 9
+  },
+  "tasks_by_readiness": {
+    "ready_to_test": 3,
+    "needs_preparation": 3
+  },
+  "blocked_by_reason": {},
+  "executable_test_task_count": 0,
+  "executable_preparation_task_count": 0,
+  "top_non_executable_tasks": [],
+  "_materialization_attempts": 0,
+  "_materialization_successes": 0,
+  "_baseline_validation_total": 0,
+  "_baseline_validation_failures": 0,
+  "last_event_type": "preparation_dispatch_completed",
+  "last_status": "ok",
+  "last_updated_at": "2026-04-25T22:11:16.945482+00:00",
+  "object_materialization_success_rate": 0.0,
+  "baseline_validation_failure_rate": 0.0
+}
