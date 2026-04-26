@@ -38,6 +38,13 @@ class MemoryStore:
         self.verification_plans: dict[str, dict] = {}
         self.verification_plans_by_campaign: dict[str, list[str]] = defaultdict(list)
 
+        # Phase 6 — backend-owned EvidencePack store. Additive only; legacy
+        # evidence_records / findings / *_by_session structures stay untouched.
+        self.evidence_packs: dict[str, dict] = {}
+        self.evidence_packs_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.evidence_packs_by_observation: dict[str, list[str]] = defaultdict(list)
+        self.evidence_packs_by_verification_plan: dict[str, list[str]] = defaultdict(list)
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -187,6 +194,46 @@ class MemoryStore:
             self.verification_plans[pid]
             for pid in self.verification_plans_by_campaign.get(campaign_id, [])
             if pid in self.verification_plans
+        ]
+
+    def store_evidence_pack(
+        self,
+        evidence_id: str,
+        campaign_id: str,
+        observation_id: str,
+        verification_plan_id: str,
+        data: dict,
+    ) -> None:
+        self.evidence_packs[evidence_id] = data
+        if evidence_id not in self.evidence_packs_by_campaign[campaign_id]:
+            self.evidence_packs_by_campaign[campaign_id].append(evidence_id)
+        if observation_id and evidence_id not in self.evidence_packs_by_observation[observation_id]:
+            self.evidence_packs_by_observation[observation_id].append(evidence_id)
+        if verification_plan_id and evidence_id not in self.evidence_packs_by_verification_plan[verification_plan_id]:
+            self.evidence_packs_by_verification_plan[verification_plan_id].append(evidence_id)
+
+    def get_evidence_pack(self, evidence_id: str) -> dict | None:
+        return self.evidence_packs.get(evidence_id)
+
+    def list_evidence_packs_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.evidence_packs[eid]
+            for eid in self.evidence_packs_by_campaign.get(campaign_id, [])
+            if eid in self.evidence_packs
+        ]
+
+    def list_evidence_packs_by_observation(self, observation_id: str) -> list[dict]:
+        return [
+            self.evidence_packs[eid]
+            for eid in self.evidence_packs_by_observation.get(observation_id, [])
+            if eid in self.evidence_packs
+        ]
+
+    def list_evidence_packs_by_verification_plan(self, plan_id: str) -> list[dict]:
+        return [
+            self.evidence_packs[eid]
+            for eid in self.evidence_packs_by_verification_plan.get(plan_id, [])
+            if eid in self.evidence_packs
         ]
 
     def store_evidence(self, session_id: str, evidence) -> str:
