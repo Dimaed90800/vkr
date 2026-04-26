@@ -25,6 +25,7 @@ class PlannerCandidateStatus(str, Enum):
 class PlannerCandidateKind(str, Enum):
     zap_discovery_passive = "zap_discovery_passive"
     bola_replay_probe = "bola_replay_probe"
+    security_header_validator = "security_header_validator"
 
 
 class BolaObjectPairHint(BaseModel):
@@ -85,4 +86,3 @@ class PlannerResponse(BaseModel):
     skipped_existing_count: int = 0
     candidates: list[PlannerCandidate] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
-

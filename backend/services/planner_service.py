@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 from typing import Any
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 try:
     from backend.models.campaign import Campaign
@@ -20,6 +21,7 @@ try:
     from backend.models.worker_command import CommandBudget, WorkerCommand
     from backend.services.api_graph_service import ApiGraphService
     from backend.services.command_validator import CommandValidator
+    from backend.services.http.safe_http_client import sanitize_url_for_storage
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.campaign import Campaign
@@ -36,6 +38,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from models.worker_command import CommandBudget, WorkerCommand
     from services.api_graph_service import ApiGraphService
     from services.command_validator import CommandValidator
+    from services.http.safe_http_client import sanitize_url_for_storage
     from storage.memory_store import memory_store
 
 
@@ -73,6 +76,7 @@ class PlannerService:
 
         if request.bola.enabled:
             candidates.extend(self._bola_candidates(campaign, request, graph_summary.model_dump(mode="json")))
+        candidates.extend(self._security_header_candidates(campaign, graph_summary.model_dump(mode="json")))
 
         if not request.include_blocked:
             candidates = [
@@ -274,6 +278,169 @@ class PlannerService:
             summary=summary,
         )
 
+    def _security_header_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+    ) -> list[PlannerCandidate]:
+        candidates: list[PlannerCandidate] = []
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            if self._raw_observation_type(raw) != ObservationType.zap_alert.value:
+                continue
+            candidates.append(self._security_header_candidate(campaign, raw, graph_summary))
+        return candidates
+
+    def _security_header_candidate(
+        self,
+        campaign: Campaign,
+        raw_observation: dict[str, Any],
+        graph_summary: dict[str, Any],
+    ) -> PlannerCandidate:
+        observation_id = str(
+            raw_observation.get("observation_id")
+            or raw_observation.get("id")
+            or ""
+        ).strip()
+        details = raw_observation.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        alert_name = str(details.get("alert_name") or "").strip()
+        header_name = self._map_security_header_name(alert_name)
+        direct_url = ""
+        for key in ("request_url", "target_url", "url"):
+            value = str(details.get(key) or "").strip()
+            if value:
+                direct_url = value
+                break
+        path_value = str(details.get("path") or "").strip()
+        executable_url = self._extract_observation_request_url(campaign, details)
+        canonical_source = direct_url or path_value or executable_url
+        canonical_url = self._canonical_url_or_path(canonical_source) if canonical_source else ""
+        raw_operation_id = str(
+            details.get("operation_id")
+            or raw_observation.get("operation_id")
+            or ""
+        ).strip()
+        operation_id = raw_operation_id if int(graph_summary.get("operations_total") or 0) > 0 else ""
+        path_template = str(details.get("path_template") or details.get("path") or "").strip()
+        summary = {
+            "source_observation_id": observation_id,
+            "alert_name": alert_name,
+            "header_name": header_name,
+            "canonical_url": canonical_url,
+            "path_template": path_template,
+            "operation_id": operation_id,
+            "observation_operation_id": raw_operation_id,
+            "graph_summary": graph_summary,
+        }
+        dedup_key = self._security_header_dedup_key(
+            campaign.campaign_id,
+            observation_id,
+            header_name,
+            canonical_url,
+        )
+
+        if not header_name:
+            return self._candidate(
+                kind=PlannerCandidateKind.security_header_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=40.0,
+                reason="ZAP alert does not map to a supported security-header validator rule.",
+                missing_inputs=["supported_security_header_mapping"],
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        if not executable_url:
+            return self._candidate(
+                kind=PlannerCandidateKind.security_header_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=40.0,
+                reason="ZAP alert is missing a usable request_url/target_url/url/path for validation replay.",
+                missing_inputs=["request_url"],
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        if self._existing_validated_security_header_observation(
+            campaign.campaign_id,
+            observation_id,
+            header_name,
+            canonical_url,
+            campaign.target_url,
+        ):
+            return self._candidate(
+                kind=PlannerCandidateKind.security_header_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=40.0,
+                reason="Matching validated_security_header_issue observation already exists.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        if self._existing_validated_security_header_tool_result(
+            campaign.campaign_id,
+            observation_id,
+            header_name,
+            canonical_url,
+            campaign.target_url,
+        ):
+            return self._candidate(
+                kind=PlannerCandidateKind.security_header_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=40.0,
+                reason="Matching validated_security_header_issue ToolResult observation already exists.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        existing_run = self._existing_security_header_run(
+            campaign.campaign_id,
+            dedup_key,
+            campaign.target_url,
+        )
+        if existing_run is not None:
+            return self._candidate(
+                kind=PlannerCandidateKind.security_header_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=40.0,
+                reason="Existing active/finished security_header_validator ToolRun found.",
+                dedup_key=dedup_key,
+                summary={**summary, "existing_tool_run_id": existing_run.get("tool_run_id", "")},
+            )
+
+        suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_security_header_validator_{suffix}",
+            worker_class="misconfiguration",
+            strategy="validate_security_header",
+            tool_name="security_header_validator",
+            operation_id=operation_id,
+            seed_request_id="",
+            inputs={
+                "request_url": executable_url,
+                "target_url": executable_url,
+                "method": "GET",
+                "header_name": header_name,
+                "alert_name": alert_name,
+                "operation_id": operation_id,
+                "path_template": path_template,
+                "source_observation_id": observation_id,
+                "max_response_bytes": 262144,
+            },
+            budget=CommandBudget(max_requests=1, timeout_sec=15),
+            success_criteria=["security_header_validation_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.security_header_validator,
+            priority=40.0,
+            reason="Supported ZAP security-header alert is available for validation replay.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
     def _validated_candidate(
         self,
         *,
@@ -349,6 +516,7 @@ class PlannerService:
         kind_order = {
             PlannerCandidateKind.zap_discovery_passive: 0,
             PlannerCandidateKind.bola_replay_probe: 1,
+            PlannerCandidateKind.security_header_validator: 2,
         }
         return sorted(
             candidates,
@@ -381,6 +549,21 @@ class PlannerService:
             hint.attacker_own_object_id,
             hint.owner_role,
             hint.attacker_role,
+        ])
+
+    @staticmethod
+    def _security_header_dedup_key(
+        campaign_id: str,
+        source_observation_id: str,
+        header_name: str,
+        canonical_url_or_path: str,
+    ) -> str:
+        return "|".join([
+            campaign_id,
+            "security_header_validator",
+            source_observation_id,
+            header_name,
+            canonical_url_or_path,
         ])
 
     @staticmethod
@@ -490,3 +673,182 @@ class PlannerService:
                 ):
                     return True
         return False
+
+    @staticmethod
+    def _raw_observation_type(raw: dict[str, Any]) -> str:
+        for key in ("type", "observation_type"):
+            value = raw.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    @staticmethod
+    def _map_security_header_name(alert_name: str) -> str:
+        normalized = str(alert_name or "").strip().lower()
+        mapping = {
+            "x-frame-options header not set": "X-Frame-Options",
+            "x-content-type-options header missing": "X-Content-Type-Options",
+            "content security policy (csp) header not set": "Content-Security-Policy",
+            "strict-transport-security header not set": "Strict-Transport-Security",
+        }
+        return mapping.get(normalized, "")
+
+    @staticmethod
+    def _extract_observation_request_url(campaign: Campaign, details: dict[str, Any]) -> str:
+        for key in ("request_url", "target_url", "url"):
+            value = str(details.get(key) or "").strip()
+            if value:
+                return value
+        path = str(details.get("path") or "").strip()
+        if not path:
+            return ""
+        if urlparse(path).scheme:
+            return path
+        return urljoin(campaign.target_url.rstrip("/") + "/", path.lstrip("/"))
+
+    @staticmethod
+    def _canonical_url_or_path(url_or_path: str) -> str:
+        raw = str(url_or_path or "").strip()
+        if not raw:
+            return ""
+        parsed = urlparse(raw)
+        if parsed.scheme:
+            return sanitize_url_for_storage(raw)
+        return PlannerService._redact_path_query(raw)
+
+    @staticmethod
+    def _existing_validated_security_header_observation(
+        campaign_id: str,
+        source_observation_id: str,
+        header_name: str,
+        canonical_url: str,
+        campaign_target_url: str,
+    ) -> bool:
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "validated_security_header_issue":
+                continue
+            details = raw.get("details")
+            if not isinstance(details, dict):
+                continue
+            existing_source_observation_id = str(details.get("source_observation_id") or "").strip()
+            existing_header_name = str(details.get("header_name") or "").strip()
+            existing_canonical_url = PlannerService._canonical_from_details(details, campaign_target_url)
+            if (
+                existing_source_observation_id == source_observation_id
+                and existing_header_name == header_name
+                and existing_canonical_url == canonical_url
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _existing_validated_security_header_tool_result(
+        campaign_id: str,
+        source_observation_id: str,
+        header_name: str,
+        canonical_url: str,
+        campaign_target_url: str,
+    ) -> bool:
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            result_raw = memory_store.get_tool_result(str(run.get("tool_run_id") or ""))
+            if not result_raw:
+                continue
+            try:
+                result = ToolResult.model_validate(result_raw)
+            except Exception:
+                continue
+            for obs in result.observations:
+                if obs.observation_type != "validated_security_header_issue":
+                    continue
+                details = obs.details or {}
+                existing_source_observation_id = str(details.get("source_observation_id") or "").strip()
+                existing_header_name = str(details.get("header_name") or "").strip()
+                existing_canonical_url = PlannerService._canonical_from_details(details, campaign_target_url)
+                if (
+                    existing_source_observation_id == source_observation_id
+                    and existing_header_name == header_name
+                    and existing_canonical_url == canonical_url
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def _existing_security_header_run(
+        campaign_id: str,
+        requested_dedup_key: str,
+        campaign_target_url: str,
+    ) -> dict[str, Any] | None:
+        active_or_done = {"accepted", "queued", "running", "finished", "partial"}
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "security_header_validator":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            existing_key = PlannerService._extract_security_header_dedup_key(
+                campaign_id=campaign_id,
+                run=run,
+                campaign_target_url=campaign_target_url,
+            )
+            if existing_key and existing_key == requested_dedup_key:
+                return run
+        return None
+
+    @staticmethod
+    def _extract_security_header_dedup_key(
+        campaign_id: str,
+        run: dict[str, Any],
+        campaign_target_url: str,
+    ) -> str | None:
+        explicit = str(run.get("dedup_key") or "").strip()
+        if explicit:
+            return explicit
+
+        command_id = str(run.get("command_id") or "").strip()
+        if not command_id:
+            return None
+        command = memory_store.get_command(command_id) or {}
+        inputs = command.get("inputs") if isinstance(command, dict) else None
+        if not isinstance(inputs, dict):
+            return None
+        source_observation_id = str(inputs.get("source_observation_id") or "").strip()
+        header_name = str(inputs.get("header_name") or "").strip()
+        canonical_url = PlannerService._canonical_from_details(inputs, campaign_target_url)
+        if not source_observation_id or not header_name or not canonical_url:
+            return None
+        return PlannerService._security_header_dedup_key(
+            campaign_id,
+            source_observation_id,
+            header_name,
+            canonical_url,
+        )
+
+    @staticmethod
+    def _canonical_from_details(details: dict[str, Any], campaign_target_url: str) -> str:
+        for key in ("request_url", "target_url", "url"):
+            value = str(details.get(key) or "").strip()
+            if value:
+                return PlannerService._canonical_url_or_path(value)
+        path = str(details.get("path") or details.get("path_template") or "").strip()
+        if not path:
+            return ""
+        if urlparse(path).scheme:
+            return PlannerService._canonical_url_or_path(path)
+        if campaign_target_url:
+            resolved = urljoin(campaign_target_url.rstrip("/") + "/", path.lstrip("/"))
+            return PlannerService._canonical_url_or_path(resolved)
+        return path
+
+    @staticmethod
+    def _redact_path_query(path_value: str) -> str:
+        parsed = urlparse(str(path_value or ""))
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if query_pairs:
+            redacted_query = "&".join(f"{key}=<redacted>" for key, _ in query_pairs)
+        else:
+            redacted_query = ""
+        out = parsed.path or "/"
+        if redacted_query:
+            out = f"{out}?{redacted_query}"
+        if parsed.fragment:
+            out = f"{out}#{parsed.fragment}"
+        return out

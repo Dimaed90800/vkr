@@ -114,6 +114,8 @@ def _store_command(
     campaign_id: str,
     inputs: dict,
     tool_name: str = "zap_discovery_passive",
+    worker_class: str = "discovery_inventory",
+    strategy: str = "zap_discovery_passive",
 ) -> None:
     memory_store.store_command(
         command_id,
@@ -121,10 +123,71 @@ def _store_command(
         {
             "command_id": command_id,
             "campaign_id": campaign_id,
-            "worker_class": "discovery_inventory",
-            "strategy": "zap_discovery_passive",
+            "worker_class": worker_class,
+            "strategy": strategy,
             "tool_name": tool_name,
             "inputs": inputs,
+        },
+    )
+
+
+def _store_zap_alert_observation(
+    *,
+    observation_id: str = "obs_zap_header",
+    campaign_id: str = "cmp_plan",
+    alert_name: str = "X-Frame-Options Header Not Set",
+    url: str = "http://target.local/frame?token=abc",
+    path: str = "/frame",
+    operation_id: str = "op_GET_/frame",
+) -> None:
+    obs = Observation(
+        observation_id=observation_id,
+        campaign_id=campaign_id,
+        type=ObservationType.zap_alert,
+        operation_id=operation_id,
+        confidence=0.6,
+        security_relevance=SecurityRelevance.medium,
+        details={
+            "alert_name": alert_name,
+            "url": url,
+            "path": path,
+            "operation_id": operation_id,
+        },
+    )
+    memory_store.store_observation(obs.observation_id, campaign_id, "", obs.model_dump(mode="json"))
+
+
+def _store_raw_observation(
+    *,
+    observation_id: str,
+    campaign_id: str,
+    observation_type: str,
+    details: dict,
+) -> None:
+    memory_store.store_observation(
+        observation_id,
+        campaign_id,
+        "",
+        {
+            "schema_version": "observation/v1",
+            "observation_id": observation_id,
+            "campaign_id": campaign_id,
+            "tool_run_id": "",
+            "task_id": "",
+            "command_id": "",
+            "source": "",
+            "type": observation_type,
+            "operation_id": str(details.get("operation_id") or ""),
+            "request_id": "",
+            "auth_profile": "",
+            "status_code": 0,
+            "confidence": 0.85,
+            "security_relevance": "medium",
+            "judge_worthy": False,
+            "recommended_next_action": "",
+            "details": details,
+            "artifact_refs": [],
+            "created_at": "",
         },
     )
 
@@ -527,6 +590,311 @@ def test_planner_cross_campaign_existing_signal_does_not_suppress_candidate():
 
     assert response.candidates[0].status == "ready"
     assert response.candidates[0].command is not None
+
+
+def test_planner_returns_security_header_validator_candidate_for_supported_zap_alert():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    assert response.ready_count == 1
+    candidate = response.candidates[0]
+    assert candidate.kind == "security_header_validator"
+    assert candidate.status == "ready"
+    assert candidate.command is not None
+    assert candidate.command.worker_class == "misconfiguration"
+    assert candidate.command.tool_name == "security_header_validator"
+    assert candidate.command.inputs["header_name"] == "X-Frame-Options"
+    assert candidate.command.inputs["source_observation_id"] == "obs_zap_header"
+
+
+def test_planner_blocks_security_header_validator_when_zap_alert_has_no_url():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(url="", path="")
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "security_header_validator"
+    assert candidate.status == "blocked"
+    assert candidate.missing_inputs == ["request_url"]
+
+
+def test_planner_blocks_security_header_validator_for_unsupported_alert_mapping():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(alert_name="Cache-Control Header Weak")
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "security_header_validator"
+    assert candidate.status == "blocked"
+    assert candidate.missing_inputs == ["supported_security_header_mapping"]
+
+
+def test_planner_blocks_security_header_alias_not_accepted_by_adapter():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(alert_name="X-Content-Type-Options Header Not Set")
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "security_header_validator"
+    assert candidate.status == "blocked"
+    assert "supported_security_header_mapping" in candidate.missing_inputs
+
+
+def test_planner_skips_security_header_validator_when_validated_issue_exists():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+    _store_raw_observation(
+        observation_id="obs_validated",
+        campaign_id="cmp_plan",
+        observation_type="validated_security_header_issue",
+        details={
+            "source_observation_id": "obs_zap_header",
+            "header_name": "X-Frame-Options",
+            "url": "http://target.local/frame?token=%3Credacted%3E",
+        },
+    )
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "skipped_existing"
+    assert candidate.command is None
+
+
+def test_planner_security_header_canonical_path_redacts_query_values():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(url="", path="/login?token=secret&x=1")
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "ready"
+    assert "token=secret" not in candidate.dedup_key
+    assert "x=1" not in candidate.dedup_key
+    assert "token=<redacted>" in candidate.dedup_key
+    assert "x=<redacted>" in candidate.dedup_key
+    assert candidate.summary["canonical_url"] == "/login?token=<redacted>&x=<redacted>"
+
+
+def test_planner_skips_security_header_validator_when_matching_tool_run_exists():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+    _store_command(
+        command_id="cmd_header_existing",
+        campaign_id="cmp_plan",
+        tool_name="security_header_validator",
+        worker_class="misconfiguration",
+        strategy="validate_security_header",
+        inputs={
+            "request_url": "http://target.local/frame?token=abc",
+            "target_url": "http://target.local/frame?token=abc",
+            "header_name": "X-Frame-Options",
+            "source_observation_id": "obs_zap_header",
+        },
+    )
+    _store_tool_run(
+        tool_run_id="toolrun_header_existing",
+        campaign_id="cmp_plan",
+        tool_name="security_header_validator",
+        status=ToolRunStatus.running,
+    )
+    memory_store.update_tool_run("toolrun_header_existing", {"command_id": "cmd_header_existing"})
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "skipped_existing"
+    assert candidate.command is None
+
+
+def test_planner_security_header_dedup_not_too_broad_same_campaign():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_zap_a",
+        url="http://target.local/frame-a?token=abc",
+        path="/frame-a",
+    )
+    _store_zap_alert_observation(
+        observation_id="obs_zap_b",
+        url="http://target.local/frame-b?token=abc",
+        path="/frame-b",
+    )
+    _store_raw_observation(
+        observation_id="obs_validated_a",
+        campaign_id="cmp_plan",
+        observation_type="validated_security_header_issue",
+        details={
+            "source_observation_id": "obs_zap_a",
+            "header_name": "X-Frame-Options",
+            "url": "http://target.local/frame-a?token=%3Credacted%3E",
+        },
+    )
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    by_source = {
+        str(candidate.summary.get("source_observation_id") or ""): candidate
+        for candidate in response.candidates
+        if candidate.kind == "security_header_validator"
+    }
+    assert by_source["obs_zap_a"].status == "skipped_existing"
+    assert by_source["obs_zap_b"].status == "ready"
+    assert by_source["obs_zap_b"].command is not None
+
+
+def test_planner_security_header_candidate_command_validates():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+    command = response.candidates[0].command
+
+    assert command is not None
+    validation = CommandValidator().validate(command)
+    assert validation.valid
+
+
+def test_planner_security_header_cross_campaign_existing_issue_does_not_suppress():
+    _reset_store()
+    _campaign(campaign_id="cmp_plan")
+    _campaign(campaign_id="cmp_other")
+    _store_zap_alert_observation(campaign_id="cmp_plan")
+    _store_raw_observation(
+        observation_id="obs_validated_other",
+        campaign_id="cmp_other",
+        observation_type="validated_security_header_issue",
+        details={
+            "source_observation_id": "obs_zap_header",
+            "header_name": "X-Frame-Options",
+            "url": "http://target.local/frame?token=%3Credacted%3E",
+        },
+    )
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "ready"
+    assert candidate.command is not None
+
+
+def test_planner_orders_security_header_after_bola_ready_before_blocked():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+    request = PlannerRequest.model_validate({
+        "zap": {"enabled": False},
+        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+    })
+
+    response = PlannerService().plan("cmp_plan", request)
+
+    assert [candidate.kind.value for candidate in response.candidates[:2]] == [
+        "bola_replay_probe",
+        "security_header_validator",
+    ]
+
+
+def test_planner_security_header_dedup_uses_sanitized_canonical_url():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(url="http://user:pass@target.local/frame?token=abc", path="/frame")
+    _store_raw_observation(
+        observation_id="obs_validated",
+        campaign_id="cmp_plan",
+        observation_type="validated_security_header_issue",
+        details={
+            "source_observation_id": "obs_zap_header",
+            "header_name": "X-Frame-Options",
+            "url": "http://target.local/frame?token=%3Credacted%3E",
+        },
+    )
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.status == "skipped_existing"
+    assert "token=abc" not in candidate.dedup_key
+    assert "%3Credacted%3E" in candidate.dedup_key
 
 
 def test_planner_route_invalid_body_returns_controlled_400():
