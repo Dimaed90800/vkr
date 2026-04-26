@@ -1,0 +1,151 @@
+app:
+  description: Minimal Phase 8 backend bridge smoke workflow. Dify only carries compact identifiers while backend owns campaign state, signals, evidence, decisions, and findings.
+  icon: link
+  icon_background: '#E8F3FF'
+  mode: workflow
+  name: wf-backend-bridge-smoke
+  use_icon_as_answer_icon: false
+kind: app
+version: 0.1.0
+workflow:
+  description: >
+    Backend-first smoke flow: create campaign, build graph, derive corpus cross-role
+    observations, triage, build EvidencePack, ask Judge for JudgeVerdictPayload,
+    apply verdict, and read confirmed findings. This workflow intentionally does
+    not call legacy scheduler or legacy tool wrapper execution.
+  variables:
+    keep_compact_state_only:
+      - campaign_id
+      - graph_summary
+      - observation_id
+      - verification_plan_id
+      - evidence_id
+      - judge_verdict
+      - finding_id
+      - confirmed_findings
+  nodes:
+    - id: create_campaign
+      type: http-request
+      title: Create Campaign
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/campaigns"
+      body:
+        target_url: "{{#inputs.target_url#}}"
+        openapi_url: "{{#inputs.openapi_url#}}"
+        allowed_hosts: "{{#inputs.allowed_hosts#}}"
+        roles_json: "{{#inputs.roles_json#}}"
+    - id: build_graph
+      type: http-request
+      title: Build API Graph
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/graph/{{#create_campaign.campaign_id#}}/build"
+      body:
+        openapi_spec_text: "{{#inputs.openapi_spec_text#}}"
+    - id: graph_summary
+      type: http-request
+      title: Get Graph Summary
+      method: get
+      url: "{{#inputs.toolbox_url#}}/v1/graph/{{#create_campaign.campaign_id#}}/summary"
+    - id: create_cross_role_signals
+      type: http-request
+      title: Create Corpus Cross-Role Signals
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/corpus/{{#create_campaign.campaign_id#}}/cross-role-signals"
+      body:
+        operation_id: "{{#inputs.operation_id#}}"
+        limit: 10
+    - id: select_observation
+      type: code
+      title: Select Observation ID
+      outputs:
+        observation_id: "{{ first(create_cross_role_signals.observations).observation_id }}"
+    - id: triage_observation
+      type: http-request
+      title: Triage Observation
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/observations/triage/{{#select_observation.observation_id#}}"
+    - id: select_verification_plan
+      type: code
+      title: Select Verification Plan ID
+      outputs:
+        verification_plan_id: "{{ triage_observation.verification_plan.verification_plan_id }}"
+    - id: build_evidence_pack
+      type: http-request
+      title: Build Evidence Pack
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/evidence/build-from-plan/{{#select_verification_plan.verification_plan_id#}}"
+    - id: compact_evidence_for_judge
+      type: code
+      title: Compact Evidence For Judge
+      outputs:
+        evidence_id: "{{ build_evidence_pack.evidence_pack.evidence_id }}"
+        evidence_summary:
+          campaign_id: "{{ build_evidence_pack.evidence_pack.campaign_id }}"
+          evidence_id: "{{ build_evidence_pack.evidence_pack.evidence_id }}"
+          task_id: "{{ build_evidence_pack.evidence_pack.task_id }}"
+          observation_id: "{{ build_evidence_pack.evidence_pack.observation_id }}"
+          verification_plan_id: "{{ build_evidence_pack.evidence_pack.verification_plan_id }}"
+          owasp_category: "{{ build_evidence_pack.evidence_pack.owasp_category }}"
+          vulnerability_class: "{{ build_evidence_pack.evidence_pack.vulnerability_class }}"
+          operation_id: "{{ build_evidence_pack.evidence_pack.operation_id }}"
+          endpoint: "{{ build_evidence_pack.evidence_pack.endpoint }}"
+          method: "{{ build_evidence_pack.evidence_pack.method }}"
+          status: "{{ build_evidence_pack.evidence_pack.status }}"
+          judge_ready: "{{ build_evidence_pack.evidence_pack.judge_ready }}"
+          missing_evidence: "{{ build_evidence_pack.evidence_pack.missing_evidence }}"
+          has_baseline: "{{ build_evidence_pack.evidence_pack.baseline != null }}"
+          has_attack: "{{ build_evidence_pack.evidence_pack.attack != null }}"
+          has_ownership_proof: "{{ build_evidence_pack.evidence_pack.ownership_proof != null }}"
+          controls_count: "{{ count(build_evidence_pack.evidence_pack.controls) }}"
+          replay_steps_count: "{{ count(build_evidence_pack.evidence_pack.replay_steps) }}"
+    - id: judge_verdict
+      type: llm
+      title: Judge Verdict Payload
+      prompt: |
+        Return JSON only matching JudgeVerdictPayload:
+        {
+          "schema_version": "judge-verdict/v1",
+          "verdict": "confirmed|rejected|rework|duplicate|out_of_scope|inconclusive",
+          "confidence": 0.0,
+          "severity": "",
+          "reason": "",
+          "finding_candidate": {
+            "title": "",
+            "severity": "",
+            "vulnerability_class": "",
+            "summary": "",
+            "extras": {}
+          },
+          "duplicate_of_finding_id": "",
+          "judge_source": "dify",
+          "judge_model": "configured-llm"
+        }
+
+        Evidence summary:
+        {{#compact_evidence_for_judge.evidence_summary#}}
+    - id: apply_judge_verdict
+      type: http-request
+      title: Apply Judge Verdict
+      method: post
+      url: "{{#inputs.toolbox_url#}}/v1/judge/apply"
+      body:
+        campaign_id: "{{#create_campaign.campaign_id#}}"
+        evidence_id: "{{#compact_evidence_for_judge.evidence_id#}}"
+        task_id: "{{#inputs.task_id#}}"
+        verdict: {{#judge_verdict.text#}}
+        max_rework_depth: 2
+        create_rework_on_inconclusive: true
+    - id: list_confirmed_findings
+      type: http-request
+      title: List Confirmed Findings
+      method: get
+      url: "{{#inputs.toolbox_url#}}/v1/findings/confirmed/{{#create_campaign.campaign_id#}}"
+  outputs:
+    campaign_id: "{{#create_campaign.campaign_id#}}"
+    graph_summary: "{{#graph_summary.body#}}"
+    observation_id: "{{#select_observation.observation_id#}}"
+    verification_plan_id: "{{#select_verification_plan.verification_plan_id#}}"
+    evidence_id: "{{#compact_evidence_for_judge.evidence_id#}}"
+    judge_verdict: "{{#judge_verdict.text#}}"
+    finding_id: "{{#apply_judge_verdict.finding_id#}}"
+    confirmed_findings: "{{#list_confirmed_findings.body#}}"
