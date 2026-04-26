@@ -6,7 +6,7 @@ to the appropriate adapter, and produces a ToolResult v1.
 Phase 5 constraints:
 - Does NOT call Judge or create EvidencePack/findings.
 - Async path only creates ToolRun with status=running; no real execution.
-- Only noop_tool / custom_request_executor have a working adapter.
+- Supported sync adapters are explicitly registered; unsupported tools fail.
 - Known but unsupported tools produce a controlled error.
 """
 from __future__ import annotations
@@ -26,9 +26,12 @@ try:
     )
     from backend.models.worker_command import WorkerCommand
     from backend.services.adapters.noop_adapter import NoopAdapter
+    from backend.services.adapters.http_replay_adapter import HttpReplayAdapter
+    from backend.services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
     from backend.services.artifact_store import ArtifactStore
     from backend.services.campaign_service import CampaignService
     from backend.services.command_validator import CommandValidator
+    from backend.services.http.safe_http_client import SafeHttpClient
     from backend.services.tool_registry import ToolRegistry
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
@@ -43,9 +46,12 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from models.worker_command import WorkerCommand
     from services.adapters.noop_adapter import NoopAdapter
+    from services.adapters.http_replay_adapter import HttpReplayAdapter
+    from services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
     from services.artifact_store import ArtifactStore
     from services.campaign_service import CampaignService
     from services.command_validator import CommandValidator
+    from services.http.safe_http_client import SafeHttpClient
     from services.tool_registry import ToolRegistry
     from storage.memory_store import memory_store
 
@@ -75,12 +81,14 @@ def _make_run_id() -> str:
 
 
 class ToolExecutor:
-    def __init__(self) -> None:
+    def __init__(self, http_client: SafeHttpClient | None = None) -> None:
         self._registry = ToolRegistry()
         self._validator = CommandValidator()
         self._campaigns = CampaignService()
         self._artifact_store = ArtifactStore()
         self._noop = NoopAdapter()
+        self._http_replay = HttpReplayAdapter(http_client=http_client)
+        self._bola_replay = BolaReplayProbeAdapter(http_client=http_client)
 
     def execute_sync(self, command: WorkerCommand) -> ToolResult:
         validation = self._validator.validate(command)
@@ -109,7 +117,7 @@ class ToolExecutor:
             return result
 
         try:
-            result = self._noop.execute(command, campaign, tool_run_id)
+            result = self._execute_adapter(command, campaign, tool_run_id)
         except Exception as exc:
             result = self._error_result(
                 command, tool_run_id,
@@ -119,6 +127,18 @@ class ToolExecutor:
 
         self._finish_run(tool_run_id, result)
         return result
+
+    def _execute_adapter(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        tool_run_id: str,
+    ) -> ToolResult:
+        if command.tool_name == "http_replay_executor":
+            return self._http_replay.execute(command, campaign, tool_run_id)
+        if command.tool_name == "bola_replay_probe":
+            return self._bola_replay.execute(command, campaign, tool_run_id)
+        return self._noop.execute(command, campaign, tool_run_id)
 
     def start_async(self, command: WorkerCommand) -> ToolRun:
         validation = self._validator.validate(command)

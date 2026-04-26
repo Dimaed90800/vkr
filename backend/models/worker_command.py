@@ -30,6 +30,8 @@ WORKER_CLASS_COMPAT: dict[str, str] = {
 ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
     "access_control": [
         "custom_request_executor",
+        "http_replay_executor",
+        "bola_replay_probe",
         "auth_test_access",
         "replay_http_sequence",
         "property_mutation_test",

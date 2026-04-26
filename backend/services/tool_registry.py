@@ -18,11 +18,15 @@ except ModuleNotFoundError:  # pragma: no cover
 PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "noop_tool": "noop",
     "custom_request_executor": "noop",
+    "http_replay_executor": "http_replay",
+    "bola_replay_probe": "bola_replay",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
     "custom_request_executor",
     "noop_tool",
+    "http_replay_executor",
+    "bola_replay_probe",
     "auth_test_access",
     "replay_http_sequence",
     "property_mutation_test",
