@@ -472,19 +472,20 @@ def test_new_dify_bridge_workflow_mentions_judge_apply():
 
 def test_new_dify_bridge_workflow_requires_judge_verdict_payload():
     text = _new_workflow_text()
-    assert "JudgeVerdictPayload" in text
-    assert '"schema_version": "judge-verdict/v1"' in text
-    assert '"verdict": "confirmed|rejected|rework|duplicate|out_of_scope|inconclusive"' in text
-    apply_block = text.split("id: apply_judge_verdict", 1)[1].split("id: list_confirmed_findings", 1)[0]
-    assert 'verdict: {{#judge_verdict.text#}}' in apply_block
-    assert 'verdict: "{{#judge_verdict.text#}}"' not in apply_block
+    assert "title: Static Judge Verdict Payload" in text
+    assert "judge-verdict/v1" in text
     for field in [
-        '"confidence":',
-        '"severity":',
-        '"reason":',
-        '"finding_candidate":',
-        '"duplicate_of_finding_id":',
-        '"judge_source":',
-        '"judge_model":',
+        "schema_version",
+        "verdict",
+        "confidence",
+        "severity",
+        "reason",
+        "finding_candidate",
+        "duplicate_of_finding_id",
+        "judge_source",
+        "judge_model",
     ]:
         assert field in text
+    assert "{{#static_judge_verdict.judge_verdict_json#}}" in text
+    assert '"verdict": "{{#static_judge_verdict.judge_verdict_json#}}"' not in text
+    assert '\\"verdict\\": \\"{{#static_judge_verdict.judge_verdict_json#}}\\"' not in text

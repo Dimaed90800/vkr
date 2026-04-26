@@ -1,0 +1,1481 @@
+app:
+  description: Minimal Phase 9B backend bridge workflow using real bola_replay_probe.
+    Backend owns campaign state, tool runs, observations, evidence, decisions, and findings.
+  icon: 🔗
+  icon_background: '#E8F3FF'
+  icon_type: emoji
+  mode: workflow
+  name: wf-backend-bridge-real-bola
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods: []
+      fileUploadConfig:
+        file_size_limit: 15
+        file_upload_limit: 20
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods: []
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: code
+      id: start-to-normalize_inputs
+      source: start
+      sourceHandle: source
+      target: normalize_inputs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: normalize_inputs-to-create_campaign
+      source: normalize_inputs
+      sourceHandle: source
+      target: create_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: create_campaign-to-extract_campaign
+      source: create_campaign
+      sourceHandle: source
+      target: extract_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: extract_campaign-to-build_graph
+      source: extract_campaign
+      sourceHandle: source
+      target: build_graph
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: http-request
+      id: build_graph-to-get_graph_summary
+      source: build_graph
+      sourceHandle: source
+      target: get_graph_summary
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: http-request
+      id: get_graph_summary-to-run_bola_replay_probe
+      source: get_graph_summary
+      sourceHandle: source
+      target: run_bola_replay_probe
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: run_bola_replay_probe-to-extract_tool_run
+      source: run_bola_replay_probe
+      sourceHandle: source
+      target: extract_tool_run
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: extract_tool_run-to-normalize_observations
+      source: extract_tool_run
+      sourceHandle: source
+      target: normalize_observations
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: normalize_observations-to-select_observation
+      source: normalize_observations
+      sourceHandle: source
+      target: select_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: select_observation-to-has_cross_role_signal
+      source: select_observation
+      sourceHandle: source
+      target: has_cross_role_signal
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: has_cross_role_signal-false-to-answer_no_signal
+      source: has_cross_role_signal
+      sourceHandle: 'false'
+      target: answer_no_signal
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: http-request
+      id: has_cross_role_signal-true-to-triage_observation
+      source: has_cross_role_signal
+      sourceHandle: 'true'
+      target: triage_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: triage_observation-to-select_verification_plan
+      source: triage_observation
+      sourceHandle: source
+      target: select_verification_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: select_verification_plan-to-build_evidence_pack
+      source: select_verification_plan
+      sourceHandle: source
+      target: build_evidence_pack
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: build_evidence_pack-to-compact_evidence_for_judge
+      source: build_evidence_pack
+      sourceHandle: source
+      target: compact_evidence_for_judge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: compact_evidence_for_judge-to-static_judge_verdict
+      source: compact_evidence_for_judge
+      sourceHandle: source
+      target: static_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: static_judge_verdict-to-apply_judge_verdict
+      source: static_judge_verdict
+      sourceHandle: source
+      target: apply_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: apply_judge_verdict-to-extract_apply_result
+      source: apply_judge_verdict
+      sourceHandle: source
+      target: extract_apply_result
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: extract_apply_result-to-list_confirmed_findings
+      source: extract_apply_result
+      sourceHandle: source
+      target: list_confirmed_findings
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: list_confirmed_findings-to-extract_findings_summary
+      source: list_confirmed_findings
+      sourceHandle: source
+      target: extract_findings_summary
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: extract_findings_summary-to-final_report
+      source: extract_findings_summary
+      sourceHandle: source
+      target: final_report
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: answer
+      id: final_report-to-answer_success
+      source: final_report
+      sourceHandle: source
+      target: answer_success
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: Real BOLA bridge inputs. Dify keeps compact IDs only.
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Toolbox URL
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: toolbox_url
+        - label: Target URL
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: OpenAPI URL optional
+          max_length: 512
+          options: []
+          required: false
+          type: text-input
+          variable: openapi_url
+        - label: OpenAPI Spec Text JSON string
+          max_length: 50000
+          options: []
+          required: true
+          type: paragraph
+          variable: openapi_spec_text
+        - label: Allowed Hosts JSON
+          max_length: 4000
+          options: []
+          required: true
+          type: paragraph
+          variable: allowed_hosts_json
+        - label: Roles JSON
+          max_length: 12000
+          options: []
+          required: true
+          type: paragraph
+          variable: roles_json
+        - label: Object URL
+          max_length: 1000
+          options: []
+          required: true
+          type: text-input
+          variable: object_url
+        - label: Attacker Own Object URL
+          max_length: 1000
+          options: []
+          required: true
+          type: text-input
+          variable: attacker_own_object_url
+        - label: Collection URL
+          max_length: 1000
+          options: []
+          required: true
+          type: text-input
+          variable: collection_url
+        - label: Object ID
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: object_id
+        - label: Attacker Own Object ID
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: attacker_own_object_id
+        - label: Owner Role
+          max_length: 128
+          options: []
+          required: true
+          type: text-input
+          variable: owner_role
+        - label: Attacker Role
+          max_length: 128
+          options: []
+          required: true
+          type: text-input
+          variable: attacker_role
+        - label: Operation ID
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: operation_id
+        - label: Path Template
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: path_template
+        - label: Collection Path Template
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: collection_path_template
+        - label: Collection Operation ID optional
+          max_length: 512
+          options: []
+          required: false
+          type: text-input
+          variable: collection_operation_id
+        - label: Task ID
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: task_id
+      height: 512
+      id: start
+      position:
+        x: 0
+        y: 180
+      positionAbsolute:
+        x: 0
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+          from urllib.parse import urlparse
+
+          def _json_list(value, default):
+              raw = str(value or '').strip()
+              if not raw:
+                  return list(default)
+              try:
+                  parsed = json.loads(raw)
+              except Exception:
+                  return list(default)
+              return parsed if isinstance(parsed, list) else list(default)
+
+          def _default_allowed_hosts(target_url):
+              parsed = urlparse(str(target_url or '').strip())
+              host = parsed.netloc or parsed.hostname or ''
+              return [host] if host else []
+
+          def _default_openapi_spec():
+              return {
+                  'openapi': '3.0.3',
+                  'info': {'title': 'Real BOLA Bridge API', 'version': '1.0.0'},
+                  'paths': {
+                      '/api/v1/vehicles': {'get': {'operationId': 'listVehicles', 'responses': {'200': {'description': 'Vehicle collection'}}}},
+                      '/api/v1/vehicles/{vehicleId}': {'get': {'operationId': 'getVehicle', 'parameters': [{'name': 'vehicleId', 'in': 'path', 'required': True, 'schema': {'type': 'string'}}], 'responses': {'200': {'description': 'Vehicle'}}}},
+                  },
+              }
+
+          def main(toolbox_url, target_url, openapi_url='', openapi_spec_text='', allowed_hosts_json='', roles_json='', object_url='', attacker_own_object_url='', collection_url='', object_id='', attacker_own_object_id='', owner_role='', attacker_role='', operation_id='', path_template='', collection_path_template='', collection_operation_id='', task_id='') -> dict:
+              target = str(target_url or '').rstrip('/')
+              allowed_hosts = _json_list(allowed_hosts_json, _default_allowed_hosts(target))
+              roles = _json_list(roles_json, [])
+              spec = str(openapi_spec_text or '').strip()
+              if not spec:
+                  spec = json.dumps(_default_openapi_spec(), ensure_ascii=False)
+              return {
+                  'toolbox_url': str(toolbox_url or '').rstrip('/'),
+                  'target_url': target,
+                  'openapi_url': str(openapi_url or '').strip(),
+                  'openapi_spec_text_json': json.dumps(spec, ensure_ascii=False),
+                  'allowed_hosts_json': json.dumps(allowed_hosts, ensure_ascii=False),
+                  'roles_json': json.dumps(roles, ensure_ascii=False),
+                  'object_url': str(object_url or '').strip(),
+                  'attacker_own_object_url': str(attacker_own_object_url or '').strip(),
+                  'collection_url': str(collection_url or '').strip(),
+                  'object_id': str(object_id or '').strip(),
+                  'attacker_own_object_id': str(attacker_own_object_id or '').strip(),
+                  'owner_role': str(owner_role or 'owner').strip(),
+                  'attacker_role': str(attacker_role or 'attacker').strip(),
+                  'operation_id': str(operation_id or 'op_GET_/api/v1/vehicles/{vehicleId}').strip(),
+                  'path_template': str(path_template or '/api/v1/vehicles/{vehicleId}').strip(),
+                  'collection_path_template': str(collection_path_template or '/api/v1/vehicles').strip(),
+                  'collection_operation_id': str(collection_operation_id or 'op_GET_/api/v1/vehicles').strip(),
+                  'task_id': str(task_id or 'task_real_bola_bridge_001').strip(),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          allowed_hosts_json:
+            children: null
+            type: string
+          attacker_own_object_id:
+            children: null
+            type: string
+          attacker_own_object_url:
+            children: null
+            type: string
+          attacker_role:
+            children: null
+            type: string
+          collection_operation_id:
+            children: null
+            type: string
+          collection_path_template:
+            children: null
+            type: string
+          collection_url:
+            children: null
+            type: string
+          object_id:
+            children: null
+            type: string
+          object_url:
+            children: null
+            type: string
+          openapi_spec_text_json:
+            children: null
+            type: string
+          openapi_url:
+            children: null
+            type: string
+          operation_id:
+            children: null
+            type: string
+          owner_role:
+            children: null
+            type: string
+          path_template:
+            children: null
+            type: string
+          roles_json:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+          toolbox_url:
+            children: null
+            type: string
+        selected: false
+        title: Normalize Inputs
+        type: code
+        variables:
+        - value_selector: [start, toolbox_url]
+          value_type: string
+          variable: toolbox_url
+        - value_selector: [start, target_url]
+          value_type: string
+          variable: target_url
+        - value_selector: [start, openapi_url]
+          value_type: string
+          variable: openapi_url
+        - value_selector: [start, openapi_spec_text]
+          value_type: string
+          variable: openapi_spec_text
+        - value_selector: [start, allowed_hosts_json]
+          value_type: string
+          variable: allowed_hosts_json
+        - value_selector: [start, roles_json]
+          value_type: string
+          variable: roles_json
+        - value_selector: [start, object_url]
+          value_type: string
+          variable: object_url
+        - value_selector: [start, attacker_own_object_url]
+          value_type: string
+          variable: attacker_own_object_url
+        - value_selector: [start, collection_url]
+          value_type: string
+          variable: collection_url
+        - value_selector: [start, object_id]
+          value_type: string
+          variable: object_id
+        - value_selector: [start, attacker_own_object_id]
+          value_type: string
+          variable: attacker_own_object_id
+        - value_selector: [start, owner_role]
+          value_type: string
+          variable: owner_role
+        - value_selector: [start, attacker_role]
+          value_type: string
+          variable: attacker_role
+        - value_selector: [start, operation_id]
+          value_type: string
+          variable: operation_id
+        - value_selector: [start, path_template]
+          value_type: string
+          variable: path_template
+        - value_selector: [start, collection_path_template]
+          value_type: string
+          variable: collection_path_template
+        - value_selector: [start, collection_operation_id]
+          value_type: string
+          variable: collection_operation_id
+        - value_selector: [start, task_id]
+          value_type: string
+          variable: task_id
+      height: 52
+      id: normalize_inputs
+      position:
+        x: 300
+        y: 180
+      positionAbsolute:
+        x: 300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "target_url": "{{#normalize_inputs.target_url#}}",
+              "openapi_url": "{{#normalize_inputs.openapi_url#}}",
+              "allowed_hosts": {{#normalize_inputs.allowed_hosts_json#}},
+              "profile": "safe",
+              "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 50, "max_retries_per_task": 2},
+              "roles_json": {{#normalize_inputs.roles_json#}}
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Create Campaign
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/campaigns'
+        variables: []
+      height: 140
+      id: create_campaign
+      position:
+        x: 600
+        y: 180
+      positionAbsolute:
+        x: 600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              return {
+                  'campaign_id': str(payload.get('campaign_id') or ''),
+                  'run_id': str(payload.get('run_id') or payload.get('legacy_run_id') or ''),
+                  'campaign_json': json.dumps(payload, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          campaign_id:
+            children: null
+            type: string
+          campaign_json:
+            children: null
+            type: string
+          run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Campaign
+        type: code
+        variables:
+        - value_selector: [create_campaign, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_campaign
+      position:
+        x: 900
+        y: 180
+      positionAbsolute:
+        x: 900
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "openapi_spec_text": {{#normalize_inputs.openapi_spec_text_json#}}
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build API Graph
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/graph/{{#extract_campaign.campaign_id#}}/build'
+        variables: []
+      height: 174
+      id: build_graph
+      position:
+        x: 1200
+        y: 180
+      positionAbsolute:
+        x: 1200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Graph Summary
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/graph/{{#extract_campaign.campaign_id#}}/summary'
+        variables: []
+      height: 174
+      id: get_graph_summary
+      position:
+        x: 1500
+        y: 180
+      positionAbsolute:
+        x: 1500
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "execution_mode": "sync",
+              "command": {
+                "schema_version": "worker-command/v1",
+                "campaign_id": "{{#extract_campaign.campaign_id#}}",
+                "task_id": "{{#normalize_inputs.task_id#}}",
+                "worker_class": "access_control",
+                "strategy": "prove_bola",
+                "tool_name": "bola_replay_probe",
+                "operation_id": "{{#normalize_inputs.operation_id#}}",
+                "seed_request_id": "",
+                "inputs": {
+                  "operation_id": "{{#normalize_inputs.operation_id#}}",
+                  "method": "GET",
+                  "object_url": "{{#normalize_inputs.object_url#}}",
+                  "attacker_own_object_url": "{{#normalize_inputs.attacker_own_object_url#}}",
+                  "collection_url": "{{#normalize_inputs.collection_url#}}",
+                  "path_template": "{{#normalize_inputs.path_template#}}",
+                  "collection_path_template": "{{#normalize_inputs.collection_path_template#}}",
+                  "collection_operation_id": "{{#normalize_inputs.collection_operation_id#}}",
+                  "object_id": "{{#normalize_inputs.object_id#}}",
+                  "attacker_own_object_id": "{{#normalize_inputs.attacker_own_object_id#}}",
+                  "owner_role": "{{#normalize_inputs.owner_role#}}",
+                  "attacker_role": "{{#normalize_inputs.attacker_role#}}"
+                },
+                "budget": {
+                  "max_requests": 5,
+                  "timeout_sec": 30
+                },
+                "success_criteria": [
+                  "cross_role_access_signal_recorded"
+                ]
+              }
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Run BOLA Replay Probe
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/tools/runs/start'
+        variables: []
+      height: 174
+      id: run_bola_replay_probe
+      position:
+        x: 1800
+        y: 180
+      positionAbsolute:
+        x: 1800
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              result = payload.get('result') or {}
+              tool_run_id = payload.get('tool_run_id') or result.get('tool_run_id') or ''
+              return {
+                  'tool_run_id': str(tool_run_id),
+                  'tool_result_status': str(payload.get('status') or result.get('status') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          tool_result_status:
+            children: null
+            type: string
+          tool_run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Tool Run
+        type: code
+        variables:
+        - value_selector: [run_bola_replay_probe, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_tool_run
+      position:
+        x: 2100
+        y: 180
+      positionAbsolute:
+        x: 2100
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Normalize Observations
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/normalize/{{#extract_tool_run.tool_run_id#}}'
+        variables: []
+      height: 174
+      id: normalize_observations
+      position:
+        x: 2400
+        y: 180
+      positionAbsolute:
+        x: 2400
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              observations = payload.get('observations') or []
+              selected = {}
+              for obs in observations:
+                  if isinstance(obs, dict) and obs.get('type') == 'cross_role_access_signal':
+                      selected = obs
+                      break
+              return {
+                  'observation_id': str(selected.get('observation_id') or ''),
+                  'observations_count': str(len(observations) if isinstance(observations, list) else 0),
+                  'has_signal': 'true' if selected.get('observation_id') else 'false',
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          has_signal:
+            children: null
+            type: string
+          observation_id:
+            children: null
+            type: string
+          observations_count:
+            children: null
+            type: string
+        selected: false
+        title: Select Observation
+        type: code
+        variables:
+        - value_selector: [normalize_observations, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: select_observation
+      position:
+        x: 2700
+        y: 180
+      positionAbsolute:
+        x: 2700
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: has-signal-condition
+            value: 'true'
+            variable_selector: [select_observation, has_signal]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Route to no-signal answer when bola_replay_probe did not emit cross_role_access_signal.
+        selected: false
+        title: Has Cross-Role Signal?
+        type: if-else
+      height: 126
+      id: has_cross_role_signal
+      position:
+        x: 3000
+        y: 180
+      positionAbsolute:
+        x: 3000
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: "No cross-role signal found / BOLA proof incomplete\n\ncampaign_id: {{#extract_campaign.campaign_id#}}\ntool_run_id: {{#extract_tool_run.tool_run_id#}}\nobservations_count: {{#select_observation.observations_count#}}"
+        desc: ''
+        selected: false
+        title: Answer No Signal
+        type: answer
+        variables: []
+      height: 103
+      id: answer_no_signal
+      position:
+        x: 3300
+        y: 420
+      positionAbsolute:
+        x: 3300
+        y: 420
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Triage Observation
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/triage/{{#select_observation.observation_id#}}'
+        variables: []
+      height: 158
+      id: triage_observation
+      position:
+        x: 3300
+        y: 180
+      positionAbsolute:
+        x: 3300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              plan = payload.get('verification_plan') or {}
+              observation = payload.get('observation') or {}
+              return {
+                  'verification_plan_id': str(plan.get('verification_plan_id') or ''),
+                  'observation_id': str(observation.get('observation_id') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          observation_id:
+            children: null
+            type: string
+          verification_plan_id:
+            children: null
+            type: string
+        selected: false
+        title: Select Verification Plan
+        type: code
+        variables:
+        - value_selector: [triage_observation, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: select_verification_plan
+      position:
+        x: 3600
+        y: 180
+      positionAbsolute:
+        x: 3600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build Evidence Pack
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/evidence/build-from-plan/{{#select_verification_plan.verification_plan_id#}}'
+        variables: []
+      height: 174
+      id: build_evidence_pack
+      position:
+        x: 3900
+        y: 180
+      positionAbsolute:
+        x: 3900
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              pack = payload.get('evidence_pack') or payload.get('evidence') or {}
+              summary = {
+                  'campaign_id': pack.get('campaign_id'),
+                  'evidence_id': pack.get('evidence_id'),
+                  'task_id': pack.get('task_id'),
+                  'observation_id': pack.get('observation_id'),
+                  'verification_plan_id': pack.get('verification_plan_id'),
+                  'owasp_category': pack.get('owasp_category'),
+                  'vulnerability_class': pack.get('vulnerability_class'),
+                  'operation_id': pack.get('operation_id'),
+                  'endpoint': pack.get('endpoint'),
+                  'method': pack.get('method'),
+                  'status': pack.get('status'),
+                  'judge_ready': pack.get('judge_ready'),
+                  'missing_evidence': pack.get('missing_evidence') or [],
+                  'has_baseline': bool(pack.get('baseline')),
+                  'has_attack': bool(pack.get('attack')),
+                  'has_ownership_proof': bool(pack.get('ownership_proof')),
+                  'controls_count': len(pack.get('controls') or []),
+                  'replay_steps_count': len(pack.get('replay_steps') or []),
+              }
+              return {
+                  'evidence_id': str(pack.get('evidence_id') or ''),
+                  'task_id': str(pack.get('task_id') or ''),
+                  'evidence_summary_json': json.dumps(summary, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          evidence_id:
+            children: null
+            type: string
+          evidence_summary_json:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+        selected: false
+        title: Compact Evidence For Judge
+        type: code
+        variables:
+        - value_selector: [build_evidence_pack, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: compact_evidence_for_judge
+      position:
+        x: 4200
+        y: 180
+      positionAbsolute:
+        x: 4200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(evidence_summary_json: str) -> dict:
+              try:
+                  summary = json.loads(evidence_summary_json or '{}')
+              except Exception:
+                  summary = {}
+              ready = bool(summary.get('judge_ready'))
+              verdict = {
+                  'schema_version': 'judge-verdict/v1',
+                  'verdict': 'confirmed' if ready else 'rework',
+                  'confidence': 0.94 if ready else 0.35,
+                  'severity': 'high',
+                  'reason': 'Real BOLA replay proof produced baseline, attack, ownership proof, negative control, diff, and replay steps.' if ready else 'EvidencePack is not structurally ready.',
+                  'finding_candidate': {
+                      'title': 'Broken Object Level Authorization via real replay',
+                      'severity': 'high',
+                      'vulnerability_class': summary.get('vulnerability_class') or 'access_control',
+                      'summary': 'bola_replay_probe showed attacker access to an owner object while ownership and negative control evidence were present.',
+                      'extras': {'owasp_category': summary.get('owasp_category') or 'API1_BOLA'},
+                  },
+                  'duplicate_of_finding_id': '',
+                  'judge_source': 'dify',
+                  'judge_model': 'bridge-real-bola-static',
+              }
+              return {'judge_verdict_json': json.dumps(verdict, ensure_ascii=False)}
+        code_language: python3
+        dependencies: []
+        desc: Strict JudgeVerdictPayload object. Dify does not create findings.
+        outputs:
+          judge_verdict_json:
+            children: null
+            type: string
+        selected: false
+        title: Static Judge Verdict Payload
+        type: code
+        variables:
+        - value_selector: [compact_evidence_for_judge, evidence_summary_json]
+          value_type: string
+          variable: evidence_summary_json
+      height: 52
+      id: static_judge_verdict
+      position:
+        x: 4500
+        y: 180
+      positionAbsolute:
+        x: 4500
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "campaign_id": "{{#extract_campaign.campaign_id#}}",
+              "evidence_id": "{{#compact_evidence_for_judge.evidence_id#}}",
+              "task_id": "{{#normalize_inputs.task_id#}}",
+              "verdict": {{#static_judge_verdict.judge_verdict_json#}},
+              "max_rework_depth": 2,
+              "create_rework_on_inconclusive": true
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Apply Judge Verdict
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/judge/apply'
+        variables: []
+      height: 140
+      id: apply_judge_verdict
+      position:
+        x: 4800
+        y: 180
+      positionAbsolute:
+        x: 4800
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: List Confirmed Findings
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/findings/confirmed/{{#extract_campaign.campaign_id#}}'
+        variables: []
+      height: 158
+      id: list_confirmed_findings
+      position:
+        x: 5100
+        y: 180
+      positionAbsolute:
+        x: 5100
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              return {
+                  'apply_status': str(payload.get('status') or ''),
+                  'finding_id': str(payload.get('finding_id') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          apply_status:
+            children: null
+            type: string
+          finding_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Apply Result
+        type: code
+        variables:
+        - value_selector: [apply_judge_verdict, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_apply_result
+      position:
+        x: 5100
+        y: 60
+      positionAbsolute:
+        x: 5100
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '[]')
+              except Exception:
+                  payload = []
+              count = len(payload) if isinstance(payload, list) else 0
+              return {'confirmed_findings_count': str(count)}
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          confirmed_findings_count:
+            children: null
+            type: string
+        selected: false
+        title: Extract Findings Summary
+        type: code
+        variables:
+        - value_selector: [list_confirmed_findings, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_findings_summary
+      position:
+        x: 5400
+        y: 180
+      positionAbsolute:
+        x: 5400
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def main(campaign_id: str, graph_summary: str, tool_run_id: str, tool_result_status: str, observation_id: str, observations_count: str, verification_plan_id: str, evidence_id: str, apply_status: str, finding_id: str, confirmed_findings_count: str) -> dict:
+              text = f"Real BOLA backend bridge completed.\n\ncampaign_id: {campaign_id}\ngraph_summary: {graph_summary}\ntool_run_id: {tool_run_id}\ntool_result_status: {tool_result_status}\nobservation_id: {observation_id}\nobservations_count: {observations_count}\nverification_plan_id: {verification_plan_id}\nevidence_id: {evidence_id}\napply_status: {apply_status}\nfinding_id: {finding_id}\nconfirmed_findings_count: {confirmed_findings_count}\n"
+              return {'answer_text': text}
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          answer_text:
+            children: null
+            type: string
+        selected: false
+        title: Build Final Answer
+        type: code
+        variables:
+        - value_selector: [extract_campaign, campaign_id]
+          value_type: string
+          variable: campaign_id
+        - value_selector: [get_graph_summary, body]
+          value_type: string
+          variable: graph_summary
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+        - value_selector: [select_observation, observation_id]
+          value_type: string
+          variable: observation_id
+        - value_selector: [select_observation, observations_count]
+          value_type: string
+          variable: observations_count
+        - value_selector: [select_verification_plan, verification_plan_id]
+          value_type: string
+          variable: verification_plan_id
+        - value_selector: [compact_evidence_for_judge, evidence_id]
+          value_type: string
+          variable: evidence_id
+        - value_selector: [extract_apply_result, apply_status]
+          value_type: string
+          variable: apply_status
+        - value_selector: [extract_apply_result, finding_id]
+          value_type: string
+          variable: finding_id
+        - value_selector: [extract_findings_summary, confirmed_findings_count]
+          value_type: string
+          variable: confirmed_findings_count
+      height: 52
+      id: final_report
+      position:
+        x: 5700
+        y: 180
+      positionAbsolute:
+        x: 5700
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#final_report.answer_text#}}'
+        desc: ''
+        selected: false
+        title: Answer Success
+        type: answer
+        variables: []
+      height: 103
+      id: answer_success
+      position:
+        x: 6000
+        y: 180
+      positionAbsolute:
+        x: 6000
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+  viewport:
+    x: 0
+    y: 0
+    zoom: 0.8
+  rag_pipeline_variables: []
