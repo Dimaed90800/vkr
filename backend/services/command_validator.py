@@ -46,6 +46,14 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 _ABSOLUTE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
+_INTERNAL_ZAP_BASE_HOSTS: set[str] = {
+    "zap",
+    "zap:8080",
+    "localhost",
+    "localhost:8080",
+    "127.0.0.1",
+    "127.0.0.1:8080",
+}
 
 def _extract_absolute_urls(value: Any, path: str = "inputs") -> list[tuple[str, str]]:
     """Return (path, url) pairs for all nested absolute http(s) URLs."""
@@ -216,15 +224,35 @@ class CommandValidator:
         allowed_hosts = {h.lower() for h in campaign.allowed_hosts}
         for key, url in _extract_absolute_urls(command.inputs):
             parsed = urlparse(url)
+            scheme = (parsed.scheme or "").lower()
             host = (parsed.hostname or "").lower()
-            if host and host not in allowed_hosts:
+            host_port = f"{host}:{parsed.port}" if parsed.port is not None else host
+
+            if command.tool_name == "zap_discovery_passive" and key == "inputs.zap_base_url":
+                if scheme not in {"http", "https"} or host_port not in _INTERNAL_ZAP_BASE_HOSTS:
+                    errors.append(ValidationError(
+                        code="invalid_zap_base_url",
+                        message=(
+                            "inputs.zap_base_url must use http/https and point "
+                            "to an approved internal ZAP endpoint."
+                        ),
+                        details={
+                            "key": key,
+                            "url": url,
+                            "allowed_internal_zap_hosts": sorted(_INTERNAL_ZAP_BASE_HOSTS),
+                        },
+                    ))
+                continue
+
+            if host and host not in allowed_hosts and host_port not in allowed_hosts:
                 errors.append(ValidationError(
                     code="host_not_allowed",
-                    message=f"Host '{host}' from {key} is not in campaign allowed_hosts.",
+                    message=f"Host '{host_port}' from {key} is not in campaign allowed_hosts.",
                     details={
                         "key": key,
                         "url": url,
                         "host": host,
+                        "host_port": host_port,
                         "allowed_hosts": campaign.allowed_hosts,
                     },
                 ))

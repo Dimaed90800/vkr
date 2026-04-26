@@ -28,6 +28,7 @@ from backend.models.worker_command import CommandBudget, WorkerCommand
 from backend.services.artifact_store import ArtifactStore
 from backend.services.tool_executor import ToolExecutor, ToolExecutorStartError
 from backend.services.tool_registry import ToolRegistry
+from backend.services.zap_passive_client import ZapPassiveResult
 from backend.storage.memory_store import memory_store
 
 
@@ -320,6 +321,65 @@ def test_noop_adapter_not_fallback_for_every_tool():
     assert any(e.error_type == "adapter_not_available" for e in result.errors)
 
 
+def test_broad_zap_remains_known_but_unsupported():
+    reg = ToolRegistry()
+    assert reg.is_known("zap") is True
+    assert reg.has_adapter("zap") is False
+
+
+def test_zap_discovery_passive_executor_allows_internal_zap_base_url():
+    class FakeZapClient:
+        def run_discovery_passive(self, **kwargs):
+            return ZapPassiveResult(discovered_urls=["http://testapp.local/api/users"])
+
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="discovery_inventory",
+        strategy="zap_discovery_passive",
+        tool_name="zap_discovery_passive",
+        inputs={
+            "target_url": "http://testapp.local",
+            "zap_base_url": "http://zap:8080",
+        },
+    )
+
+    result = ToolExecutor(zap_passive_client=FakeZapClient()).execute_sync(cmd)
+
+    assert result.status == "finished"
+    assert result.tool_name == "zap_discovery_passive"
+    assert [obs.observation_type for obs in result.observations] == ["discovered_endpoint"]
+
+
+def test_validator_allows_exact_host_port_when_listed():
+    _reset_store()
+    _create_campaign(allowed_hosts=["host.docker.internal:8888"])
+    cmd = _sync_command(
+        tool_name="custom_request_executor",
+        inputs={"url": "http://host.docker.internal:8888/api/v1/test"},
+    )
+
+    result = ToolExecutor().execute_sync(cmd)
+
+    assert result.status == "finished"
+    assert not any(err.error_type == "validation_failed" for err in result.errors)
+
+
+def test_validator_rejects_wrong_port_even_with_same_host():
+    _reset_store()
+    _create_campaign(allowed_hosts=["host.docker.internal:9999"])
+    cmd = _sync_command(
+        tool_name="custom_request_executor",
+        inputs={"url": "http://host.docker.internal:8888/api/v1/test"},
+    )
+
+    result = ToolExecutor().execute_sync(cmd)
+
+    assert result.status == "failed"
+    assert any(err.error_type == "validation_failed" for err in result.errors)
+
+
 # ─── ToolRegistry tests ───────────────────────────────────────────
 
 
@@ -328,6 +388,8 @@ def test_tool_registry_reports_known_tools():
     assert reg.is_known("custom_request_executor") is True
     assert reg.is_known("nuclei") is True
     assert reg.is_known("noop_tool") is True
+    assert reg.is_known("zap_discovery_passive") is True
+    assert reg.has_adapter("zap_discovery_passive") is True
     assert reg.is_known("totally_made_up_tool") is False
 
 
@@ -335,6 +397,7 @@ def test_tool_registry_returns_execution_mode():
     reg = ToolRegistry()
     assert reg.get_execution_mode("custom_request_executor") == "sync"
     assert reg.get_execution_mode("noop_tool") == "sync"
+    assert reg.get_execution_mode("zap_discovery_passive") == "sync"
     assert reg.get_execution_mode("schemathesis_negative_test") == "async"
     assert reg.get_execution_mode("restler_fuzz") == "async"
 

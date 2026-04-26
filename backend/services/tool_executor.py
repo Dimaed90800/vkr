@@ -28,6 +28,7 @@ try:
     from backend.services.adapters.noop_adapter import NoopAdapter
     from backend.services.adapters.http_replay_adapter import HttpReplayAdapter
     from backend.services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
+    from backend.services.adapters.zap_discovery_passive_adapter import ZapDiscoveryPassiveAdapter
     from backend.services.artifact_store import ArtifactStore
     from backend.services.campaign_service import CampaignService
     from backend.services.command_validator import CommandValidator
@@ -48,6 +49,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.adapters.noop_adapter import NoopAdapter
     from services.adapters.http_replay_adapter import HttpReplayAdapter
     from services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
+    from services.adapters.zap_discovery_passive_adapter import ZapDiscoveryPassiveAdapter
     from services.artifact_store import ArtifactStore
     from services.campaign_service import CampaignService
     from services.command_validator import CommandValidator
@@ -81,7 +83,11 @@ def _make_run_id() -> str:
 
 
 class ToolExecutor:
-    def __init__(self, http_client: SafeHttpClient | None = None) -> None:
+    def __init__(
+        self,
+        http_client: SafeHttpClient | None = None,
+        zap_passive_client: object | None = None,
+    ) -> None:
         self._registry = ToolRegistry()
         self._validator = CommandValidator()
         self._campaigns = CampaignService()
@@ -89,6 +95,7 @@ class ToolExecutor:
         self._noop = NoopAdapter()
         self._http_replay = HttpReplayAdapter(http_client=http_client)
         self._bola_replay = BolaReplayProbeAdapter(http_client=http_client)
+        self._zap_discovery_passive = ZapDiscoveryPassiveAdapter(zap_client=zap_passive_client)
 
     def execute_sync(self, command: WorkerCommand) -> ToolResult:
         validation = self._validator.validate(command)
@@ -138,6 +145,8 @@ class ToolExecutor:
             return self._http_replay.execute(command, campaign, tool_run_id)
         if command.tool_name == "bola_replay_probe":
             return self._bola_replay.execute(command, campaign, tool_run_id)
+        if command.tool_name == "zap_discovery_passive":
+            return self._zap_discovery_passive.execute(command, campaign, tool_run_id)
         return self._noop.execute(command, campaign, tool_run_id)
 
     def start_async(self, command: WorkerCommand) -> ToolRun:
