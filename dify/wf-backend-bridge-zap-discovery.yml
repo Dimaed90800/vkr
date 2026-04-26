@@ -1,0 +1,889 @@
+app:
+  description: Minimal Phase 11B backend bridge workflow using zap_discovery_passive.
+    Backend owns campaign state, tool runs, observations, and verification plans.
+  icon: 🔎
+  icon_background: '#E8F3FF'
+  icon_type: emoji
+  mode: workflow
+  name: wf-backend-bridge-zap-discovery
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods: []
+      fileUploadConfig:
+        file_size_limit: 15
+        file_upload_limit: 20
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods: []
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: code
+      id: start-to-normalize_inputs
+      source: start
+      sourceHandle: source
+      target: normalize_inputs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: normalize_inputs-to-create_campaign
+      source: normalize_inputs
+      sourceHandle: source
+      target: create_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: create_campaign-to-extract_campaign
+      source: create_campaign
+      sourceHandle: source
+      target: extract_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: extract_campaign-to-run_zap_discovery_passive
+      source: extract_campaign
+      sourceHandle: source
+      target: run_zap_discovery_passive
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: run_zap_discovery_passive-to-extract_tool_run
+      source: run_zap_discovery_passive
+      sourceHandle: source
+      target: extract_tool_run
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: extract_tool_run-to-normalize_observations
+      source: extract_tool_run
+      sourceHandle: source
+      target: normalize_observations
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: normalize_observations-to-summarize_observations
+      source: normalize_observations
+      sourceHandle: source
+      target: summarize_observations
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: summarize_observations-to-has_observation
+      source: summarize_observations
+      sourceHandle: source
+      target: has_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: answer
+      id: has_observation-false-to-answer_no_observations
+      source: has_observation
+      sourceHandle: 'false'
+      target: answer_no_observations
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: http-request
+      id: has_observation-true-to-triage_observation
+      source: has_observation
+      sourceHandle: 'true'
+      target: triage_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: triage_observation-to-extract_verification_plan
+      source: triage_observation
+      sourceHandle: source
+      target: extract_verification_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: extract_verification_plan-to-final_report
+      source: extract_verification_plan
+      sourceHandle: source
+      target: final_report
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: answer
+      id: final_report-to-answer_success
+      source: final_report
+      sourceHandle: source
+      target: answer_success
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: ZAP passive discovery bridge inputs. Dify keeps compact IDs, counts, and status only.
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Toolbox URL
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: toolbox_url
+        - label: Target URL
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: Allowed Hosts JSON
+          max_length: 4000
+          options: []
+          required: true
+          type: paragraph
+          variable: allowed_hosts_json
+        - label: ZAP Base URL optional
+          max_length: 256
+          options: []
+          required: false
+          type: text-input
+          variable: zap_base_url
+        - label: Seed URLs JSON optional
+          max_length: 12000
+          options: []
+          required: false
+          type: paragraph
+          variable: seed_urls_json
+        - label: Use Spider
+          max_length: 32
+          options: []
+          required: false
+          type: text-input
+          variable: use_spider
+        - label: Max Duration Sec
+          max_length: 32
+          options: []
+          required: false
+          type: text-input
+          variable: max_duration_sec
+        - label: Max Discovered URLs
+          max_length: 32
+          options: []
+          required: false
+          type: text-input
+          variable: max_discovered_urls
+        - label: Max Alerts
+          max_length: 32
+          options: []
+          required: false
+          type: text-input
+          variable: max_alerts
+        - label: Task ID
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: task_id
+      height: 400
+      id: start
+      position:
+        x: 0
+        y: 180
+      positionAbsolute:
+        x: 0
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+          from urllib.parse import urlparse
+
+          def _json_list(value, default):
+              raw = str(value or '').strip()
+              if not raw:
+                  return list(default)
+              try:
+                  parsed = json.loads(raw)
+              except Exception:
+                  return list(default)
+              return parsed if isinstance(parsed, list) else list(default)
+
+          def _default_allowed_hosts(target_url):
+              parsed = urlparse(str(target_url or '').strip())
+              host = parsed.netloc or parsed.hostname or ''
+              return [host] if host else []
+
+          def _safe_bool(value, default=True):
+              raw = str(value or '').strip().lower()
+              if raw in {'true', '1', 'yes', 'on'}:
+                  return True
+              if raw in {'false', '0', 'no', 'off'}:
+                  return False
+              return bool(default)
+
+          def _safe_int(value, default, lower=1, upper=1000):
+              try:
+                  number = int(str(value or '').strip())
+              except Exception:
+                  number = default
+              return max(lower, min(number, upper))
+
+          def main(toolbox_url, target_url, allowed_hosts_json='', zap_base_url='', seed_urls_json='', use_spider='', max_duration_sec='', max_discovered_urls='', max_alerts='', task_id='') -> dict:
+              target = str(target_url or '').rstrip('/')
+              allowed_hosts = _json_list(allowed_hosts_json, _default_allowed_hosts(target))
+              seed_urls = _json_list(seed_urls_json, [])
+              return {
+                  'toolbox_url': str(toolbox_url or '').rstrip('/'),
+                  'target_url': target,
+                  'allowed_hosts_json': json.dumps(allowed_hosts, ensure_ascii=False),
+                  'zap_base_url': str(zap_base_url or 'http://zap:8080').strip(),
+                  'seed_urls_json': json.dumps(seed_urls, ensure_ascii=False),
+                  'use_spider_json': json.dumps(_safe_bool(use_spider, True)),
+                  'max_duration_sec': str(_safe_int(max_duration_sec, 30, 1, 300)),
+                  'max_discovered_urls': str(_safe_int(max_discovered_urls, 100, 1, 500)),
+                  'max_alerts': str(_safe_int(max_alerts, 100, 1, 500)),
+                  'task_id': str(task_id or 'task_zap_discovery_passive').strip(),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          allowed_hosts_json:
+            children: null
+            type: string
+          max_alerts:
+            children: null
+            type: string
+          max_discovered_urls:
+            children: null
+            type: string
+          max_duration_sec:
+            children: null
+            type: string
+          seed_urls_json:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+          toolbox_url:
+            children: null
+            type: string
+          use_spider_json:
+            children: null
+            type: string
+          zap_base_url:
+            children: null
+            type: string
+        selected: false
+        title: Normalize Inputs
+        type: code
+        variables:
+        - value_selector: [start, toolbox_url]
+          value_type: string
+          variable: toolbox_url
+        - value_selector: [start, target_url]
+          value_type: string
+          variable: target_url
+        - value_selector: [start, allowed_hosts_json]
+          value_type: string
+          variable: allowed_hosts_json
+        - value_selector: [start, zap_base_url]
+          value_type: string
+          variable: zap_base_url
+        - value_selector: [start, seed_urls_json]
+          value_type: string
+          variable: seed_urls_json
+        - value_selector: [start, use_spider]
+          value_type: string
+          variable: use_spider
+        - value_selector: [start, max_duration_sec]
+          value_type: string
+          variable: max_duration_sec
+        - value_selector: [start, max_discovered_urls]
+          value_type: string
+          variable: max_discovered_urls
+        - value_selector: [start, max_alerts]
+          value_type: string
+          variable: max_alerts
+        - value_selector: [start, task_id]
+          value_type: string
+          variable: task_id
+      height: 52
+      id: normalize_inputs
+      position:
+        x: 300
+        y: 180
+      positionAbsolute:
+        x: 300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "target_url": "{{#normalize_inputs.target_url#}}",
+              "allowed_hosts": {{#normalize_inputs.allowed_hosts_json#}},
+              "profile": "safe",
+              "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 50, "max_retries_per_task": 2},
+              "roles_json": []
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Create Campaign
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/campaigns'
+        variables: []
+      height: 140
+      id: create_campaign
+      position:
+        x: 600
+        y: 180
+      positionAbsolute:
+        x: 600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              return {
+                  'campaign_id': str(payload.get('campaign_id') or ''),
+                  'run_id': str(payload.get('run_id') or payload.get('legacy_run_id') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          campaign_id:
+            children: null
+            type: string
+          run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Campaign
+        type: code
+        variables:
+        - value_selector: [create_campaign, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_campaign
+      position:
+        x: 900
+        y: 180
+      positionAbsolute:
+        x: 900
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "execution_mode": "sync",
+              "command": {
+                "schema_version": "worker-command/v1",
+                "campaign_id": "{{#extract_campaign.campaign_id#}}",
+                "task_id": "{{#normalize_inputs.task_id#}}",
+                "worker_class": "discovery_inventory",
+                "strategy": "zap_discovery_passive",
+                "tool_name": "zap_discovery_passive",
+                "operation_id": "",
+                "seed_request_id": "",
+                "inputs": {
+                  "target_url": "{{#normalize_inputs.target_url#}}",
+                  "zap_base_url": "{{#normalize_inputs.zap_base_url#}}",
+                  "seed_urls": {{#normalize_inputs.seed_urls_json#}},
+                  "use_spider": {{#normalize_inputs.use_spider_json#}},
+                  "use_ajax_spider": false,
+                  "max_duration_sec": {{#normalize_inputs.max_duration_sec#}},
+                  "max_discovered_urls": {{#normalize_inputs.max_discovered_urls#}},
+                  "max_alerts": {{#normalize_inputs.max_alerts#}}
+                },
+                "budget": {
+                  "max_requests": 1,
+                  "timeout_sec": 60
+                },
+                "success_criteria": [
+                  "zap_discovery_completed"
+                ]
+              }
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Run ZAP Discovery Passive
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/tools/runs/start'
+        variables: []
+      height: 174
+      id: run_zap_discovery_passive
+      position:
+        x: 1200
+        y: 180
+      positionAbsolute:
+        x: 1200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              result = payload.get('result') or {}
+              tool_run_id = payload.get('tool_run_id') or result.get('tool_run_id') or ''
+              return {
+                  'tool_run_id': str(tool_run_id),
+                  'tool_result_status': str(payload.get('status') or result.get('status') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          tool_result_status:
+            children: null
+            type: string
+          tool_run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Tool Run
+        type: code
+        variables:
+        - value_selector: [run_zap_discovery_passive, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_tool_run
+      position:
+        x: 1500
+        y: 180
+      positionAbsolute:
+        x: 1500
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Normalize Observations
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/normalize/{{#extract_tool_run.tool_run_id#}}'
+        variables: []
+      height: 174
+      id: normalize_observations
+      position:
+        x: 1800
+        y: 180
+      positionAbsolute:
+        x: 1800
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              observations = payload.get('observations') or []
+              if not isinstance(observations, list):
+                  observations = []
+              discovered = [obs for obs in observations if isinstance(obs, dict) and obs.get('type') == 'discovered_endpoint']
+              alerts = [obs for obs in observations if isinstance(obs, dict) and obs.get('type') == 'zap_alert']
+              selected = alerts[0] if alerts else (discovered[0] if discovered else {})
+              return {
+                  'first_observation_id': str(selected.get('observation_id') or ''),
+                  'first_observation_type': str(selected.get('type') or ''),
+                  'observations_count': str(len(observations)),
+                  'discovered_endpoints_count': str(len(discovered)),
+                  'zap_alerts_count': str(len(alerts)),
+                  'has_observation': 'true' if selected.get('observation_id') else 'false',
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          discovered_endpoints_count:
+            children: null
+            type: string
+          first_observation_id:
+            children: null
+            type: string
+          first_observation_type:
+            children: null
+            type: string
+          has_observation:
+            children: null
+            type: string
+          observations_count:
+            children: null
+            type: string
+          zap_alerts_count:
+            children: null
+            type: string
+        selected: false
+        title: Summarize Observations
+        type: code
+        variables:
+        - value_selector: [normalize_observations, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: summarize_observations
+      position:
+        x: 2100
+        y: 180
+      positionAbsolute:
+        x: 2100
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: has-observation-condition
+            value: 'true'
+            variable_selector: [summarize_observations, has_observation]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Route to triage only when ZAP produced an actionable observation.
+        selected: false
+        title: Has Observation?
+        type: if-else
+      height: 126
+      id: has_observation
+      position:
+        x: 2400
+        y: 180
+      positionAbsolute:
+        x: 2400
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: "ZAP discovery completed with no normalized observations.\n\ncampaign_id: {{#extract_campaign.campaign_id#}}\ntool_run_id: {{#extract_tool_run.tool_run_id#}}\ntool_result_status: {{#extract_tool_run.tool_result_status#}}\nobservations_count: {{#summarize_observations.observations_count#}}\ndiscovered_endpoints_count: {{#summarize_observations.discovered_endpoints_count#}}\nzap_alerts_count: {{#summarize_observations.zap_alerts_count#}}\n\nIf tool_result_status is partial: ZAP produced partial result; no observations normalized."
+        desc: ''
+        selected: false
+        title: Answer No Observations
+        type: answer
+        variables: []
+      height: 120
+      id: answer_no_observations
+      position:
+        x: 2700
+        y: 420
+      positionAbsolute:
+        x: 2700
+        y: 420
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Triage First Observation
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/triage/{{#summarize_observations.first_observation_id#}}'
+        variables: []
+      height: 158
+      id: triage_observation
+      position:
+        x: 2700
+        y: 180
+      positionAbsolute:
+        x: 2700
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              plan = payload.get('verification_plan') or {}
+              observation = payload.get('observation') or {}
+              return {
+                  'verification_plan_id': str(plan.get('verification_plan_id') or ''),
+                  'triaged_observation_id': str(observation.get('observation_id') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          triaged_observation_id:
+            children: null
+            type: string
+          verification_plan_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Verification Plan
+        type: code
+        variables:
+        - value_selector: [triage_observation, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_verification_plan
+      position:
+        x: 3000
+        y: 180
+      positionAbsolute:
+        x: 3000
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def main(campaign_id: str, tool_run_id: str, tool_result_status: str, observations_count: str, discovered_endpoints_count: str, zap_alerts_count: str, first_observation_id: str, first_observation_type: str, verification_plan_id: str) -> dict:
+              text = f"ZAP discovery backend bridge completed.\n\ncampaign_id: {campaign_id}\ntool_run_id: {tool_run_id}\ntool_result_status: {tool_result_status}\nobservations_count: {observations_count}\ndiscovered_endpoints_count: {discovered_endpoints_count}\nzap_alerts_count: {zap_alerts_count}\nfirst_observation_id: {first_observation_id}\nfirst_observation_type: {first_observation_type}\nverification_plan_id: {verification_plan_id}\n"
+              return {'answer_text': text}
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          answer_text:
+            children: null
+            type: string
+        selected: false
+        title: Build Final Answer
+        type: code
+        variables:
+        - value_selector: [extract_campaign, campaign_id]
+          value_type: string
+          variable: campaign_id
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+        - value_selector: [summarize_observations, observations_count]
+          value_type: string
+          variable: observations_count
+        - value_selector: [summarize_observations, discovered_endpoints_count]
+          value_type: string
+          variable: discovered_endpoints_count
+        - value_selector: [summarize_observations, zap_alerts_count]
+          value_type: string
+          variable: zap_alerts_count
+        - value_selector: [summarize_observations, first_observation_id]
+          value_type: string
+          variable: first_observation_id
+        - value_selector: [summarize_observations, first_observation_type]
+          value_type: string
+          variable: first_observation_type
+        - value_selector: [extract_verification_plan, verification_plan_id]
+          value_type: string
+          variable: verification_plan_id
+      height: 52
+      id: final_report
+      position:
+        x: 3300
+        y: 180
+      positionAbsolute:
+        x: 3300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#final_report.answer_text#}}'
+        desc: ''
+        selected: false
+        title: Answer Success
+        type: answer
+        variables: []
+      height: 103
+      id: answer_success
+      position:
+        x: 3600
+        y: 180
+      positionAbsolute:
+        x: 3600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.8
