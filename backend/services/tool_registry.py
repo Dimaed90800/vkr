@@ -21,6 +21,7 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "http_replay_executor": "http_replay",
     "bola_replay_probe": "bola_replay",
     "zap_discovery_passive": "zap_discovery_passive",
+    "security_header_validator": "security_header_validator",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
@@ -29,6 +30,7 @@ SYNC_ONLY_TOOLS: set[str] = {
     "http_replay_executor",
     "bola_replay_probe",
     "zap_discovery_passive",
+    "security_header_validator",
     "auth_test_access",
     "replay_http_sequence",
     "property_mutation_test",

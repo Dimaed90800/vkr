@@ -92,6 +92,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "httpx",
         "custom_request_executor",
         "custom_header_checker",
+        "security_header_validator",
     ],
     "ssrf_external": [
         "custom_ssrf_checker",

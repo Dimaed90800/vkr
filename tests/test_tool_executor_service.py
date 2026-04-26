@@ -389,7 +389,9 @@ def test_tool_registry_reports_known_tools():
     assert reg.is_known("nuclei") is True
     assert reg.is_known("noop_tool") is True
     assert reg.is_known("zap_discovery_passive") is True
+    assert reg.is_known("security_header_validator") is True
     assert reg.has_adapter("zap_discovery_passive") is True
+    assert reg.has_adapter("security_header_validator") is True
     assert reg.is_known("totally_made_up_tool") is False
 
 
@@ -398,8 +400,30 @@ def test_tool_registry_returns_execution_mode():
     assert reg.get_execution_mode("custom_request_executor") == "sync"
     assert reg.get_execution_mode("noop_tool") == "sync"
     assert reg.get_execution_mode("zap_discovery_passive") == "sync"
+    assert reg.get_execution_mode("security_header_validator") == "sync"
     assert reg.get_execution_mode("schemathesis_negative_test") == "async"
     assert reg.get_execution_mode("restler_fuzz") == "async"
+
+
+def test_security_header_validator_allowed_only_for_misconfiguration():
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="access_control",
+        strategy="validate_security_header",
+        tool_name="security_header_validator",
+        inputs={
+            "request_url": "http://testapp.local/frame",
+            "target_url": "http://testapp.local/frame",
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+        },
+    )
+
+    result = ToolExecutor().execute_sync(cmd)
+
+    assert result.status == "failed"
+    assert any(err.error_type == "validation_failed" for err in result.errors)
 
 
 # ─── Route-level tests ────────────────────────────────────────────
