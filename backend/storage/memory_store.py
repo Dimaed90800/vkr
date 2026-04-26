@@ -45,6 +45,15 @@ class MemoryStore:
         self.evidence_packs_by_observation: dict[str, list[str]] = defaultdict(list)
         self.evidence_packs_by_verification_plan: dict[str, list[str]] = defaultdict(list)
 
+        self.judge_decisions: dict[str, dict] = {}
+        self.judge_decisions_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.judge_decisions_by_evidence: dict[str, list[str]] = defaultdict(list)
+        self.confirmed_findings: dict[str, dict] = {}
+        self.confirmed_findings_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.findings_by_fingerprint: dict[str, str] = {}
+        self.evidence_pack_apply_meta: dict[str, dict] = {}
+        self.observation_apply_meta: dict[str, dict] = {}
+
     def store_campaign(self, campaign_id: str, data: dict) -> None:
         self.campaigns[campaign_id] = data
         run_id = data.get("run_id")
@@ -235,6 +244,76 @@ class MemoryStore:
             for eid in self.evidence_packs_by_verification_plan.get(plan_id, [])
             if eid in self.evidence_packs
         ]
+
+    def store_judge_decision(
+        self, decision_id: str, campaign_id: str, evidence_id: str, data: dict,
+    ) -> None:
+        self.judge_decisions[decision_id] = data
+        if decision_id not in self.judge_decisions_by_campaign[campaign_id]:
+            self.judge_decisions_by_campaign[campaign_id].append(decision_id)
+        if evidence_id and decision_id not in self.judge_decisions_by_evidence[evidence_id]:
+            self.judge_decisions_by_evidence[evidence_id].append(decision_id)
+
+    def get_judge_decision(self, decision_id: str) -> dict | None:
+        return self.judge_decisions.get(decision_id)
+
+    def list_judge_decisions_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.judge_decisions[did]
+            for did in self.judge_decisions_by_campaign.get(campaign_id, [])
+            if did in self.judge_decisions
+        ]
+
+    def list_judge_decisions_by_evidence(self, evidence_id: str) -> list[dict]:
+        return [
+            self.judge_decisions[did]
+            for did in self.judge_decisions_by_evidence.get(evidence_id, [])
+            if did in self.judge_decisions
+        ]
+
+    def store_confirmed_finding(
+        self, finding_id: str, campaign_id: str, fingerprint: str, data: dict,
+    ) -> None:
+        self.confirmed_findings[finding_id] = data
+        if finding_id not in self.confirmed_findings_by_campaign[campaign_id]:
+            self.confirmed_findings_by_campaign[campaign_id].append(finding_id)
+        if fingerprint:
+            self.findings_by_fingerprint[f"{campaign_id}:{fingerprint}"] = finding_id
+
+    def get_confirmed_finding(self, finding_id: str) -> dict | None:
+        return self.confirmed_findings.get(finding_id)
+
+    def list_confirmed_findings_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.confirmed_findings[fid]
+            for fid in self.confirmed_findings_by_campaign.get(campaign_id, [])
+            if fid in self.confirmed_findings
+        ]
+
+    def get_finding_by_fingerprint(self, campaign_id: str, fingerprint: str) -> dict | None:
+        fid = self.findings_by_fingerprint.get(f"{campaign_id}:{fingerprint}")
+        if not fid:
+            return None
+        return self.confirmed_findings.get(fid)
+
+    def append_finding_duplicate(self, finding_id: str, decision_id: str) -> None:
+        finding = self.confirmed_findings.get(finding_id)
+        if finding is None:
+            return
+        duplicates = finding.setdefault("duplicates", [])
+        if decision_id not in duplicates:
+            duplicates.append(decision_id)
+
+    def mark_observation_applied(self, observation_id: str, data: dict) -> None:
+        if observation_id:
+            self.observation_apply_meta[observation_id] = data
+
+    def mark_evidence_pack_applied(self, evidence_id: str, data: dict) -> None:
+        if evidence_id:
+            self.evidence_pack_apply_meta[evidence_id] = data
+
+    def get_evidence_pack_apply_meta(self, evidence_id: str) -> dict | None:
+        return self.evidence_pack_apply_meta.get(evidence_id)
 
     def store_evidence(self, session_id: str, evidence) -> str:
         evidence_id = f"evidence-{uuid4().hex[:12]}"
