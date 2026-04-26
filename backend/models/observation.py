@@ -19,6 +19,7 @@ class ObservationType(str, Enum):
     schema_mismatch = "schema_mismatch"
     auth_anomaly = "auth_anomaly"
     cross_role_access_signal = "cross_role_access_signal"
+    validated_security_header_issue = "validated_security_header_issue"
     zap_alert = "zap_alert"
     nuclei_match = "nuclei_match"
     discovered_endpoint = "discovered_endpoint"

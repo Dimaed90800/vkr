@@ -711,6 +711,86 @@ def test_build_discovered_endpoint_missing_auth_check():
     assert pack.status == "incomplete"
 
 
+def test_build_security_header_evidence_ready_from_complete_validated_issue():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        operation_id="",
+        details={
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+            "actual_state": "missing",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_header_1",
+            "url": "http://testapp.local/frame",
+        },
+    )
+
+    pack, _, _ = EvidencePackBuilder().build_from_observation(obs.observation_id)
+
+    assert pack is not None
+    assert pack.owasp_category == "API8_SECURITY_MISCONFIGURATION"
+    assert pack.vulnerability_class == "security_header_misconfiguration"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert pack.method == "GET"
+    assert pack.replay_steps
+    assert pack.replay_steps[0].description == "Validated security header misconfiguration"
+    assert "validated_security_header_issue" in pack.derived_signals
+    assert "header_name:X-Frame-Options" in pack.derived_signals
+    assert not pack.missing_evidence
+
+
+def test_build_security_header_evidence_missing_required_fields_incomplete():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        details={},
+    )
+
+    pack, _, _ = EvidencePackBuilder().build_from_observation(obs.observation_id)
+
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "header_name_missing" in missing_codes
+    assert "alert_name_missing" in missing_codes
+    assert "actual_state_missing" in missing_codes
+    assert "validation_mode_missing" in missing_codes
+    assert "source_observation_id_missing" in missing_codes
+    assert "target_location_missing" in missing_codes
+
+
+def test_build_security_header_evidence_unsafe_value_requires_actual_value():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        details={
+            "header_name": "X-Content-Type-Options",
+            "alert_name": "X-Content-Type-Options Header Missing",
+            "actual_state": "unsafe_value",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_header_2",
+            "path": "/api/content",
+        },
+    )
+
+    pack, _, _ = EvidencePackBuilder().build_from_observation(obs.observation_id)
+
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "actual_value_missing_for_unsafe_value" in missing_codes
+
+
 # ─── auth_anomaly ────────────────────────────────────────────────
 
 
@@ -746,6 +826,43 @@ def test_build_auth_anomaly_pack_uses_baseline_and_attack_request_ids():
     assert pack.baseline.request_ref.request_id == baseline.request_id
     assert pack.attack is not None
     assert pack.attack.request_ref.request_id == attack.request_id
+
+
+def test_build_security_header_evidence_missing_state_does_not_affect_bola_readiness():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    setup = _setup_complete_bola_corpus()
+    bola_obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        operation_id=setup["op_id"],
+        request_id=setup["attacker_attack"].request_id,
+        confidence=0.9,
+        details={
+            "object_id": setup["object_id"],
+            "owner_role": setup["owner_role"],
+            "attacker_role": setup["attacker_role"],
+            "owner_collection_request_id": setup["owner_collection"].request_id,
+            "attacker_collection_request_id": setup["attacker_collection"].request_id,
+        },
+    )
+    _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        observation_id="obs_header_incomplete",
+        details={
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_header_3",
+            "url": "http://testapp.local/frame",
+        },
+    )
+
+    pack, _, _ = EvidencePackBuilder().build_from_observation(bola_obs.observation_id)
+
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
 
 
 # ─── Cross-cutting structural assertions ─────────────────────────

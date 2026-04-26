@@ -69,6 +69,14 @@ _TRIAGE_RULES: dict[str, dict] = {
             "attacker_collection_does_not_contain_object",
         ],
     },
+    "validated_security_header_issue": {
+        "security_relevance": "medium",
+        "recommended_next_action": "prove_security_header_misconfiguration",
+        "goal": "prove_security_header_misconfiguration",
+        "worker_class": "misconfiguration",
+        "strategy": "prove_security_header_misconfiguration",
+        "required_evidence": [],
+    },
     "zap_alert": {
         "security_relevance": "medium",
         "recommended_next_action": "replay_misconfiguration",

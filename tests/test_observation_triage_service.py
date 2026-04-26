@@ -229,6 +229,36 @@ def test_normalize_tool_result_observation_lite_mapped():
     assert obs.judge_worthy is False
 
 
+def test_normalize_validated_security_header_issue_observation_lite_mapped():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="validated_security_header_issue",
+            confidence=0.85,
+            details={
+                "header_name": "X-Frame-Options",
+                "alert_name": "X-Frame-Options Header Not Set",
+                "actual_state": "missing",
+                "validation_mode": "single_replay_header_check",
+                "source_observation_id": "obs_zap_1",
+                "url": "http://testapp.local/frame",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == "validated_security_header_issue"
+    assert obs.confidence == 0.85
+    assert obs.details.get("header_name") == "X-Frame-Options"
+
+
 def test_normalize_tool_result_observation_lite_propagates_context_fields():
     _reset_store()
     _create_campaign()
@@ -418,6 +448,21 @@ def test_triage_zap_alert_creates_replay_misconfiguration_plan():
     assert triaged.recommended_next_action == "replay_misconfiguration"
     assert plan is not None
     assert plan.goal == "replay_misconfiguration"
+
+
+def test_triage_validated_security_header_issue_creates_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs("validated_security_header_issue")
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "prove_security_header_misconfiguration"
+    assert triaged.security_relevance == "medium"
+    assert triaged.judge_worthy is False
+    assert plan is not None
+    assert plan.goal == "prove_security_header_misconfiguration"
+    assert plan.worker_class == "misconfiguration"
+    assert plan.strategy == "prove_security_header_misconfiguration"
 
 
 def test_triage_nuclei_match_creates_validate_template_plan():

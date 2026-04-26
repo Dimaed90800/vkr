@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from uuid import uuid4
 
 try:
@@ -82,6 +83,7 @@ except ModuleNotFoundError:  # pragma: no cover
 _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.cross_role_access_signal.value: "API1_BOLA",
     ObservationType.auth_anomaly.value: "API2_AUTH",
+    ObservationType.validated_security_header_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.zap_alert.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.nuclei_match.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
@@ -219,6 +221,8 @@ class EvidencePackBuilder:
             self._fill_unexpected_500(pack, obs, plan)
         elif obs_type == ObservationType.auth_anomaly.value:
             self._fill_auth_anomaly(pack, obs, plan)
+        elif obs_type == ObservationType.validated_security_header_issue.value:
+            self._fill_validated_security_header_issue(pack, obs, plan)
         elif obs_type in (
             ObservationType.zap_alert.value,
             ObservationType.nuclei_match.value,
@@ -388,6 +392,8 @@ class EvidencePackBuilder:
     @staticmethod
     def _vulnerability_class(obs: Observation) -> str:
         obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
+        if obs_type == ObservationType.validated_security_header_issue.value:
+            return "security_header_misconfiguration"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -602,6 +608,89 @@ class EvidencePackBuilder:
                 code="attack_with_bad_auth",
                 description="Need the corpus seed of the bad/missing-auth attack.",
                 required_for="auth_anomaly",
+            ))
+
+    def _fill_validated_security_header_issue(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details or {}
+        header_name = str(details.get("header_name") or "").strip()
+        alert_name = str(details.get("alert_name") or "").strip()
+        actual_state = str(details.get("actual_state") or "").strip()
+        actual_value_redacted = str(details.get("actual_value_redacted") or "").strip()
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        source_observation_id = str(details.get("source_observation_id") or "").strip()
+        url = str(details.get("url") or "").strip()
+        path = str(details.get("path") or "").strip()
+        target_location = url or path
+
+        if not pack.method:
+            pack.method = "GET"
+        if not pack.endpoint:
+            pack.endpoint = path or (urlparse(url).path if url else "")
+
+        state_label = actual_state or "unknown_state"
+        header_label = header_name or "security header"
+        pack.hypothesis = (
+            f"Validated {header_label} misconfiguration observed with state '{state_label}'."
+        )
+        pack.derived_signals = [
+            "validated_security_header_issue",
+            f"header_name:{header_name}" if header_name else "header_name:",
+            f"actual_state:{actual_state}" if actual_state else "actual_state:",
+            f"validation_mode:{validation_mode}" if validation_mode else "validation_mode:",
+        ]
+        pack.replay_steps.append(EvidenceReplayStep(
+            order=1,
+            role="",
+            method="GET",
+            path_template=path,
+            url=target_location,
+            request_ref=None,
+            description="Validated security header misconfiguration",
+        ))
+
+        if not header_name:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="header_name_missing",
+                description="Validated security header issue is missing header_name.",
+                required_for="validated_security_header_issue",
+            ))
+        if not alert_name:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="alert_name_missing",
+                description="Validated security header issue is missing alert_name.",
+                required_for="validated_security_header_issue",
+            ))
+        if not actual_state:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="actual_state_missing",
+                description="Validated security header issue is missing actual_state.",
+                required_for="validated_security_header_issue",
+            ))
+        if not validation_mode:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="validation_mode_missing",
+                description="Validated security header issue is missing validation_mode.",
+                required_for="validated_security_header_issue",
+            ))
+        if not source_observation_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="source_observation_id_missing",
+                description="Validated security header issue is missing source_observation_id.",
+                required_for="validated_security_header_issue",
+            ))
+        if not target_location:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="target_location_missing",
+                description="Validated security header issue is missing url or path.",
+                required_for="validated_security_header_issue",
+            ))
+        if actual_state == "unsafe_value" and not actual_value_redacted:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="actual_value_missing_for_unsafe_value",
+                description="unsafe_value findings must include actual_value_redacted.",
+                required_for="validated_security_header_issue",
             ))
 
     def _fill_zap_or_nuclei(
