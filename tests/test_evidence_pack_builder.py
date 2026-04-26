@@ -267,6 +267,74 @@ def _setup_complete_bola_corpus(campaign_id: str = "cmp_evp1") -> dict:
     }
 
 
+def _setup_complete_bola_uuid_corpus(campaign_id: str = "cmp_evp1") -> dict:
+    op_id = "op_GET_/api/vehicles/{vehicleId}"
+    coll_op_id = "op_GET_/api/vehicles"
+    uuid_val = "8e00713c-fe1b-457c-9f73-6be4099f6e8c"
+
+    owner_seed = _add_corpus(
+        campaign_id=campaign_id,
+        method="GET",
+        url=f"http://testapp.local/api/vehicles/{uuid_val}",
+        path_template="/api/vehicles/{vehicleId}",
+        role="owner",
+        status_code=200,
+        operation_id=op_id,
+        response_body={"carId": uuid_val, "owner": "owner"},
+    )
+    attacker_attack = _add_corpus(
+        campaign_id=campaign_id,
+        method="GET",
+        url=f"http://testapp.local/api/vehicles/{uuid_val}",
+        path_template="/api/vehicles/{vehicleId}",
+        role="attacker",
+        status_code=200,
+        operation_id=op_id,
+        response_body={"carId": uuid_val, "owner": "owner"},
+    )
+    attacker_self = _add_corpus(
+        campaign_id=campaign_id,
+        method="GET",
+        url="http://testapp.local/api/vehicles/attacker-own",
+        path_template="/api/vehicles/{vehicleId}",
+        role="attacker",
+        status_code=200,
+        operation_id=op_id,
+        response_body={"carId": "attacker-own"},
+    )
+    owner_collection = _add_corpus(
+        campaign_id=campaign_id,
+        method="GET",
+        url="http://testapp.local/api/vehicles",
+        path_template="/api/vehicles",
+        role="owner",
+        status_code=200,
+        operation_id=coll_op_id,
+        response_body={"items": [{"id": 168, "uuid": uuid_val}]},
+    )
+    attacker_collection = _add_corpus(
+        campaign_id=campaign_id,
+        method="GET",
+        url="http://testapp.local/api/vehicles",
+        path_template="/api/vehicles",
+        role="attacker",
+        status_code=200,
+        operation_id=coll_op_id,
+        response_body={"items": [{"id": 169, "uuid": "other-uuid"}]},
+    )
+    return {
+        "object_id": uuid_val,
+        "owner_role": "owner",
+        "attacker_role": "attacker",
+        "op_id": op_id,
+        "owner_seed": owner_seed,
+        "attacker_attack": attacker_attack,
+        "attacker_self": attacker_self,
+        "owner_collection": owner_collection,
+        "attacker_collection": attacker_collection,
+    }
+
+
 # ─── BOLA / cross_role_access_signal tests ────────────────────────
 
 
@@ -336,6 +404,73 @@ def test_build_bola_evidence_complete_with_ownership_proof():
     assert pack.missing_evidence == []
     assert pack.status == "ready_for_judge"
     assert pack.judge_ready is True
+
+
+def test_build_bola_evidence_complete_with_uuid_ownership_proof():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    ctx = _setup_complete_bola_uuid_corpus()
+
+    obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        operation_id=ctx["op_id"],
+        confidence=0.9,
+        details={
+            "object_id": ctx["object_id"],
+            "owner_role": ctx["owner_role"],
+            "attacker_role": ctx["attacker_role"],
+        },
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert pack.ownership_proof is not None
+    assert pack.ownership_proof.owner_collection_request_ref is not None
+    assert pack.ownership_proof.attacker_collection_request_ref is not None
+    assert pack.missing_evidence == []
+
+
+def test_build_bola_evidence_uses_observation_collection_request_ids_for_ownership_proof():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    ctx = _setup_complete_bola_uuid_corpus()
+
+    obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        operation_id=ctx["op_id"],
+        confidence=0.9,
+        details={
+            "object_id": ctx["object_id"],
+            "owner_role": ctx["owner_role"],
+            "attacker_role": ctx["attacker_role"],
+            "owner_collection_request_id": ctx["owner_collection"].request_id,
+            "attacker_collection_request_id": ctx["attacker_collection"].request_id,
+        },
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.ownership_proof is not None
+    assert pack.ownership_proof.owner_collection_request_ref is not None
+    assert pack.ownership_proof.attacker_collection_request_ref is not None
+    assert (
+        pack.ownership_proof.owner_collection_request_ref.request_id
+        == ctx["owner_collection"].request_id
+    )
+    assert (
+        pack.ownership_proof.attacker_collection_request_ref.request_id
+        == ctx["attacker_collection"].request_id
+    )
+    assert pack.status == "ready_for_judge"
+    assert pack.missing_evidence == []
 
 
 def test_build_bola_evidence_uses_request_ids_not_raw_bodies():

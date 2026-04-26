@@ -116,6 +116,44 @@ def test_corpus_extracts_object_ids() -> None:
     assert "456" in item.extracted_ids["responseId"]
 
 
+def test_request_corpus_extracts_uuid_and_car_id_fields() -> None:
+    cid = _create_campaign()
+    svc = RequestCorpusService()
+    uuid_val = "8e00713c-fe1b-457c-9f73-6be4099f6e8c"
+
+    collection = svc.add_exchange(
+        campaign_id=cid,
+        method="GET",
+        url="http://localhost:8888/api/v2/vehicles",
+        path_template="/api/v2/vehicles",
+        status_code=200,
+        response_body={"id": 168, "uuid": uuid_val},
+    )
+    location = svc.add_exchange(
+        campaign_id=cid,
+        method="GET",
+        url="http://localhost:8888/api/v2/location",
+        path_template="/api/v2/location",
+        status_code=200,
+        response_body={"location": {"carId": uuid_val}},
+    )
+
+    all_collection_ids = {
+        str(v)
+        for vals in collection.extracted_ids.values()
+        for v in vals
+    }
+    assert "168" in all_collection_ids
+    assert uuid_val in all_collection_ids
+
+    all_location_ids = {
+        str(v)
+        for vals in location.extracted_ids.values()
+        for v in vals
+    }
+    assert uuid_val in all_location_ids
+
+
 def test_corpus_finds_cross_role_candidates() -> None:
     cid = _create_campaign()
     svc = RequestCorpusService()

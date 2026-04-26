@@ -46,6 +46,7 @@ _PATH_SEGMENT_RE = re.compile(
     r"(?:/|$)",
     re.IGNORECASE,
 )
+_RESPONSE_ID_KEYS: set[str] = {"id", "uuid", "carid", "vehicleid"}
 
 
 def classify_status(status_code: int) -> StatusClassification:
@@ -125,16 +126,44 @@ def extract_ids(
             if obj_val not in ids[param_name]:
                 ids[param_name].append(obj_val)
 
-    if isinstance(response_body, dict):
-        for key in ("id", "Id", "ID"):
-            val = response_body.get(key)
-            if val is not None:
-                str_val = str(val)
-                ids.setdefault("responseId", [])
-                if str_val not in ids["responseId"]:
-                    ids["responseId"].append(str_val)
+    _extract_response_ids_recursive(response_body, ids)
 
     return ids
+
+
+def _append_extracted_id(
+    ids: dict[str, list[str]],
+    key: str,
+    value: Any,
+) -> None:
+    if value is None:
+        return
+    if isinstance(value, (dict, list, tuple, set)):
+        return
+    str_val = str(value)
+    if not str_val:
+        return
+    ids.setdefault(key, [])
+    if str_val not in ids[key]:
+        ids[key].append(str_val)
+
+
+def _extract_response_ids_recursive(
+    data: Any,
+    ids: dict[str, list[str]],
+) -> None:
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key.lower() in _RESPONSE_ID_KEYS:
+                # Keep a generic bucket for compatibility and a key-specific
+                # bucket for richer downstream matching.
+                _append_extracted_id(ids, "responseId", value)
+                _append_extracted_id(ids, key, value)
+            _extract_response_ids_recursive(value, ids)
+        return
+    if isinstance(data, list):
+        for value in data:
+            _extract_response_ids_recursive(value, ids)
 
 
 class RequestCorpusService:

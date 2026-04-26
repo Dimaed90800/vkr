@@ -423,7 +423,12 @@ class EvidencePackBuilder:
             )
 
         ownership_proof = self._build_ownership_proof(
-            obs.campaign_id, object_id, owner_role, attacker_role, operation_id
+            obs.campaign_id,
+            object_id,
+            owner_role,
+            attacker_role,
+            operation_id,
+            obs.details,
         )
         if ownership_proof is not None:
             pack.ownership_proof = ownership_proof
@@ -869,12 +874,33 @@ class EvidencePackBuilder:
         owner_role: str,
         attacker_role: str,
         operation_id: str,
+        observation_details: Mapping[str, object] | None = None,
     ) -> EvidenceOwnershipProof | None:
         if not (object_id and owner_role and attacker_role):
             return None
 
         owner_collection_ref: EvidenceHttpExchangeRef | None = None
         attacker_collection_ref: EvidenceHttpExchangeRef | None = None
+
+        details = observation_details or {}
+        owner_collection_request_id = str(details.get("owner_collection_request_id", "") or "")
+        attacker_collection_request_id = str(details.get("attacker_collection_request_id", "") or "")
+
+        if owner_collection_request_id:
+            owner_collection_ref = self._resolve_request_ref(campaign_id, owner_collection_request_id)
+            if not self._ref_matches_collection_proof(
+                owner_collection_ref, owner_role, object_id, must_contain=True
+            ):
+                owner_collection_ref = None
+
+        if attacker_collection_request_id:
+            attacker_collection_ref = self._resolve_request_ref(
+                campaign_id, attacker_collection_request_id
+            )
+            if not self._ref_matches_collection_proof(
+                attacker_collection_ref, attacker_role, object_id, must_contain=False
+            ):
+                attacker_collection_ref = None
 
         for item in self._corpus.list_by_campaign(campaign_id):
             if item.classification != StatusClassification.successful_seed:
@@ -920,7 +946,49 @@ class EvidencePackBuilder:
         for vals in item.extracted_ids.values():
             for val in vals:
                 ids.add(str(val))
+        body = item.response_body_redacted
+        if body is not None:
+            for val in EvidencePackBuilder._all_scalar_values_recursive(body):
+                ids.add(val)
         return ids
+
+    @staticmethod
+    def _all_scalar_values_recursive(data: object) -> set[str]:
+        out: set[str] = set()
+        if isinstance(data, Mapping):
+            for value in data.values():
+                out.update(EvidencePackBuilder._all_scalar_values_recursive(value))
+            return out
+        if isinstance(data, list):
+            for value in data:
+                out.update(EvidencePackBuilder._all_scalar_values_recursive(value))
+            return out
+        if isinstance(data, (str, int, float)) and not isinstance(data, bool):
+            str_val = str(data)
+            if str_val:
+                out.add(str_val)
+        return out
+
+    def _ref_matches_collection_proof(
+        self,
+        ref: EvidenceHttpExchangeRef | None,
+        expected_role: str,
+        object_id: str,
+        *,
+        must_contain: bool,
+    ) -> bool:
+        if ref is None:
+            return False
+        if expected_role and ref.role != expected_role:
+            return False
+        if ref.classification != StatusClassification.successful_seed.value:
+            return False
+        item = self._corpus.get_request(ref.request_id)
+        if item is None:
+            return False
+        ids_in_item = self._all_ids_in_item(item)
+        contains = object_id in ids_in_item
+        return contains if must_contain else not contains
 
     def _find_negative_control(
         self,
