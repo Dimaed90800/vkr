@@ -12,10 +12,16 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from backend.models.observation import NormalizeResponse, Observation, TriageResponse
-from backend.services.observation_normalizer import NormalizeError, ObservationNormalizer
-from backend.services.observation_triage import ObservationTriage
-from backend.storage.memory_store import memory_store
+try:
+    from backend.models.observation import NormalizeResponse, Observation, TriageResponse
+    from backend.services.observation_normalizer import NormalizeError, ObservationNormalizer
+    from backend.services.observation_triage import ObservationTriage
+    from backend.storage.memory_store import memory_store
+except ModuleNotFoundError:  # pragma: no cover
+    from models.observation import NormalizeResponse, Observation, TriageResponse
+    from services.observation_normalizer import NormalizeError, ObservationNormalizer
+    from services.observation_triage import ObservationTriage
+    from storage.memory_store import memory_store
 
 observations_router = APIRouter(prefix="/v1/observations", tags=["observations"])
 verification_plans_router = APIRouter(prefix="/v1/verification-plans", tags=["verification-plans"])

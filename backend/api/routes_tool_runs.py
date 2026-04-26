@@ -9,11 +9,18 @@ from __future__ import annotations
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from backend.models.tool_run import ToolRunStartRequest, ToolRunStartResponse
-from backend.models.worker_command import WorkerCommand
-from backend.services.command_validator import CommandValidator
-from backend.services.tool_executor import ToolExecutor, ToolExecutorStartError
-from backend.services.tool_registry import ToolRegistry
+try:
+    from backend.models.tool_run import ToolRunStartRequest, ToolRunStartResponse
+    from backend.models.worker_command import WorkerCommand
+    from backend.services.command_validator import CommandValidator
+    from backend.services.tool_executor import ToolExecutor, ToolExecutorStartError
+    from backend.services.tool_registry import ToolRegistry
+except ModuleNotFoundError:  # pragma: no cover
+    from models.tool_run import ToolRunStartRequest, ToolRunStartResponse
+    from models.worker_command import WorkerCommand
+    from services.command_validator import CommandValidator
+    from services.tool_executor import ToolExecutor, ToolExecutorStartError
+    from services.tool_registry import ToolRegistry
 
 tool_runs_router = APIRouter(prefix="/v1/tools/runs", tags=["tool-runs"])
 

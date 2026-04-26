@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .env
 *.log
+.DS_Store
 backend/exports/jobs/
 backend/exports/reports/*.md
 !backend/exports/jobs/.gitkeep

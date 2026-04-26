@@ -8,14 +8,24 @@ from __future__ import annotations
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
-from backend.models.worker_command import (
-    CommandSubmitResponse,
-    ValidationResult,
-    WorkerCommand,
-    normalize_worker_class,
-)
-from backend.services.command_validator import CommandValidator, _command_fingerprint
-from backend.storage.memory_store import memory_store
+try:
+    from backend.models.worker_command import (
+        CommandSubmitResponse,
+        ValidationResult,
+        WorkerCommand,
+        normalize_worker_class,
+    )
+    from backend.services.command_validator import CommandValidator, _command_fingerprint
+    from backend.storage.memory_store import memory_store
+except ModuleNotFoundError:  # pragma: no cover
+    from models.worker_command import (
+        CommandSubmitResponse,
+        ValidationResult,
+        WorkerCommand,
+        normalize_worker_class,
+    )
+    from services.command_validator import CommandValidator, _command_fingerprint
+    from storage.memory_store import memory_store
 
 workers_router = APIRouter(prefix="/v1/workers", tags=["workers"])
 

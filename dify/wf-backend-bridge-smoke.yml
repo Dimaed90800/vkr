@@ -1,151 +1,1401 @@
 app:
-  description: Minimal Phase 8 backend bridge smoke workflow. Dify only carries compact identifiers while backend owns campaign state, signals, evidence, decisions, and findings.
-  icon: link
+  description: Minimal Phase 8 backend bridge smoke workflow with synthetic corpus
+    setup. Backend owns campaign state, observations, evidence, decisions, and findings.
+  icon: 🔗
   icon_background: '#E8F3FF'
+  icon_type: emoji
   mode: workflow
   name: wf-backend-bridge-smoke
   use_icon_as_answer_icon: false
+dependencies: []
 kind: app
-version: 0.1.0
+version: 0.6.0
 workflow:
-  description: >
-    Backend-first smoke flow: create campaign, build graph, derive corpus cross-role
-    observations, triage, build EvidencePack, ask Judge for JudgeVerdictPayload,
-    apply verdict, and read confirmed findings. This workflow intentionally does
-    not call legacy scheduler or legacy tool wrapper execution.
-  variables:
-    keep_compact_state_only:
-      - campaign_id
-      - graph_summary
-      - observation_id
-      - verification_plan_id
-      - evidence_id
-      - judge_verdict
-      - finding_id
-      - confirmed_findings
-  nodes:
-    - id: create_campaign
-      type: http-request
-      title: Create Campaign
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/campaigns"
-      body:
-        target_url: "{{#inputs.target_url#}}"
-        openapi_url: "{{#inputs.openapi_url#}}"
-        allowed_hosts: "{{#inputs.allowed_hosts#}}"
-        roles_json: "{{#inputs.roles_json#}}"
-    - id: build_graph
-      type: http-request
-      title: Build API Graph
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/graph/{{#create_campaign.campaign_id#}}/build"
-      body:
-        openapi_spec_text: "{{#inputs.openapi_spec_text#}}"
-    - id: graph_summary
-      type: http-request
-      title: Get Graph Summary
-      method: get
-      url: "{{#inputs.toolbox_url#}}/v1/graph/{{#create_campaign.campaign_id#}}/summary"
-    - id: create_cross_role_signals
-      type: http-request
-      title: Create Corpus Cross-Role Signals
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/corpus/{{#create_campaign.campaign_id#}}/cross-role-signals"
-      body:
-        operation_id: "{{#inputs.operation_id#}}"
-        limit: 10
-    - id: select_observation
-      type: code
-      title: Select Observation ID
-      outputs:
-        observation_id: "{{ first(create_cross_role_signals.observations).observation_id }}"
-    - id: triage_observation
-      type: http-request
-      title: Triage Observation
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/observations/triage/{{#select_observation.observation_id#}}"
-    - id: select_verification_plan
-      type: code
-      title: Select Verification Plan ID
-      outputs:
-        verification_plan_id: "{{ triage_observation.verification_plan.verification_plan_id }}"
-    - id: build_evidence_pack
-      type: http-request
-      title: Build Evidence Pack
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/evidence/build-from-plan/{{#select_verification_plan.verification_plan_id#}}"
-    - id: compact_evidence_for_judge
-      type: code
-      title: Compact Evidence For Judge
-      outputs:
-        evidence_id: "{{ build_evidence_pack.evidence_pack.evidence_id }}"
-        evidence_summary:
-          campaign_id: "{{ build_evidence_pack.evidence_pack.campaign_id }}"
-          evidence_id: "{{ build_evidence_pack.evidence_pack.evidence_id }}"
-          task_id: "{{ build_evidence_pack.evidence_pack.task_id }}"
-          observation_id: "{{ build_evidence_pack.evidence_pack.observation_id }}"
-          verification_plan_id: "{{ build_evidence_pack.evidence_pack.verification_plan_id }}"
-          owasp_category: "{{ build_evidence_pack.evidence_pack.owasp_category }}"
-          vulnerability_class: "{{ build_evidence_pack.evidence_pack.vulnerability_class }}"
-          operation_id: "{{ build_evidence_pack.evidence_pack.operation_id }}"
-          endpoint: "{{ build_evidence_pack.evidence_pack.endpoint }}"
-          method: "{{ build_evidence_pack.evidence_pack.method }}"
-          status: "{{ build_evidence_pack.evidence_pack.status }}"
-          judge_ready: "{{ build_evidence_pack.evidence_pack.judge_ready }}"
-          missing_evidence: "{{ build_evidence_pack.evidence_pack.missing_evidence }}"
-          has_baseline: "{{ build_evidence_pack.evidence_pack.baseline != null }}"
-          has_attack: "{{ build_evidence_pack.evidence_pack.attack != null }}"
-          has_ownership_proof: "{{ build_evidence_pack.evidence_pack.ownership_proof != null }}"
-          controls_count: "{{ count(build_evidence_pack.evidence_pack.controls) }}"
-          replay_steps_count: "{{ count(build_evidence_pack.evidence_pack.replay_steps) }}"
-    - id: judge_verdict
-      type: llm
-      title: Judge Verdict Payload
-      prompt: |
-        Return JSON only matching JudgeVerdictPayload:
-        {
-          "schema_version": "judge-verdict/v1",
-          "verdict": "confirmed|rejected|rework|duplicate|out_of_scope|inconclusive",
-          "confidence": 0.0,
-          "severity": "",
-          "reason": "",
-          "finding_candidate": {
-            "title": "",
-            "severity": "",
-            "vulnerability_class": "",
-            "summary": "",
-            "extras": {}
-          },
-          "duplicate_of_finding_id": "",
-          "judge_source": "dify",
-          "judge_model": "configured-llm"
-        }
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        attachment_image_file_size_limit: 2
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        file_upload_limit: 20
+        image_file_batch_limit: 10
+        image_file_size_limit: 10
+        single_chunk_attachment_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: start-to-normalize_inputs
+      source: start
+      sourceHandle: source
+      target: normalize_inputs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: normalize_inputs-to-create_campaign
+      source: normalize_inputs
+      sourceHandle: source
+      target: create_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: create_campaign-to-extract_campaign
+      source: create_campaign
+      sourceHandle: source
+      target: extract_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: extract_campaign-to-build_graph
+      source: extract_campaign
+      sourceHandle: source
+      target: build_graph
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: build_graph-to-get_graph_summary
+      source: build_graph
+      sourceHandle: source
+      target: get_graph_summary
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: get_graph_summary-to-add_owner_vehicle_corpus
+      source: get_graph_summary
+      sourceHandle: source
+      target: add_owner_vehicle_corpus
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: add_owner_vehicle_corpus-to-add_attacker_vehicle_corpus
+      source: add_owner_vehicle_corpus
+      sourceHandle: source
+      target: add_attacker_vehicle_corpus
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: add_attacker_vehicle_corpus-to-add_owner_collection_corpus
+      source: add_attacker_vehicle_corpus
+      sourceHandle: source
+      target: add_owner_collection_corpus
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: add_owner_collection_corpus-to-add_attacker_collection_corpus
+      source: add_owner_collection_corpus
+      sourceHandle: source
+      target: add_attacker_collection_corpus
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: create_cross_role_signals-to-select_observation
+      source: create_cross_role_signals
+      sourceHandle: source
+      target: select_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: select_observation-to-triage_observation
+      source: select_observation
+      sourceHandle: source
+      target: triage_observation
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: triage_observation-to-select_verification_plan
+      source: triage_observation
+      sourceHandle: source
+      target: select_verification_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: select_verification_plan-to-build_evidence_pack
+      source: select_verification_plan
+      sourceHandle: source
+      target: build_evidence_pack
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: build_evidence_pack-to-compact_evidence_for_judge
+      source: build_evidence_pack
+      sourceHandle: source
+      target: compact_evidence_for_judge
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: code
+      id: compact_evidence_for_judge-to-static_judge_verdict
+      source: compact_evidence_for_judge
+      sourceHandle: source
+      target: static_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: static_judge_verdict-to-apply_judge_verdict
+      source: static_judge_verdict
+      sourceHandle: source
+      target: apply_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: apply_judge_verdict-to-list_confirmed_findings
+      source: apply_judge_verdict
+      sourceHandle: source
+      target: list_confirmed_findings
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: list_confirmed_findings-to-final_report
+      source: list_confirmed_findings
+      sourceHandle: source
+      target: final_report
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: answer
+      id: final_report-to-answer
+      source: final_report
+      sourceHandle: source
+      target: answer
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: answer
+        targetType: end
+      id: answer-to-end
+      source: answer
+      sourceHandle: source
+      target: end
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: add_attacker_collection_corpus-source-1777185174129-target
+      source: add_attacker_collection_corpus
+      sourceHandle: source
+      target: '1777185174129'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: http-request
+      id: 1777185174129-source-create_cross_role_signals-target
+      source: '1777185174129'
+      sourceHandle: source
+      target: create_cross_role_signals
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: ''
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Toolbox URL
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: toolbox_url
+        - label: Target URL
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: OpenAPI URL optional
+          max_length: 512
+          options: []
+          required: false
+          type: text-input
+          variable: openapi_url
+        - label: OpenAPI Spec Text JSON string
+          max_length: 20000
+          options: []
+          required: true
+          type: paragraph
+          variable: openapi_spec_text
+        - label: Allowed Hosts JSON
+          max_length: 2000
+          options: []
+          required: false
+          type: paragraph
+          variable: allowed_hosts_json
+        - label: Roles JSON
+          max_length: 4000
+          options: []
+          required: false
+          type: paragraph
+          variable: roles_json
+        - label: Operation ID optional filter
+          max_length: 256
+          options: []
+          required: false
+          type: text-input
+          variable: operation_id
+        - label: Task ID
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: task_id
+      height: 291
+      id: start
+      position:
+        x: 0
+        y: 180
+      positionAbsolute:
+        x: 0
+        y: 180
+      selected: true
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\nfrom urllib.parse import urlparse\n\ndef _json_list(value,\
+          \ default):\n    raw = str(value or '').strip()\n    if not raw:\n     \
+          \   return default\n    try:\n        parsed = json.loads(raw)\n    except\
+          \ Exception:\n        return default\n    return parsed if isinstance(parsed,\
+          \ list) else default\n\ndef _default_allowed_hosts(target_url):\n    parsed\
+          \ = urlparse(str(target_url or '').strip())\n    host = parsed.hostname\
+          \ or parsed.netloc or ''\n    return [host] if host else []\n\ndef _default_openapi_spec():\n\
+          \    return {\n        'openapi': '3.0.3',\n        'info': {'title': 'Vehicle\
+          \ Smoke API', 'version': '1.0.0'},\n        'paths': {\n            '/api/v1/vehicles':\
+          \ {\n                'get': {\n                    'operationId': 'listVehicles',\n\
+          \                    'responses': {'200': {'description': 'Vehicle collection'}}\n\
+          \                }\n            },\n            '/api/v1/vehicles/{vehicleId}':\
+          \ {\n                'get': {\n                    'operationId': 'getVehicle',\n\
+          \                    'parameters': [\n                        {'name': 'vehicleId',\
+          \ 'in': 'path', 'required': True, 'schema': {'type': 'string'}}\n      \
+          \              ],\n                    'responses': {'200': {'description':\
+          \ 'Vehicle'}}\n                }\n            }\n        }\n    }\n\ndef\
+          \ main(toolbox_url: str, target_url: str, openapi_url: str = '', openapi_spec_text:\
+          \ str = '', allowed_hosts_json: str = '', roles_json: str = '', operation_id:\
+          \ str = '', task_id: str = '') -> dict:\n    toolbox = str(toolbox_url or\
+          \ '').rstrip('/')\n    target = str(target_url or '').rstrip('/')\n    allowed_hosts\
+          \ = _json_list(allowed_hosts_json, _default_allowed_hosts(target))\n   \
+          \ if not allowed_hosts:\n        allowed_hosts = _default_allowed_hosts(target)\n\
+          \    roles = _json_list(roles_json, [{'name': 'owner'}, {'name': 'attacker'}])\n\
+          \    op_id = str(operation_id or '').strip() or 'op_GET_/api/v1/vehicles/{vehicleId}'\n\
+          \    task = str(task_id or '').strip() or 'task_bola_bridge_smoke_001'\n\
+          \    spec = str(openapi_spec_text or '').strip()\n    if not spec:\n   \
+          \     spec = json.dumps(_default_openapi_spec(), ensure_ascii=False)\n\n\
+          \    # Important for Dify HTTP JSON body templating:\n    # openapi_spec_text\
+          \ must be sent to backend as a JSON string value.\n    # This field is a\
+          \ ready-to-inline JSON string literal, including quotes and escaping.\n\
+          \    spec_json_literal = json.dumps(spec, ensure_ascii=False)\n\n    return\
+          \ {\n        'toolbox_url': toolbox,\n        'target_url': target,\n  \
+          \      'openapi_url': str(openapi_url or '').strip(),\n        'openapi_spec_text':\
+          \ spec,\n        'openapi_spec_text_json': spec_json_literal,\n        'allowed_hosts_json':\
+          \ json.dumps(allowed_hosts, ensure_ascii=False),\n        'roles_json':\
+          \ json.dumps(roles, ensure_ascii=False),\n        'operation_id': op_id,\n\
+          \        'task_id': task,\n    }\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          allowed_hosts_json:
+            children: null
+            type: string
+          openapi_spec_text:
+            children: null
+            type: string
+          openapi_spec_text_json:
+            children: null
+            type: string
+          openapi_url:
+            children: null
+            type: string
+          operation_id:
+            children: null
+            type: string
+          roles_json:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+          toolbox_url:
+            children: null
+            type: string
+        selected: false
+        title: Normalize Bridge Inputs
+        type: code
+        variables:
+        - value_selector:
+          - start
+          - toolbox_url
+          value_type: string
+          variable: toolbox_url
+        - value_selector:
+          - start
+          - target_url
+          value_type: string
+          variable: target_url
+        - value_selector:
+          - start
+          - openapi_url
+          value_type: string
+          variable: openapi_url
+        - value_selector:
+          - start
+          - openapi_spec_text
+          value_type: string
+          variable: openapi_spec_text
+        - value_selector:
+          - start
+          - allowed_hosts_json
+          value_type: string
+          variable: allowed_hosts_json
+        - value_selector:
+          - start
+          - roles_json
+          value_type: string
+          variable: roles_json
+        - value_selector:
+          - start
+          - operation_id
+          value_type: string
+          variable: operation_id
+        - value_selector:
+          - start
+          - task_id
+          value_type: string
+          variable: task_id
+      height: 52
+      id: normalize_inputs
+      position:
+        x: 300
+        y: 180
+      positionAbsolute:
+        x: 300
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"target_url\": \"{{#normalize_inputs.target_url#}}\",\n  \"\
+            openapi_url\": \"{{#normalize_inputs.openapi_url#}}\",\n  \"allowed_hosts\"\
+            : {{#normalize_inputs.allowed_hosts_json#}},\n  \"profile\": \"safe\"\
+            ,\n  \"limits\": {\"max_requests\": 1000, \"max_duration_sec\": 1800,\
+            \ \"max_iterations\": 50, \"max_retries_per_task\": 2},\n  \"roles_json\"\
+            : {{#normalize_inputs.roles_json#}}\n}\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Create Campaign
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/campaigns'
+        variables: []
+      height: 140
+      id: create_campaign
+      position:
+        x: 600
+        y: 180
+      positionAbsolute:
+        x: 600
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        payload\
+          \ = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n\
+          \    return {'campaign_id': str(payload.get('campaign_id') or ''), 'run_id':\
+          \ str(payload.get('run_id') or payload.get('legacy_run_id') or ''), 'campaign_json':\
+          \ json.dumps(payload, ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          campaign_id:
+            children: null
+            type: string
+          campaign_json:
+            children: null
+            type: string
+          run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Campaign
+        type: code
+        variables:
+        - value_selector:
+          - create_campaign
+          - body
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_campaign
+      position:
+        x: 900
+        y: 180
+      positionAbsolute:
+        x: 900
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"openapi_spec_text": {{#normalize_inputs.openapi_spec_text_json#}}}
 
-        Evidence summary:
-        {{#compact_evidence_for_judge.evidence_summary#}}
-    - id: apply_judge_verdict
-      type: http-request
-      title: Apply Judge Verdict
-      method: post
-      url: "{{#inputs.toolbox_url#}}/v1/judge/apply"
-      body:
-        campaign_id: "{{#create_campaign.campaign_id#}}"
-        evidence_id: "{{#compact_evidence_for_judge.evidence_id#}}"
-        task_id: "{{#inputs.task_id#}}"
-        verdict: {{#judge_verdict.text#}}
-        max_rework_depth: 2
-        create_rework_on_inconclusive: true
-    - id: list_confirmed_findings
-      type: http-request
-      title: List Confirmed Findings
-      method: get
-      url: "{{#inputs.toolbox_url#}}/v1/findings/confirmed/{{#create_campaign.campaign_id#}}"
-  outputs:
-    campaign_id: "{{#create_campaign.campaign_id#}}"
-    graph_summary: "{{#graph_summary.body#}}"
-    observation_id: "{{#select_observation.observation_id#}}"
-    verification_plan_id: "{{#select_verification_plan.verification_plan_id#}}"
-    evidence_id: "{{#compact_evidence_for_judge.evidence_id#}}"
-    judge_verdict: "{{#judge_verdict.text#}}"
-    finding_id: "{{#apply_judge_verdict.finding_id#}}"
-    confirmed_findings: "{{#list_confirmed_findings.body#}}"
+            '
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build API Graph
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/graph/{{#extract_campaign.campaign_id#}}/build'
+        variables: []
+      height: 174
+      id: build_graph
+      position:
+        x: 1200
+        y: 180
+      positionAbsolute:
+        x: 1200
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Graph Summary
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/graph/{{#extract_campaign.campaign_id#}}/summary'
+        variables: []
+      height: 174
+      id: get_graph_summary
+      position:
+        x: 1500
+        y: 180
+      positionAbsolute:
+        x: 1500
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n \
+            \ \"operation_id\": \"op_GET_/api/v1/vehicles/{vehicleId}\",\n  \"source\"\
+            : \"dify_synthetic_smoke\",\n  \"method\": \"GET\",\n  \"url\": \"{{#normalize_inputs.target_url#}}/api/v1/vehicles/veh_123\"\
+            ,\n  \"path_template\": \"/api/v1/vehicles/{vehicleId}\",\n  \"auth_profile\"\
+            : \"owner\",\n  \"headers\": {\n    \"Authorization\": \"Bearer owner_secret\"\
+            \n  },\n  \"body\": {},\n  \"status_code\": 200,\n  \"response_body\"\
+            : {\n    \"id\": \"veh_123\",\n    \"owner\": \"owner\"\n  },\n  \"response_content_type\"\
+            : \"application/json\"\n}\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Add Owner Vehicle Corpus
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/corpus/add'
+        variables: []
+      height: 140
+      id: add_owner_vehicle_corpus
+      position:
+        x: 1800
+        y: 180
+      positionAbsolute:
+        x: 1800
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n \
+            \ \"operation_id\": \"op_GET_/api/v1/vehicles/{vehicleId}\",\n  \"source\"\
+            : \"dify_synthetic_smoke\",\n  \"method\": \"GET\",\n  \"url\": \"{{#normalize_inputs.target_url#}}/api/v1/vehicles/veh_123\"\
+            ,\n  \"path_template\": \"/api/v1/vehicles/{vehicleId}\",\n  \"auth_profile\"\
+            : \"attacker\",\n  \"headers\": {\n    \"Authorization\": \"Bearer attacker_secret\"\
+            \n  },\n  \"body\": {},\n  \"status_code\": 200,\n  \"response_body\"\
+            : {\n    \"id\": \"veh_123\",\n    \"owner\": \"owner\"\n  },\n  \"response_content_type\"\
+            : \"application/json\"\n}\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Add Attacker Vehicle Corpus
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/corpus/add'
+        variables: []
+      height: 140
+      id: add_attacker_vehicle_corpus
+      position:
+        x: 2100
+        y: 180
+      positionAbsolute:
+        x: 2100
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n \
+            \ \"operation_id\": \"op_GET_/api/v1/vehicles\",\n  \"source\": \"dify_synthetic_smoke\"\
+            ,\n  \"method\": \"GET\",\n  \"url\": \"{{#normalize_inputs.target_url#}}/api/v1/vehicles\"\
+            ,\n  \"path_template\": \"/api/v1/vehicles\",\n  \"auth_profile\": \"\
+            owner\",\n  \"headers\": {\n    \"Authorization\": \"Bearer owner_secret\"\
+            \n  },\n  \"body\": {},\n  \"status_code\": 200,\n  \"response_body\"\
+            : {\n    \"id\": \"veh_123\",\n    \"items\": [\n      {\n        \"id\"\
+            : \"veh_123\",\n        \"owner\": \"owner\"\n      }\n    ]\n  },\n \
+            \ \"response_content_type\": \"application/json\"\n}\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Add Owner Collection Corpus
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/corpus/add'
+        variables: []
+      height: 140
+      id: add_owner_collection_corpus
+      position:
+        x: 2400
+        y: 180
+      positionAbsolute:
+        x: 2400
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n \
+            \ \"operation_id\": \"op_GET_/api/v1/vehicles\",\n  \"source\": \"dify_synthetic_smoke\"\
+            ,\n  \"method\": \"GET\",\n  \"url\": \"{{#normalize_inputs.target_url#}}/api/v1/vehicles\"\
+            ,\n  \"path_template\": \"/api/v1/vehicles\",\n  \"auth_profile\": \"\
+            attacker\",\n  \"headers\": {\n    \"Authorization\": \"Bearer attacker_secret\"\
+            \n  },\n  \"body\": {},\n  \"status_code\": 200,\n  \"response_body\"\
+            : {\n    \"id\": \"veh_456\",\n    \"items\": [\n      {\n        \"id\"\
+            : \"veh_456\",\n        \"owner\": \"attacker\"\n      }\n    ]\n  },\n\
+            \  \"response_content_type\": \"application/json\"\n}\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Add Attacker Collection Corpus
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/corpus/add'
+        variables: []
+      height: 140
+      id: add_attacker_collection_corpus
+      position:
+        x: 2700
+        y: 180
+      positionAbsolute:
+        x: 2700
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{"operation_id": "{{#normalize_inputs.operation_id#}}", "limit":
+            10}
+
+            '
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Create Corpus Cross-Role Signals
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/corpus/{{#extract_campaign.campaign_id#}}/cross-role-signals'
+        variables: []
+      height: 174
+      id: create_cross_role_signals
+      position:
+        x: 3300
+        y: 180
+      positionAbsolute:
+        x: 3300
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        payload\
+          \ = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n\
+          \    observations = payload.get('observations') or []\n    first = observations[0]\
+          \ if observations else {}\n    return {'observation_id': str(first.get('observation_id')\
+          \ or ''), 'observations_count': str(len(observations)), 'raw_json': json.dumps(payload,\
+          \ ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          observation_id:
+            children: null
+            type: string
+          observations_count:
+            children: null
+            type: string
+          raw_json:
+            children: null
+            type: string
+        selected: false
+        title: Select Observation
+        type: code
+        variables:
+        - value_selector:
+          - create_cross_role_signals
+          - body
+          value_type: string
+          variable: body
+      height: 52
+      id: select_observation
+      position:
+        x: 3600
+        y: 180
+      positionAbsolute:
+        x: 3600
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Triage Observation
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/triage/{{#select_observation.observation_id#}}'
+        variables: []
+      height: 158
+      id: triage_observation
+      position:
+        x: 3900
+        y: 180
+      positionAbsolute:
+        x: 3900
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        payload\
+          \ = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n\
+          \    plan = payload.get('verification_plan') or {}\n    observation = payload.get('observation')\
+          \ or {}\n    return {'verification_plan_id': str(plan.get('verification_plan_id')\
+          \ or ''), 'observation_json': json.dumps(observation, ensure_ascii=False),\
+          \ 'plan_json': json.dumps(plan, ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          observation_json:
+            children: null
+            type: string
+          plan_json:
+            children: null
+            type: string
+          verification_plan_id:
+            children: null
+            type: string
+        selected: false
+        title: Select Verification Plan
+        type: code
+        variables:
+        - value_selector:
+          - triage_observation
+          - body
+          value_type: string
+          variable: body
+      height: 52
+      id: select_verification_plan
+      position:
+        x: 4200
+        y: 180
+      positionAbsolute:
+        x: 4200
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build Evidence Pack
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/evidence/build-from-plan/{{#select_verification_plan.verification_plan_id#}}'
+        variables: []
+      height: 174
+      id: build_evidence_pack
+      position:
+        x: 4500
+        y: 180
+      positionAbsolute:
+        x: 4500
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(body: str) -> dict:\n    try:\n        payload\
+          \ = json.loads(body or '{}')\n    except Exception:\n        payload = {}\n\
+          \    pack = payload.get('evidence_pack') or payload.get('evidence') or {}\n\
+          \    summary = {'campaign_id': pack.get('campaign_id'), 'evidence_id': pack.get('evidence_id'),\
+          \ 'task_id': pack.get('task_id'), 'observation_id': pack.get('observation_id'),\
+          \ 'verification_plan_id': pack.get('verification_plan_id'), 'owasp_category':\
+          \ pack.get('owasp_category'), 'vulnerability_class': pack.get('vulnerability_class'),\
+          \ 'operation_id': pack.get('operation_id'), 'endpoint': pack.get('endpoint'),\
+          \ 'method': pack.get('method'), 'status': pack.get('status'), 'judge_ready':\
+          \ pack.get('judge_ready'), 'missing_evidence': pack.get('missing_evidence')\
+          \ or [], 'has_baseline': bool(pack.get('baseline')), 'has_attack': bool(pack.get('attack')),\
+          \ 'has_ownership_proof': bool(pack.get('ownership_proof')), 'controls_count':\
+          \ len(pack.get('controls') or []), 'replay_steps_count': len(pack.get('replay_steps')\
+          \ or [])}\n    return {'evidence_id': str(pack.get('evidence_id') or ''),\
+          \ 'task_id': str(pack.get('task_id') or ''), 'evidence_summary_json': json.dumps(summary,\
+          \ ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          evidence_id:
+            children: null
+            type: string
+          evidence_summary_json:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+        selected: false
+        title: Compact Evidence For Judge
+        type: code
+        variables:
+        - value_selector:
+          - build_evidence_pack
+          - body
+          value_type: string
+          variable: body
+      height: 52
+      id: compact_evidence_for_judge
+      position:
+        x: 4800
+        y: 180
+      positionAbsolute:
+        x: 4800
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(evidence_summary_json: str) -> dict:\n    try:\n\
+          \        summary = json.loads(evidence_summary_json or '{}')\n    except\
+          \ Exception:\n        summary = {}\n    ready = bool(summary.get('judge_ready'))\n\
+          \    verdict = {'schema_version':'judge-verdict/v1','verdict':'confirmed'\
+          \ if ready else 'rework','confidence':0.93 if ready else 0.35,'severity':'high','reason':'Synthetic\
+          \ bridge smoke EvidencePack contains baseline, attack, ownership proof,\
+          \ negative control, diff, and replay steps.' if ready else 'EvidencePack\
+          \ is not structurally ready.','finding_candidate':{'title':'Broken Object\
+          \ Level Authorization on vehicle object','severity':'high','vulnerability_class':summary.get('vulnerability_class')\
+          \ or 'access_control','summary':'Attacker can read vehicle veh_123 owned\
+          \ by owner role.','extras':{'owasp_category':summary.get('owasp_category')\
+          \ or 'API1_BOLA'}},'duplicate_of_finding_id':'','judge_source':'dify','judge_model':'bridge-smoke-static'}\n\
+          \    return {'judge_verdict_json': json.dumps(verdict, ensure_ascii=False)}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          judge_verdict_json:
+            children: null
+            type: string
+        selected: false
+        title: Static Judge Verdict Payload
+        type: code
+        variables:
+        - value_selector:
+          - compact_evidence_for_judge
+          - evidence_summary_json
+          value_type: string
+          variable: evidence_summary_json
+      height: 52
+      id: static_judge_verdict
+      position:
+        x: 5100
+        y: 180
+      positionAbsolute:
+        x: 5100
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n \
+            \ \"evidence_id\": \"{{#compact_evidence_for_judge.evidence_id#}}\",\n\
+            \  \"task_id\": \"{{#normalize_inputs.task_id#}}\",\n  \"verdict\": {{#static_judge_verdict.judge_verdict_json#}},\n\
+            \  \"max_rework_depth\": 2,\n  \"create_rework_on_inconclusive\": true\n\
+            }\n"
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Apply Judge Verdict
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/judge/apply'
+        variables: []
+      height: 140
+      id: apply_judge_verdict
+      position:
+        x: 5400
+        y: 180
+      positionAbsolute:
+        x: 5400
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: List Confirmed Findings
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/findings/confirmed/{{#extract_campaign.campaign_id#}}'
+        variables: []
+      height: 158
+      id: list_confirmed_findings
+      position:
+        x: 5700
+        y: 180
+      positionAbsolute:
+        x: 5700
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: "import json\n\ndef main(campaign_id: str, observation_id: str, verification_plan_id:\
+          \ str, evidence_id: str, apply_body: str, findings_body: str) -> dict:\n\
+          \    try:\n        apply_payload = json.loads(apply_body or '{}')\n    except\
+          \ Exception:\n        apply_payload = {}\n    try:\n        findings_payload\
+          \ = json.loads(findings_body or '[]')\n    except Exception:\n        findings_payload\
+          \ = []\n    findings_count = len(findings_payload) if isinstance(findings_payload,\
+          \ list) else 0\n    text = f\"Backend bridge smoke completed.\\n\\ncampaign_id:\
+          \ {campaign_id}\\nobservation_id: {observation_id}\\nverification_plan_id:\
+          \ {verification_plan_id}\\nevidence_id: {evidence_id}\\napply_status: {apply_payload.get('status','')}\\\
+          nfinding_id: {apply_payload.get('finding_id','')}\\nconfirmed_findings_count:\
+          \ {findings_count}\\n\"\n    return {'answer_text': text}\n"
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          answer_text:
+            children: null
+            type: string
+        selected: false
+        title: Build Final Answer
+        type: code
+        variables:
+        - value_selector:
+          - extract_campaign
+          - campaign_id
+          value_type: string
+          variable: campaign_id
+        - value_selector:
+          - select_observation
+          - observation_id
+          value_type: string
+          variable: observation_id
+        - value_selector:
+          - select_verification_plan
+          - verification_plan_id
+          value_type: string
+          variable: verification_plan_id
+        - value_selector:
+          - compact_evidence_for_judge
+          - evidence_id
+          value_type: string
+          variable: evidence_id
+        - value_selector:
+          - apply_judge_verdict
+          - body
+          value_type: string
+          variable: apply_body
+        - value_selector:
+          - list_confirmed_findings
+          - body
+          value_type: string
+          variable: findings_body
+      height: 52
+      id: final_report
+      position:
+        x: 6000
+        y: 180
+      positionAbsolute:
+        x: 6000
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#final_report.answer_text#}}'
+        desc: ''
+        selected: false
+        title: Answer
+        type: answer
+        variables: []
+      height: 103
+      id: answer
+      position:
+        x: 6300
+        y: 180
+      positionAbsolute:
+        x: 6300
+        y: 180
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        desc: ''
+        outputs: []
+        selected: false
+        title: End
+        type: end
+      height: 52
+      id: end
+      position:
+        x: 6600
+        y: 205
+      positionAbsolute:
+        x: 6600
+        y: 205
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data:
+          - id: key-value-82
+            key: ''
+            type: text
+            value: "{\n  \"campaign_id\": \"{{#extract_campaign.campaign_id#}}\",\n\
+              \  \"operation_id\": \"op_GET_/api/v1/vehicles/{vehicleId}\",\n  \"\
+              source\": \"dify_synthetic_smoke\",\n  \"method\": \"GET\",\n  \"url\"\
+              : \"{{#start.target_url#}}/api/v1/vehicles/veh_456\",\n  \"path_template\"\
+              : \"/api/v1/vehicles/{vehicleId}\",\n  \"auth_profile\": \"attacker\"\
+              ,\n  \"headers\": {\n    \"Authorization\": \"Bearer attacker_secret\"\
+              \n  },\n  \"body\": null,\n  \"status_code\": 200,\n  \"response_body\"\
+              : {\n    \"id\": \"veh_456\",\n    \"owner\": \"attacker\"\n  },\n \
+              \ \"response_content_type\": \"application/json\"\n}"
+          type: json
+        headers: ''
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 3
+          retry_enabled: true
+          retry_interval: 100
+        selected: false
+        ssl_verify: true
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Add Attacker Own Vehicle Corpus
+        type: http-request
+        url: '{{#start.toolbox_url#}}/v1/corpus/add'
+        variables: []
+      height: 140
+      id: '1777185174129'
+      position:
+        x: 3000
+        y: 180
+      positionAbsolute:
+        x: 3000
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    viewport:
+      x: -3487.3795624472605
+      y: 276.96322289461136
+      zoom: 0.582410290499518
+  rag_pipeline_variables: []
