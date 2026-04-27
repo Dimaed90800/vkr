@@ -2,10 +2,12 @@
 
 POST /v1/workers/command/validate  — dry-run validation, no storage
 POST /v1/workers/command           — validate + store accepted command
+GET  /v1/workers/capabilities      — Phase 17A.1 read-only capability catalog
+GET  /v1/workers/capabilities/{tool_name}
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 
 try:
@@ -15,7 +17,9 @@ try:
         WorkerCommand,
         normalize_worker_class,
     )
+    from backend.models.worker_capability import WorkerCapabilityCatalogResponse
     from backend.services.command_validator import CommandValidator, _command_fingerprint
+    from backend.services.worker_capability_catalog import WorkerCapabilityCatalog
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.worker_command import (
@@ -24,18 +28,40 @@ except ModuleNotFoundError:  # pragma: no cover
         WorkerCommand,
         normalize_worker_class,
     )
+    from models.worker_capability import WorkerCapabilityCatalogResponse
     from services.command_validator import CommandValidator, _command_fingerprint
+    from services.worker_capability_catalog import WorkerCapabilityCatalog
     from storage.memory_store import memory_store
 
 workers_router = APIRouter(prefix="/v1/workers", tags=["workers"])
 
 _validator = CommandValidator()
+_capability_catalog = WorkerCapabilityCatalog()
 
 
 @workers_router.post("/command/validate", response_model=ValidationResult)
 async def validate_command(command: WorkerCommand) -> ValidationResult:
     result = _validator.validate(command)
     return result
+
+
+@workers_router.get(
+    "/capabilities",
+    response_model=WorkerCapabilityCatalogResponse,
+)
+async def list_worker_capabilities() -> WorkerCapabilityCatalogResponse:
+    return _capability_catalog.response()
+
+
+@workers_router.get("/capabilities/{tool_name}")
+async def get_worker_capability_by_tool_name(tool_name: str) -> JSONResponse:
+    cap = _capability_catalog.get_by_tool_name(tool_name)
+    if cap is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "worker_capability_not_found", "tool_name": tool_name},
+        )
+    return JSONResponse(content=cap.model_dump(mode="json"))
 
 
 @workers_router.post("/command")
