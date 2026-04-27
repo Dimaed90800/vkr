@@ -29,6 +29,7 @@ class PlannerCandidateKind(str, Enum):
     bola_replay_probe = "bola_replay_probe"
     security_header_validator = "security_header_validator"
     schemathesis_negative_test = "schemathesis_negative_test"
+    injection_test = "injection_test"
     scenario_plan_blocked = "scenario_plan_blocked"
 
 

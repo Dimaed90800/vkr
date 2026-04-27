@@ -129,7 +129,8 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         risk_level="high",
         notes=(
             "Phase 17B-1/2: bounded injection_test; injection_signal triage and potential_injection "
-            "evidence path. Phase 17B-3b: automatic ScenarioPlanCompiler → PlannerCandidate pending."
+            "evidence path. Phase 17B-3b: ScenarioPlanCompiler emits injection_test candidates; "
+            "full autonomous Dify E2E with compiler-driven selection still optional."
         ),
     ),
     WorkerCapability(

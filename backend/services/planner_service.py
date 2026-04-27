@@ -573,7 +573,8 @@ class PlannerService:
             PlannerCandidateKind.bola_replay_probe: 0,
             PlannerCandidateKind.security_header_validator: 1,
             PlannerCandidateKind.schemathesis_negative_test: 2,
-            PlannerCandidateKind.zap_discovery_passive: 3,
+            PlannerCandidateKind.injection_test: 3,
+            PlannerCandidateKind.zap_discovery_passive: 4,
             PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(

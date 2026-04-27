@@ -16,6 +16,7 @@ from backend.models.tool_run import (
     ToolRunStatus,
 )
 from backend.services.command_validator import CommandValidator
+from backend.services.injection_scenario_parameter_candidates import INJECTION_COMPILER_PAYLOAD_FAMILIES
 from backend.services.planner_service import PlannerService
 from backend.storage.memory_store import memory_store
 
@@ -107,6 +108,99 @@ def _schema_scenario_payload(
         "errors": [],
         "warnings": [],
     }
+
+
+def _injection_scenario_payload(
+    *,
+    scenario_id: str = "scn_inj",
+    operation_ids: list[str] | None = None,
+    rationale: str = "injection probe from graph",
+    status: str = "accepted",
+    resource_type: str = "",
+) -> dict:
+    return {
+        "scenario_id": scenario_id,
+        "status": status,
+        "scenario_type": "injection_testing",
+        "vulnerability_classes": ["INJECTION"],
+        "operation_ids": operation_ids or ["op_GET_/api/v1/search"],
+        "resource_type": resource_type,
+        "required_preconditions": [
+            "openapi_schema",
+            "parameter_context",
+            "safe_payload_allowlist",
+        ],
+        "candidate_workers": ["injection_test"],
+        "confidence": 0.4,
+        "rationale": rationale,
+        "blocking_codes": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+
+def _store_graph_search_get(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/search",
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["q", "limit"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_search_sensitive_mixed(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/search",
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["token", "password", "q"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_search_sensitive_only(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/search",
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["access_token", "api_key"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_post_with_query(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_POST_/api/v1/search",
+                method="POST",
+                path_template="/api/v1/search",
+                query_params=["q"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
 
 
 def _bola_pair(**overrides) -> dict:
@@ -1599,3 +1693,279 @@ def test_planner_schemathesis_command_validates_with_external_campaign_openapi_u
     assert cmd.inputs.get("openapi_url") == spec
     v = CommandValidator().validate(cmd)
     assert v.valid, v.errors
+
+
+def test_planner_injection_testing_creates_ready_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "max_candidates": 20,
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    inj = [c for c in resp.candidates if c.kind.value == "injection_test" and c.status == "ready"]
+    assert len(inj) == 1
+    cmd = inj[0].command
+    assert cmd is not None
+    assert cmd.tool_name == "injection_test"
+    assert cmd.worker_class == "contract_fuzzing"
+    assert cmd.strategy == "injection_probe"
+    assert cmd.operation_id == "op_GET_/api/v1/search"
+    assert cmd.inputs.get("target_url") == "http://target.local"
+    assert cmd.inputs.get("operation_id") == "op_GET_/api/v1/search"
+    assert cmd.inputs.get("payload_families") == list(INJECTION_COMPILER_PAYLOAD_FAMILIES)
+    assert cmd.inputs.get("max_payloads_per_param") == 1
+    pcs = cmd.inputs.get("parameter_candidates") or []
+    assert {"name": "q", "in": "query"} in pcs
+    assert {"name": "limit", "in": "query"} in pcs
+    assert cmd.success_criteria == ["injection_probe_completed"]
+    assert CommandValidator().validate(cmd).valid
+
+
+def test_planner_injection_testing_uses_graph_params_not_scenario_text() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _injection_scenario_payload(
+                    rationale="prefer evil_param and password override",
+                    resource_type="evil_param_injection_sink",
+                ),
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    cmd = next(c.command for c in resp.candidates if c.kind.value == "injection_test" and c.command)
+    names = {p.get("name") for p in (cmd.inputs.get("parameter_candidates") or []) if isinstance(p, dict)}
+    assert names == {"q", "limit"}
+    assert "evil_param" not in names
+
+
+def test_planner_injection_testing_only_sensitive_query_params_blocked() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_sensitive_only()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    assert not any(c.kind.value == "injection_test" and c.status == "ready" for c in resp.candidates)
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("no_safe_query_parameter_candidates" in c.missing_inputs for c in audit)
+
+
+def test_planner_injection_testing_filters_sensitive_query_params() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_sensitive_mixed()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    inj = [c for c in resp.candidates if c.kind.value == "injection_test" and c.command]
+    assert len(inj) == 1
+    names = [p.get("name") for p in inj[0].command.inputs.get("parameter_candidates") or []]
+    assert names == ["q"]
+
+
+def test_planner_injection_testing_blocks_post_only_operation() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_post_with_query()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _injection_scenario_payload(operation_ids=["op_POST_/api/v1/search"]),
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    assert not any(c.kind.value == "injection_test" and c.status == "ready" for c in resp.candidates)
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("no_safe_query_parameter_candidates" in c.missing_inputs for c in audit)
+
+
+def test_planner_injection_testing_dedup_existing_partial_run() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    run_id = "toolrun_inj_partial"
+    memory_store.store_tool_run(
+        run_id,
+        "cmp_plan",
+        {
+            "schema_version": "tool-run/v1",
+            "tool_run_id": run_id,
+            "campaign_id": "cmp_plan",
+            "tool_name": "injection_test",
+            "status": "partial",
+            "command_id": "cmd_missing_inj",
+            "result_ready": True,
+        },
+    )
+    memory_store.store_tool_result(
+        run_id,
+        ToolResult(
+            tool_run_id=run_id,
+            campaign_id="cmp_plan",
+            tool_name="injection_test",
+            status="partial",
+            observations=[
+                ToolResultObservationLite(
+                    observation_type="injection_signal",
+                    confidence=0.6,
+                    details={"operation_id": "op_GET_/api/v1/search"},
+                ),
+            ],
+        ).model_dump(mode="json"),
+    )
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    inj = [c for c in resp.candidates if c.kind.value == "injection_test"]
+    assert len(inj) == 1
+    assert inj[0].status == "skipped_existing"
+
+
+def test_planner_injection_testing_dedup_uses_tool_result_fallback_without_command_id() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    run_id = "toolrun_inj_no_cmd"
+    memory_store.store_tool_run(
+        run_id,
+        "cmp_plan",
+        {
+            "schema_version": "tool-run/v1",
+            "tool_run_id": run_id,
+            "campaign_id": "cmp_plan",
+            "tool_name": "injection_test",
+            "status": "partial",
+            "command_id": "",
+            "result_ready": True,
+        },
+    )
+    memory_store.store_tool_result(
+        run_id,
+        ToolResult(
+            tool_run_id=run_id,
+            campaign_id="cmp_plan",
+            tool_name="injection_test",
+            status="partial",
+            observations=[
+                ToolResultObservationLite(
+                    observation_type="injection_signal",
+                    confidence=0.5,
+                    details={"operation_id": "op_GET_/api/v1/search", "parameter_name": "q"},
+                ),
+            ],
+        ).model_dump(mode="json"),
+    )
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    inj = [c for c in resp.candidates if c.kind.value == "injection_test"]
+    assert len(inj) == 1
+    assert inj[0].status == "skipped_existing"
+
+
+def test_planner_injection_testing_include_scenario_compiler_false_disables_injection() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "include_scenario_compiler": False,
+        "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    assert not any(c.kind.value == "injection_test" for c in resp.candidates)
+
+
+def test_planner_injection_testing_does_not_create_toolrun_evidence_finding() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_search_get()
+    cmds_before = len(memory_store.commands)
+    runs_before = len(memory_store.tool_runs)
+    ev_before = len(memory_store.evidence_packs)
+    fin_before = len(memory_store.confirmed_findings)
+    PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "scenario_plan": {"source": "t", "scenarios": [_injection_scenario_payload()]},
+        }),
+    )
+    assert len(memory_store.commands) == cmds_before
+    assert len(memory_store.tool_runs) == runs_before
+    assert len(memory_store.evidence_packs) == ev_before
+    assert len(memory_store.confirmed_findings) == fin_before
+
+
+def test_planner_ordering_injection_test_after_schemathesis_before_zap() -> None:
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+                method="GET",
+                path_template="/api/v1/vehicles/{vehicleId}",
+                owasp_candidates=["API1_BOLA"],
+                risk_hints=["object_id_in_path"],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_GET_/api/v1/search",
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["q", "limit"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_zap_alert_observation()
+    body = {
+        "zap": {"enabled": True},
+        "bola": {"enabled": False},
+        "max_candidates": 30,
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _schema_scenario_payload(),
+                _injection_scenario_payload(),
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    ready_kinds = [c.kind.value for c in resp.candidates if c.status == "ready"]
+    assert ready_kinds[0] == "security_header_validator"
+    assert ready_kinds.index("schemathesis_negative_test") < ready_kinds.index("injection_test")
+    if "zap_discovery_passive" in ready_kinds:
+        assert ready_kinds.index("injection_test") < ready_kinds.index("zap_discovery_passive")

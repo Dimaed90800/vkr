@@ -19,7 +19,12 @@ try:
     )
     from backend.models.scenario_plan import SCENARIO_TYPES, ScenarioStatus, ValidatedScenarioItem
     from backend.models.worker_command import CommandBudget, WorkerCommand
+    from backend.services.api_graph_service import ApiGraphService
     from backend.services.command_validator import CommandValidator
+    from backend.services.injection_scenario_parameter_candidates import (
+        INJECTION_COMPILER_PAYLOAD_FAMILIES,
+        safe_query_parameter_candidates_for_operation,
+    )
     from backend.services.tool_registry import ToolRegistry
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
@@ -32,7 +37,12 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from models.scenario_plan import SCENARIO_TYPES, ScenarioStatus, ValidatedScenarioItem
     from models.worker_command import CommandBudget, WorkerCommand
+    from services.api_graph_service import ApiGraphService
     from services.command_validator import CommandValidator
+    from services.injection_scenario_parameter_candidates import (
+        INJECTION_COMPILER_PAYLOAD_FAMILIES,
+        safe_query_parameter_candidates_for_operation,
+    )
     from services.tool_registry import ToolRegistry
     from storage.memory_store import memory_store
 
@@ -113,6 +123,11 @@ def _role_count(campaign: Campaign) -> int:
     return len(names)
 
 
+def _injection_task_id(operation_id: str) -> str:
+    base = re.sub(r"[^a-zA-Z0-9_]+", "_", operation_id).strip("_")[:80]
+    return f"task_injection_probe_{base or 'op'}"
+
+
 @dataclass
 class ScenarioCompilerResult:
     extra_candidates: list[PlannerCandidate]
@@ -160,6 +175,10 @@ class ScenarioPlanCompiler:
         schema_ops_ordered: list[str] = []
         schema_ops_seen: set[str] = set()
         schema_scenarios_by_op: dict[str, list[str]] = {}
+
+        injection_ops_ordered: list[str] = []
+        injection_ops_seen: set[str] = set()
+        injection_scenarios_by_op: dict[str, list[str]] = {}
 
         for item in scenarios:
             if item.status == ScenarioStatus.rejected:
@@ -288,6 +307,46 @@ class ScenarioPlanCompiler:
                             and bc.status == PlannerCandidateStatus.ready
                         ):
                             priority_add[bc.dedup_key] = priority_add.get(bc.dedup_key, 0.0) + bonus
+
+            elif stype == "injection_testing":
+                if graph_operations_total <= 0:
+                    extra.append(self._audit_candidate(
+                        campaign_id=campaign.campaign_id,
+                        scenario_id=item.scenario_id,
+                        reason="Graph empty; injection_testing cannot run.",
+                        missing=["graph_empty"],
+                        summary={"scenario_type": stype, "audit_code": "graph_empty"},
+                    ))
+                    continue
+                if not str(campaign.target_url or "").strip():
+                    extra.append(self._audit_candidate(
+                        campaign_id=campaign.campaign_id,
+                        scenario_id=item.scenario_id,
+                        reason="Campaign has no target_url; cannot build injection_test command.",
+                        missing=["campaign_target_url_missing"],
+                        summary={"scenario_type": stype, "audit_code": "campaign_target_url_missing"},
+                    ))
+                    continue
+                for oid in item.operation_ids or []:
+                    op = str(oid).strip()
+                    if not op:
+                        continue
+                    if op not in valid_operation_ids:
+                        extra.append(self._audit_candidate(
+                            campaign_id=campaign.campaign_id,
+                            scenario_id=item.scenario_id,
+                            reason=f"operation_id not in graph: {op}",
+                            missing=[f"unknown_operation_id:{op}"],
+                            summary={"scenario_type": stype, "operation_id": op},
+                        ))
+                        continue
+                    if op in injection_ops_seen:
+                        injection_scenarios_by_op.setdefault(op, []).append(item.scenario_id)
+                        continue
+                    injection_ops_seen.add(op)
+                    injection_ops_ordered.append(op)
+                    injection_scenarios_by_op[op] = [item.scenario_id]
+
             else:
                 extra.append(self._audit_candidate(
                     campaign_id=campaign.campaign_id,
@@ -307,6 +366,18 @@ class ScenarioPlanCompiler:
                     f"scenario_duplicate_schema_op_merged:{op}:"
                     f"{','.join(scn_ids)}",
                 )
+
+        for op, scn_ids in injection_scenarios_by_op.items():
+            if len(scn_ids) > 1:
+                warnings.append(
+                    f"scenario_duplicate_injection_op_merged:{op}:"
+                    f"{','.join(scn_ids)}",
+                )
+
+        graph_api = ApiGraphService()
+        operations_by_id = {
+            o.operation_id: o for o in graph_api.list_operations(campaign.campaign_id)
+        }
 
         for op in schema_ops_ordered:
             dedup_key = f"{campaign.campaign_id}|schemathesis_negative_test|{op}"
@@ -389,7 +460,159 @@ class ScenarioPlanCompiler:
                     ),
                 )
 
+        payload_families = list(INJECTION_COMPILER_PAYLOAD_FAMILIES)
+        for op in injection_ops_ordered:
+            dedup_key = f"{campaign.campaign_id}|injection_test|{op}"
+            existing_inj = self._existing_injection_run(campaign.campaign_id, op)
+            if existing_inj is not None:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("injection_test", dedup_key),
+                        kind=PlannerCandidateKind.injection_test,
+                        status=PlannerCandidateStatus.skipped_existing,
+                        priority=34.0,
+                        reason="Existing injection_test ToolRun for this operation_id.",
+                        dedup_key=dedup_key,
+                        command=None,
+                        summary={
+                            "operation_id": op,
+                            "existing_tool_run_id": str(existing_inj.get("tool_run_id") or ""),
+                            "source_scenario_ids": injection_scenarios_by_op.get(op, []),
+                        },
+                    ),
+                )
+                continue
+
+            operation = operations_by_id.get(op)
+            if operation is None:
+                extra.append(self._audit_candidate(
+                    campaign_id=campaign.campaign_id,
+                    scenario_id=(injection_scenarios_by_op.get(op) or ["scn_injection"])[0],
+                    reason=f"operation_id not found in graph store: {op}",
+                    missing=[f"missing_operation:{op}"],
+                    summary={"scenario_type": "injection_testing", "operation_id": op},
+                ))
+                continue
+
+            param_candidates = safe_query_parameter_candidates_for_operation(
+                operation, max_candidates=2,
+            )
+            if not param_candidates:
+                extra.append(self._audit_candidate(
+                    campaign_id=campaign.campaign_id,
+                    scenario_id=(injection_scenarios_by_op.get(op) or ["scn_injection"])[0],
+                    reason="No safe query parameter candidates for injection_testing.",
+                    missing=["no_safe_query_parameter_candidates"],
+                    summary={
+                        "scenario_type": "injection_testing",
+                        "operation_id": op,
+                        "audit_code": "no_safe_query_parameter_candidates",
+                    },
+                ))
+                continue
+
+            n_c = len(param_candidates)
+            n_f = len(payload_families)
+            max_req = min(10, 1 + n_c * n_f)
+            command = WorkerCommand(
+                campaign_id=campaign.campaign_id,
+                task_id=_injection_task_id(op),
+                worker_class="contract_fuzzing",
+                strategy="injection_probe",
+                tool_name="injection_test",
+                operation_id=op,
+                seed_request_id="",
+                inputs={
+                    "target_url": campaign.target_url,
+                    "operation_id": op,
+                    "payload_families": list(payload_families),
+                    "max_payloads_per_param": 1,
+                    "parameter_candidates": param_candidates,
+                },
+                budget=CommandBudget(max_requests=max_req, timeout_sec=30),
+                success_criteria=["injection_probe_completed"],
+            )
+            validation = self._validator.validate(command)
+            summary_base: dict[str, Any] = {
+                "operation_id": op,
+                "source_scenario_ids": injection_scenarios_by_op.get(op, []),
+                "parameter_candidates": param_candidates,
+            }
+            if validation.valid:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("injection_test", dedup_key),
+                        kind=PlannerCandidateKind.injection_test,
+                        status=PlannerCandidateStatus.ready,
+                        priority=34.0,
+                        reason="ScenarioPlan injection_testing mapped to injection_test.",
+                        dedup_key=dedup_key,
+                        command=command,
+                        summary={
+                            **summary_base,
+                            "validation_warnings": list(validation.warnings),
+                            "scenario_compiler": "phase_17b_3b",
+                        },
+                    ),
+                )
+            else:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("injection_test", dedup_key),
+                        kind=PlannerCandidateKind.injection_test,
+                        status=PlannerCandidateStatus.blocked,
+                        priority=34.0,
+                        reason="Injection_test candidate failed CommandValidator.",
+                        missing_inputs=[e.code for e in validation.errors],
+                        dedup_key=dedup_key,
+                        command=None,
+                        summary={
+                            **summary_base,
+                            "validation_errors": [e.model_dump(mode="json") for e in validation.errors],
+                            "validation_warnings": list(validation.warnings),
+                        },
+                    ),
+                )
+
         return ScenarioCompilerResult(extra, priority_add, warnings)
+
+    def _existing_injection_run(self, campaign_id: str, operation_id: str) -> dict[str, Any] | None:
+        active_or_done = {
+            "accepted",
+            "queued",
+            "running",
+            "finished",
+            "partial",
+            "failed",
+            "timeout",
+            "cancelled",
+            "skipped",
+        }
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "injection_test":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            cmd_id = str(run.get("command_id") or "").strip()
+            if cmd_id:
+                cmd = memory_store.get_command(cmd_id) or {}
+                inputs = cmd.get("inputs") if isinstance(cmd, dict) else None
+                if isinstance(inputs, dict) and str(inputs.get("operation_id") or "").strip() == operation_id:
+                    return run
+            run_id = str(run.get("tool_run_id") or "").strip()
+            if not run_id:
+                continue
+            result = memory_store.get_tool_result(run_id) or {}
+            observations = result.get("observations") if isinstance(result, dict) else None
+            if not isinstance(observations, list):
+                continue
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                details = obs.get("details") if isinstance(obs.get("details"), dict) else {}
+                if str(details.get("operation_id") or "").strip() == operation_id:
+                    return run
+        return None
 
     def _existing_schemathesis_run(self, campaign_id: str, operation_id: str) -> dict[str, Any] | None:
         active_or_done = {

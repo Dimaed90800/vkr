@@ -20,6 +20,7 @@ try:
         ToolResultSummary,
     )
     from backend.models.worker_command import WorkerCommand
+    from backend.services.artifact_store import ArtifactStore
     from backend.services.http.safe_http_client import SafeHttpClient, sanitize_url_for_storage
 except ModuleNotFoundError:  # pragma: no cover
     from models.campaign import Campaign
@@ -32,6 +33,7 @@ except ModuleNotFoundError:  # pragma: no cover
         ToolResultSummary,
     )
     from models.worker_command import WorkerCommand
+    from services.artifact_store import ArtifactStore
     from services.http.safe_http_client import SafeHttpClient, sanitize_url_for_storage
 
 
@@ -206,6 +208,7 @@ class InjectionTestAdapter:
         self._http = http_client or SafeHttpClient()
         self._http_executor = http_executor
         self._synthetic = synthetic_outcomes
+        self._artifacts = ArtifactStore()
 
     def execute(
         self,
@@ -287,18 +290,42 @@ class InjectionTestAdapter:
             )
 
         probes: list[tuple[str, str]] = []
+        skipped_payload_families: list[str] = []
+        skipped_reasons: list[str] = []
         for fam in families:
             if fam == "nosql_like" and not json_object_ok:
+                skipped_payload_families.append(fam)
+                skipped_reasons.append("nosql_like_requires_json_object_parameter")
                 continue
             if fam == "nosql_like" and self._synthetic is None:
+                skipped_payload_families.append(fam)
+                skipped_reasons.append("nosql_like_not_supported_for_live_get_query_mvp")
                 continue
             labels = FAMILY_LABELS.get(fam, ())
+            if not labels:
+                skipped_payload_families.append(fam)
+                skipped_reasons.append("payload_family_has_no_configured_labels")
+                continue
             for lab in labels[:max_payloads_per_param]:
                 probes.append((fam, lab))
 
         max_attacks = max(0, max_req - 1)
         probes = probes[:max_attacks]
+        payload_families_used = sorted({fam for fam, _ in probes})
+        parameters_tested = [param_name] if probes else []
         if not probes:
+            art = self._summary_artifact(
+                command,
+                tool_run_id,
+                operation_id=op_id,
+                parameters_tested=parameters_tested,
+                payload_families_used=payload_families_used,
+                probes_attempted=0,
+                signals_found=[],
+                result="no_signal",
+                skipped_payload_families=skipped_payload_families,
+                skipped_reasons=skipped_reasons,
+            )
             return ToolResult(
                 tool_run_id=tool_run_id,
                 campaign_id=command.campaign_id,
@@ -308,6 +335,7 @@ class InjectionTestAdapter:
                 status="finished",
                 summary=ToolResultSummary(request_count=0, success_count=0, duration_ms=dur_ms()),
                 observations=[],
+                artifacts=[art],
             )
 
         if self._synthetic is not None:
@@ -367,6 +395,18 @@ class InjectionTestAdapter:
                 }
 
         if not merged_signals:
+            art = self._summary_artifact(
+                command,
+                tool_run_id,
+                operation_id=op_id,
+                parameters_tested=parameters_tested,
+                payload_families_used=payload_families_used,
+                probes_attempted=len(probes),
+                signals_found=[],
+                result="no_signal",
+                skipped_payload_families=skipped_payload_families,
+                skipped_reasons=skipped_reasons,
+            )
             return ToolResult(
                 tool_run_id=tool_run_id,
                 campaign_id=command.campaign_id,
@@ -380,6 +420,7 @@ class InjectionTestAdapter:
                     duration_ms=dur_ms(),
                 ),
                 observations=[],
+                artifacts=[art],
             )
 
         if best is None:
@@ -438,6 +479,18 @@ class InjectionTestAdapter:
             ))
             st = int(best["baseline_status"]) if idx == 0 else int(best["attack_status"])
             responses.append(ToolResultResponse(request_id=rid, status_code=st))
+        art = self._summary_artifact(
+            command,
+            tool_run_id,
+            operation_id=op_id,
+            parameters_tested=parameters_tested,
+            payload_families_used=payload_families_used,
+            probes_attempted=len(probes),
+            signals_found=merged_signals,
+            result="signals_detected",
+            skipped_payload_families=skipped_payload_families,
+            skipped_reasons=skipped_reasons,
+        )
 
         return ToolResult(
             tool_run_id=tool_run_id,
@@ -454,6 +507,43 @@ class InjectionTestAdapter:
             requests=requests,
             responses=responses,
             observations=[obs],
+            artifacts=[art],
+        )
+
+    def _summary_artifact(
+        self,
+        command: WorkerCommand,
+        tool_run_id: str,
+        *,
+        operation_id: str,
+        parameters_tested: list[str],
+        payload_families_used: list[str],
+        probes_attempted: int,
+        signals_found: list[str],
+        result: str,
+        skipped_payload_families: list[str],
+        skipped_reasons: list[str],
+    ) -> Any:
+        payload: dict[str, Any] = {
+            "artifact_type": "injection_probe_summary",
+            "operation_id": operation_id,
+            "parameters_tested": [str(p) for p in parameters_tested if str(p).strip()],
+            "payload_families_used": [str(f) for f in payload_families_used if str(f).strip()],
+            "probes_attempted": max(0, int(probes_attempted)),
+            "signals_found": [str(s) for s in signals_found if str(s).strip()],
+            "result": "signals_detected" if result == "signals_detected" else "no_signal",
+        }
+        skipped_families = [str(f) for f in skipped_payload_families if str(f).strip()]
+        skipped_reasons_norm = [str(r) for r in skipped_reasons if str(r).strip()]
+        if skipped_families:
+            payload["skipped_payload_families"] = sorted(set(skipped_families))
+        if skipped_reasons_norm:
+            payload["skipped_reasons"] = sorted(set(skipped_reasons_norm))
+        return self._artifacts.save_artifact(
+            campaign_id=command.campaign_id,
+            tool_run_id=tool_run_id,
+            artifact_type="injection_probe_summary",
+            content=payload,
         )
 
     def _run_live_query(
