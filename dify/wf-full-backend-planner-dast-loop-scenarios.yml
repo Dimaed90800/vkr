@@ -1,0 +1,3791 @@
+app:
+  description: Phase 15C full backend planner DAST loop with ScenarioPlan snapshot before
+    iterations. POST /v1/scenarios/plan once, merge into planner request, bounded loop unchanged.
+  icon: F
+  icon_background: '#E8F3FF'
+  icon_type: emoji
+  mode: workflow
+  name: wf-full-backend-planner-dast-loop-scenarios
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      enabled: false
+      allowed_file_extensions: []
+      allowed_file_types: []
+      allowed_file_upload_methods: []
+      fileUploadConfig:
+        file_size_limit: 15
+        file_upload_limit: 20
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods: []
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        sourceType: start
+        targetType: code
+      id: start-to-normalize_inputs
+      source: start
+      sourceHandle: source
+      target: normalize_inputs
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: normalize_inputs-to-create_campaign
+      source: normalize_inputs
+      sourceHandle: source
+      target: create_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: create_campaign-to-extract_campaign
+      source: create_campaign
+      sourceHandle: source
+      target: extract_campaign
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: extract_campaign-to-has_openapi_spec
+      source: extract_campaign
+      sourceHandle: source
+      target: has_openapi_spec
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: http-request
+      id: has_openapi_spec-true-to-build_graph
+      source: has_openapi_spec
+      sourceHandle: 'true'
+      target: build_graph
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: code
+      id: has_openapi_spec-false-to-skip_graph
+      source: has_openapi_spec
+      sourceHandle: 'false'
+      target: skip_graph
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: build_graph-to-init_loop_state
+      source: build_graph
+      sourceHandle: source
+      target: init_loop_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: skip_graph-to-init_loop_state
+      source: skip_graph
+      sourceHandle: source
+      target: init_loop_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: init_loop_state-to-emit_scenario_plan_request_body
+      source: init_loop_state
+      sourceHandle: source
+      target: emit_scenario_plan_request_body
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: emit-scenario-plan-body-to-call_scenario_plan
+      source: emit_scenario_plan_request_body
+      sourceHandle: source
+      target: call_scenario_plan
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: call-scenario-plan-to-merge_scenario_plan
+      source: call_scenario_plan
+      sourceHandle: source
+      target: merge_scenario_plan_into_planner_request
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: loop
+      id: merge-scenario-plan-to-main_loop
+      source: merge_scenario_plan_into_planner_request
+      sourceHandle: source
+      target: main_loop_v1
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: loop
+        targetType: code
+      id: main_loop-to-final_loop_state
+      source: main_loop_v1
+      sourceHandle: source
+      target: final_loop_state
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: final_loop_state-to-build_final_report
+      source: final_loop_state
+      sourceHandle: source
+      target: build_final_report
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: answer
+      id: build_final_report-to-answer_final_report
+      source: build_final_report
+      sourceHandle: source
+      target: answer_final_report
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: loop-start
+        targetType: code
+      id: main-loop-start-to-loop-state-manager
+      source: main_loop_start
+      sourceHandle: source
+      target: loop_state_manager
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: loop-state-manager-to-check-iteration-limit
+      source: loop_state_manager
+      sourceHandle: source
+      target: check_iteration_limit
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: if-else
+      id: check-iteration-limit-to-should-continue-iteration
+      source: check_iteration_limit
+      sourceHandle: source
+      target: should_continue_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: should-continue-iteration-true-to-prepare-planner-body
+      source: should_continue_iteration
+      sourceHandle: 'true'
+      target: prepare_planner_body_from_state
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: prepare-planner-body-to-call-planner-candidates
+      source: prepare_planner_body_from_state
+      sourceHandle: source
+      target: call_planner_candidates
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: should-continue-iteration-false-to-stop-max-iterations
+      source: should_continue_iteration
+      sourceHandle: 'false'
+      target: stop_max_iterations
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: call-planner-candidates-to-select-ready-candidate
+      source: call_planner_candidates
+      sourceHandle: source
+      target: select_ready_candidate
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: if-else
+      id: select-ready-candidate-to-has-ready-candidate
+      source: select_ready_candidate
+      sourceHandle: source
+      target: has_ready_candidate
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: has-ready-candidate-false-to-stop-no-ready-candidate
+      source: has_ready_candidate
+      sourceHandle: 'false'
+      target: stop_no_ready_candidate
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: http-request
+      id: has-ready-candidate-true-to-run-selected-command
+      source: has_ready_candidate
+      sourceHandle: 'true'
+      target: run_selected_command
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: run-selected-command-to-extract-tool-run
+      source: run_selected_command
+      sourceHandle: source
+      target: extract_tool_run
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: if-else
+      id: extract-tool-run-to-has-tool-failed
+      source: extract_tool_run
+      sourceHandle: source
+      target: has_tool_failed
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: has-tool-failed-true-to-stop-tool-failed
+      source: has_tool_failed
+      sourceHandle: 'true'
+      target: stop_tool_failed
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: http-request
+      id: has-tool-failed-false-to-normalize-observations
+      source: has_tool_failed
+      sourceHandle: 'false'
+      target: normalize_observations
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: normalize-observations-to-summarize-observations
+      source: normalize_observations
+      sourceHandle: source
+      target: summarize_observations
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: if-else
+      id: summarize-observations-to-has-observation
+      source: summarize_observations
+      sourceHandle: source
+      target: has_observation
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: has-observation-false-to-record-no-observations
+      source: has_observation
+      sourceHandle: 'false'
+      target: record_no_observations
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: http-request
+      id: has-observation-true-to-triage-observation
+      source: has_observation
+      sourceHandle: 'true'
+      target: triage_observation
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: triage-observation-to-extract-verification-plan
+      source: triage_observation
+      sourceHandle: source
+      target: extract_verification_plan
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: extract-verification-plan-to-route-by-observation-type
+      source: extract_verification_plan
+      sourceHandle: source
+      target: route_by_observation_type
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: if-else
+      id: route-by-observation-type-to-is-evidence-capable
+      source: route_by_observation_type
+      sourceHandle: source
+      target: is_evidence_capable
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: http-request
+      id: is-evidence-capable-true-to-build-evidence-pack
+      source: is_evidence_capable
+      sourceHandle: 'true'
+      target: build_evidence_pack
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: if-else
+        targetType: code
+      id: is-evidence-capable-false-to-record-pending-verification
+      source: is_evidence_capable
+      sourceHandle: 'false'
+      target: record_pending_verification
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: build-evidence-pack-to-compact-evidence-for-judge
+      source: build_evidence_pack
+      sourceHandle: source
+      target: compact_evidence_for_judge
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: llm
+      id: compact-evidence-for-judge-to-llm-judge
+      source: compact_evidence_for_judge
+      sourceHandle: source
+      target: llm_judge
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: llm
+        targetType: code
+      id: llm-judge-to-parse-judge-verdict
+      source: llm_judge
+      sourceHandle: source
+      target: parse_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: parse-judge-verdict-to-apply-judge-verdict
+      source: parse_judge_verdict
+      sourceHandle: source
+      target: apply_judge_verdict
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: apply-judge-verdict-to-extract-apply-result
+      source: apply_judge_verdict
+      sourceHandle: source
+      target: extract_apply_result
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: http-request
+      id: extract-apply-result-to-list-confirmed-findings
+      source: extract_apply_result
+      sourceHandle: source
+      target: list_confirmed_findings
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: http-request
+        targetType: code
+      id: list-confirmed-findings-to-extract-findings-summary
+      source: list_confirmed_findings
+      sourceHandle: source
+      target: extract_findings_summary
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: extract-findings-summary-to-record-finding-created
+      source: extract_findings_summary
+      sourceHandle: source
+      target: record_finding_created
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: stop-max-iterations-to-finalize-iteration
+      source: stop_max_iterations
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: stop-no-ready-candidate-to-finalize-iteration
+      source: stop_no_ready_candidate
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: stop-tool-failed-to-finalize-iteration
+      source: stop_tool_failed
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: record-no-observations-to-finalize-iteration
+      source: record_no_observations
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: record-pending-verification-to-finalize-iteration
+      source: record_pending_verification
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: code
+      id: record-finding-created-to-finalize-iteration
+      source: record_finding_created
+      sourceHandle: source
+      target: finalize_iteration
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        sourceType: code
+        targetType: assigner
+      id: finalize-iteration-to-assign-loop-state
+      source: finalize_iteration
+      sourceHandle: source
+      target: assign_loop_state
+      targetHandle: target
+      type: custom
+      zIndex: 1002
+    nodes:
+    - data:
+        desc: Full backend planner DAST loop inputs. Dify keeps compact loop state, counts,
+          status values, and one temporary command object for tool start.
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: Toolbox URL
+          max_length: 256
+          options: []
+          required: true
+          type: text-input
+          variable: toolbox_url
+        - label: Target URL
+          max_length: 512
+          options: []
+          required: true
+          type: text-input
+          variable: target_url
+        - label: OpenAPI Spec Text optional
+          max_length: 60000
+          options: []
+          required: false
+          type: paragraph
+          variable: openapi_spec_text
+        - label: OpenAPI URL optional
+          max_length: 512
+          options: []
+          required: false
+          type: text-input
+          variable: openapi_url
+        - label: Allowed Hosts JSON
+          max_length: 4000
+          options: []
+          required: true
+          type: paragraph
+          variable: allowed_hosts_json
+        - label: Roles JSON
+          max_length: 12000
+          options: []
+          required: false
+          type: paragraph
+          variable: roles_json
+        - label: Planner Request JSON optional
+          max_length: 30000
+          options: []
+          required: false
+          type: paragraph
+          variable: planner_request_json
+        - label: Task ID
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: task_id
+        - label: Judge Model
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: judge_model
+        - label: Max Iterations
+          max_length: 4
+          options: []
+          required: false
+          type: text-input
+          variable: max_iterations
+        - label: Include Scenario Compiler
+          max_length: 8
+          options: []
+          required: false
+          type: text-input
+          variable: include_scenario_compiler
+        - label: Scenario Max Operations
+          max_length: 8
+          options: []
+          required: false
+          type: text-input
+          variable: scenario_max_operations
+        - label: Scenario Max Scenarios
+          max_length: 8
+          options: []
+          required: false
+          type: text-input
+          variable: scenario_max_scenarios
+        - label: Scenario LLM Enabled
+          max_length: 8
+          options: []
+          required: false
+          type: text-input
+          variable: scenario_llm_enabled
+        - label: Scenario LLM Model
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: scenario_llm_model
+        - label: Scenario Prompt Version
+          max_length: 128
+          options: []
+          required: false
+          type: text-input
+          variable: scenario_prompt_version
+      height: 476
+      id: start
+      position:
+        x: 0
+        y: 180
+      positionAbsolute:
+        x: 0
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+          from urllib.parse import urlparse
+
+          DEFAULT_PLANNER_REQUEST = {
+              "include_blocked": True,
+              "max_candidates": 10,
+              "zap": {
+                  "enabled": True,
+                  "target_url": "",
+                  "zap_base_url": "http://zap:8080",
+                  "seed_urls": [],
+                  "use_spider": True,
+                  "use_ajax_spider": False,
+                  "max_duration_sec": 30,
+                  "max_discovered_urls": 100,
+                  "max_alerts": 100,
+              },
+              "bola": {
+                  "enabled": True,
+                  "object_pairs": [],
+              },
+          }
+
+          def _json_list(value, default):
+              raw = str(value or '').strip()
+              if not raw:
+                  return list(default)
+              try:
+                  parsed = json.loads(raw)
+              except Exception:
+                  return list(default)
+              return parsed if isinstance(parsed, list) else list(default)
+
+          def _json_object(value, default):
+              raw = str(value or '').strip()
+              if not raw:
+                  return dict(default)
+              try:
+                  parsed = json.loads(raw)
+              except Exception:
+                  return dict(default)
+              return parsed if isinstance(parsed, dict) else dict(default)
+
+          def _default_allowed_hosts(target_url):
+              parsed = urlparse(str(target_url or '').strip())
+              host = parsed.netloc or parsed.hostname or ''
+              return [host] if host else []
+
+          def _int_value(value, default):
+              raw = str(value or '').strip()
+              if not raw:
+                  parsed = default
+              else:
+                  try:
+                      parsed = int(raw)
+                  except Exception:
+                      parsed = default
+              if parsed < 1:
+                  return 1
+              if parsed > 10:
+                  return 10
+              return parsed
+
+          def _scenario_int(value, default, lo, hi):
+              raw = str(value or '').strip()
+              if not raw:
+                  parsed = default
+              else:
+                  try:
+                      parsed = int(raw)
+                  except Exception:
+                      parsed = default
+              if parsed < lo:
+                  return lo
+              if parsed > hi:
+                  return hi
+              return parsed
+
+          def _bool_str(value, default='true'):
+              raw = str(value or '').strip().lower()
+              if raw in ('false', '0', 'no'):
+                  return 'false'
+              if raw in ('true', '1', 'yes'):
+                  return 'true'
+              if not raw:
+                  return default
+              return 'true' if default == 'true' else 'false'
+
+          def main(
+              toolbox_url,
+              target_url,
+              openapi_spec_text='',
+              openapi_url='',
+              allowed_hosts_json='',
+              roles_json='',
+              planner_request_json='',
+              task_id='',
+              judge_model='',
+              max_iterations='',
+              include_scenario_compiler='true',
+              scenario_max_operations='120',
+              scenario_max_scenarios='30',
+              scenario_llm_enabled='false',
+              scenario_llm_model='',
+              scenario_prompt_version='scenario-planner/v1',
+          ) -> dict:
+              target = str(target_url or '').rstrip('/')
+              openapi_text = str(openapi_spec_text or '')
+              openapi_url_str = str(openapi_url or '').strip()
+              allowed_hosts = _json_list(allowed_hosts_json, _default_allowed_hosts(target))
+              roles = _json_list(roles_json, [])
+              planner_request = _json_object(planner_request_json, DEFAULT_PLANNER_REQUEST)
+              model_name = str(judge_model or 'bridge-full-backend-planner-dast-llm').strip()
+              max_iters = _int_value(max_iterations, 3)
+              scen_ops = _scenario_int(scenario_max_operations, 120, 1, 500)
+              scen_max = _scenario_int(scenario_max_scenarios, 30, 1, 100)
+              scen_llm = _bool_str(scenario_llm_enabled, 'false')
+              scen_model = str(scenario_llm_model or '').strip()
+              scen_prompt = str(scenario_prompt_version or 'scenario-planner/v1').strip() or 'scenario-planner/v1'
+              inc_scen = _bool_str(include_scenario_compiler, 'true')
+              return {
+                  'toolbox_url': str(toolbox_url or '').rstrip('/'),
+                  'target_url': target,
+                  'openapi_url': openapi_url_str,
+                  'openapi_spec_text': openapi_text,
+                  'openapi_spec_text_json': json.dumps(openapi_text, ensure_ascii=False),
+                  'openapi_url_json': json.dumps(openapi_url_str, ensure_ascii=False),
+                  'has_openapi_spec': 'true' if (openapi_text.strip() or openapi_url_str) else 'false',
+                  'allowed_hosts_json': json.dumps(allowed_hosts, ensure_ascii=False),
+                  'roles_json': json.dumps(roles, ensure_ascii=False),
+                  'planner_request_json': json.dumps(planner_request, ensure_ascii=False),
+                  'task_id': str(task_id or 'task_full_backend_planner_dast_loop').strip(),
+                  'judge_model': model_name,
+                  'max_iterations': str(max_iters),
+                  'include_scenario_compiler': inc_scen,
+                  'scenario_max_operations': str(scen_ops),
+                  'scenario_max_scenarios': str(scen_max),
+                  'scenario_llm_enabled': scen_llm,
+                  'scenario_llm_model': scen_model,
+                  'scenario_prompt_version': scen_prompt,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Normalize compact loop inputs and defaults.
+        outputs:
+          allowed_hosts_json:
+            children: null
+            type: string
+          has_openapi_spec:
+            children: null
+            type: string
+          judge_model:
+            children: null
+            type: string
+          max_iterations:
+            children: null
+            type: string
+          include_scenario_compiler:
+            children: null
+            type: string
+          scenario_max_operations:
+            children: null
+            type: string
+          scenario_max_scenarios:
+            children: null
+            type: string
+          scenario_llm_enabled:
+            children: null
+            type: string
+          scenario_llm_model:
+            children: null
+            type: string
+          scenario_prompt_version:
+            children: null
+            type: string
+          openapi_spec_text:
+            children: null
+            type: string
+          openapi_spec_text_json:
+            children: null
+            type: string
+          openapi_url:
+            children: null
+            type: string
+          openapi_url_json:
+            children: null
+            type: string
+          planner_request_json:
+            children: null
+            type: string
+          roles_json:
+            children: null
+            type: string
+          target_url:
+            children: null
+            type: string
+          task_id:
+            children: null
+            type: string
+          toolbox_url:
+            children: null
+            type: string
+        selected: false
+        title: Normalize Inputs
+        type: code
+        variables:
+        - value_selector: [start, toolbox_url]
+          value_type: string
+          variable: toolbox_url
+        - value_selector: [start, target_url]
+          value_type: string
+          variable: target_url
+        - value_selector: [start, openapi_spec_text]
+          value_type: string
+          variable: openapi_spec_text
+        - value_selector: [start, openapi_url]
+          value_type: string
+          variable: openapi_url
+        - value_selector: [start, allowed_hosts_json]
+          value_type: string
+          variable: allowed_hosts_json
+        - value_selector: [start, roles_json]
+          value_type: string
+          variable: roles_json
+        - value_selector: [start, planner_request_json]
+          value_type: string
+          variable: planner_request_json
+        - value_selector: [start, task_id]
+          value_type: string
+          variable: task_id
+        - value_selector: [start, judge_model]
+          value_type: string
+          variable: judge_model
+        - value_selector: [start, max_iterations]
+          value_type: string
+          variable: max_iterations
+        - value_selector: [start, include_scenario_compiler]
+          value_type: string
+          variable: include_scenario_compiler
+        - value_selector: [start, scenario_max_operations]
+          value_type: string
+          variable: scenario_max_operations
+        - value_selector: [start, scenario_max_scenarios]
+          value_type: string
+          variable: scenario_max_scenarios
+        - value_selector: [start, scenario_llm_enabled]
+          value_type: string
+          variable: scenario_llm_enabled
+        - value_selector: [start, scenario_llm_model]
+          value_type: string
+          variable: scenario_llm_model
+        - value_selector: [start, scenario_prompt_version]
+          value_type: string
+          variable: scenario_prompt_version
+      height: 52
+      id: normalize_inputs
+      position:
+        x: 300
+        y: 180
+      positionAbsolute:
+        x: 300
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "target_url": "{{#normalize_inputs.target_url#}}",
+              "openapi_url": "{{#normalize_inputs.openapi_url#}}",
+              "allowed_hosts": {{#normalize_inputs.allowed_hosts_json#}},
+              "profile": "safe",
+              "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 50, "max_retries_per_task": 2},
+              "roles_json": {{#normalize_inputs.roles_json#}}
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Create Campaign
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/campaigns'
+        variables: []
+      height: 158
+      id: create_campaign
+      position:
+        x: 600
+        y: 180
+      positionAbsolute:
+        x: 600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              return {'campaign_id': str(payload.get('campaign_id') or '')}
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          campaign_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Campaign
+        type: code
+        variables:
+        - value_selector: [create_campaign, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_campaign
+      position:
+        x: 900
+        y: 180
+      positionAbsolute:
+        x: 900
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: has-openapi-spec-condition
+            value: 'true'
+            variable_selector: [normalize_inputs, has_openapi_spec]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Build graph when OpenAPI spec text or openapi_url is present.
+        selected: false
+        title: Has OpenAPI Spec?
+        type: if-else
+      height: 126
+      id: has_openapi_spec
+      position:
+        x: 1200
+        y: 180
+      positionAbsolute:
+        x: 1200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "openapi_spec_text": {{#normalize_inputs.openapi_spec_text_json#}},
+              "openapi_url": {{#normalize_inputs.openapi_url_json#}}
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build Graph
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/graph/{{#extract_campaign.campaign_id#}}/build'
+        variables: []
+      height: 158
+      id: build_graph
+      position:
+        x: 1500
+        y: 180
+      positionAbsolute:
+        x: 1500
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def main() -> dict:
+              return {'graph_status': 'skipped_no_openapi_spec'}
+        code_language: python3
+        dependencies: []
+        desc: ''
+        outputs:
+          graph_status:
+            children: null
+            type: string
+        selected: false
+        title: Skip Graph
+        type: code
+        variables: []
+      height: 52
+      id: skip_graph
+      position:
+        x: 1500
+        y: 20
+      positionAbsolute:
+        x: 1500
+        y: 20
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(
+              campaign_id: str,
+              max_iterations: str,
+              planner_request_json: str = '',
+              include_scenario_compiler: str = 'true',
+          ) -> dict:
+              try:
+                  max_iters = int(str(max_iterations or '').strip() or '3')
+              except Exception:
+                  max_iters = 3
+              if max_iters < 1:
+                  max_iters = 1
+              if max_iters > 10:
+                  max_iters = 10
+              state = {
+                  "campaign_id": str(campaign_id or ''),
+                  "iterations_run": 0,
+                  "max_iterations": max_iters,
+                  "confirmed_findings_count": 0,
+                  "finding_ids": [],
+                  "pending_verification_count": 0,
+                  "last_candidate_kind": "",
+                  "last_tool_run_status": "",
+                  "last_observation_type": "",
+                  "last_verification_plan_id": "",
+                  "stopped_reason": "",
+                  "iteration_summaries": [],
+                  "pending_summaries": [],
+                  "planner_request_base_json": str(planner_request_json or ''),
+                  "include_scenario_compiler": str(include_scenario_compiler or 'true').strip().lower() or 'true',
+                  "scenario_plan_source": "",
+                  "scenario_plan_graph_empty": False,
+                  "scenarios_total": 0,
+                  "accepted_scenarios_count": 0,
+                  "blocked_scenarios_count": 0,
+                  "rejected_scenarios_count": 0,
+                  "scenario_types": [],
+                  "scenario_plan_warnings_sample": [],
+                  "scenario_plan_unavailable": False,
+                  "planner_request_effective_json": "",
+              }
+              return {"state_json": json.dumps(state, ensure_ascii=False)}
+        code_language: python3
+        dependencies: []
+        desc: Initialize compact loop state for bounded planner iterations.
+        outputs:
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Init Loop State
+        type: code
+        variables:
+        - value_selector: [extract_campaign, campaign_id]
+          value_type: string
+          variable: campaign_id
+        - value_selector: [normalize_inputs, max_iterations]
+          value_type: string
+          variable: max_iterations
+        - value_selector: [normalize_inputs, planner_request_json]
+          value_type: string
+          variable: planner_request_json
+        - value_selector: [normalize_inputs, include_scenario_compiler]
+          value_type: string
+          variable: include_scenario_compiler
+      height: 52
+      id: init_loop_state
+      position:
+        x: 1800
+        y: 180
+      positionAbsolute:
+        x: 1800
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(
+              scenario_max_operations: str,
+              scenario_max_scenarios: str,
+              scenario_llm_enabled: str,
+              scenario_llm_model: str,
+              scenario_prompt_version: str,
+          ) -> dict:
+              try:
+                  mo = int(str(scenario_max_operations or "").strip() or "120")
+              except Exception:
+                  mo = 120
+              try:
+                  ms = int(str(scenario_max_scenarios or "").strip() or "30")
+              except Exception:
+                  ms = 30
+              if mo < 1:
+                  mo = 1
+              if mo > 500:
+                  mo = 500
+              if ms < 1:
+                  ms = 1
+              if ms > 100:
+                  ms = 100
+              llm_on = str(scenario_llm_enabled or "").strip().lower() in ("true", "1", "yes")
+              model = str(scenario_llm_model or "").strip()
+              pv = str(scenario_prompt_version or "").strip() or "scenario-planner/v1"
+              payload = {
+                  "max_operations": mo,
+                  "max_scenarios": ms,
+                  "llm": {"enabled": llm_on, "model": model, "prompt_version": pv},
+              }
+              return {"scenario_plan_request_json": json.dumps(payload, ensure_ascii=False)}
+        code_language: python3
+        dependencies: []
+        desc: Build valid JSON for POST /v1/scenarios/plan (boolean llm.enabled).
+        outputs:
+          scenario_plan_request_json:
+            children: null
+            type: string
+        selected: false
+        title: Emit Scenario Plan Request Body
+        type: code
+        variables:
+        - value_selector: [normalize_inputs, scenario_max_operations]
+          value_type: string
+          variable: scenario_max_operations
+        - value_selector: [normalize_inputs, scenario_max_scenarios]
+          value_type: string
+          variable: scenario_max_scenarios
+        - value_selector: [normalize_inputs, scenario_llm_enabled]
+          value_type: string
+          variable: scenario_llm_enabled
+        - value_selector: [normalize_inputs, scenario_llm_model]
+          value_type: string
+          variable: scenario_llm_model
+        - value_selector: [normalize_inputs, scenario_prompt_version]
+          value_type: string
+          variable: scenario_prompt_version
+      height: 52
+      id: emit_scenario_plan_request_body
+      position:
+        x: 1875
+        y: 180
+      positionAbsolute:
+        x: 1875
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: '{{#emit_scenario_plan_request_body.scenario_plan_request_json#}}'
+          type: json
+        desc: Phase 15C — one ScenarioPlan snapshot before planner loop (stateless backend).
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Call Scenario Plan
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/scenarios/plan/{{#extract_campaign.campaign_id#}}'
+        variables: []
+      height: 140
+      id: call_scenario_plan
+      position:
+        x: 1950
+        y: 180
+      positionAbsolute:
+        x: 1950
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import copy
+          import json
+
+          DEFAULT_PLANNER_REQUEST = {
+              "include_blocked": True,
+              "max_candidates": 10,
+              "zap": {"enabled": True, "target_url": "", "zap_base_url": "http://zap:8080", "seed_urls": [], "use_spider": True, "use_ajax_spider": False, "max_duration_sec": 30, "max_discovered_urls": 100, "max_alerts": 100},
+              "bola": {"enabled": True, "object_pairs": []},
+          }
+
+          def _load_json(raw, default):
+              try:
+                  v = json.loads(str(raw or "").strip() or "{}")
+              except Exception:
+                  return default
+              return v if isinstance(v, dict) else default
+
+          def _bool_flag(value: str, default: bool) -> bool:
+              s = str(value or "").strip().lower()
+              if s in ("false", "0", "no"):
+                  return False
+              if s in ("true", "1", "yes"):
+                  return True
+              return default
+
+          def main(
+              init_state_json: str,
+              scenario_http_body: str,
+              normalize_planner_request_json: str,
+              include_scenario_compiler_flag: str = "true",
+          ) -> dict:
+              state = _load_json(init_state_json, {})
+              base_raw = str(state.get("planner_request_base_json") or "").strip()
+              if base_raw:
+                  base = _load_json(base_raw, copy.deepcopy(DEFAULT_PLANNER_REQUEST))
+              else:
+                  base = _load_json(normalize_planner_request_json, copy.deepcopy(DEFAULT_PLANNER_REQUEST))
+              want_compiler = _bool_flag(include_scenario_compiler_flag, True)
+              warnings_extra = []
+              sp_payload = None
+              try:
+                  sp_payload = json.loads(str(scenario_http_body or "").strip() or "{}")
+              except Exception:
+                  sp_payload = None
+              if not isinstance(sp_payload, dict):
+                  sp_payload = None
+              scenarios_in = []
+              if isinstance(sp_payload, dict):
+                  scenarios_in = sp_payload.get("scenarios") if isinstance(sp_payload.get("scenarios"), list) else []
+              valid = (
+                  isinstance(sp_payload, dict)
+                  and isinstance(scenarios_in, list)
+                  and ("campaign_id" in sp_payload or "schema_version" in sp_payload)
+              )
+              if not valid:
+                  effective = copy.deepcopy(base)
+                  effective["include_scenario_compiler"] = False
+                  effective.pop("scenario_plan", None)
+                  state["scenario_plan_unavailable"] = True
+                  warnings_extra.append("scenario_plan_unavailable")
+              else:
+                  kept = []
+                  rejected_n = 0
+                  for row in scenarios_in:
+                      if not isinstance(row, dict):
+                          continue
+                      st = str(row.get("status") or "").strip().lower()
+                      if st in ("accepted", "blocked"):
+                          kept.append(row)
+                      elif st == "rejected":
+                          rejected_n += 1
+                  src = str(sp_payload.get("source") or "").strip()
+                  if not src:
+                      src = str(sp_payload.get("schema_version") or "").strip()
+                  effective = copy.deepcopy(base)
+                  effective["scenario_plan"] = {"source": src, "scenarios": kept}
+                  effective["include_scenario_compiler"] = bool(want_compiler)
+                  state["scenario_plan_source"] = src
+                  state["scenario_plan_graph_empty"] = bool(sp_payload.get("graph_empty"))
+                  state["scenarios_total"] = len(scenarios_in)
+                  state["accepted_scenarios_count"] = sum(1 for r in kept if str(r.get("status") or "").lower() == "accepted")
+                  state["blocked_scenarios_count"] = sum(1 for r in kept if str(r.get("status") or "").lower() == "blocked")
+                  state["rejected_scenarios_count"] = rejected_n
+                  types_map = {}
+                  for r in kept:
+                      t = str(r.get("scenario_type") or "").strip() or "unknown"
+                      types_map[t] = types_map.get(t, 0) + 1
+                  state["scenario_types"] = sorted([f"{k}:{v}" for k, v in types_map.items()])
+                  wlist = list(sp_payload.get("warnings") or [])
+                  if isinstance(wlist, list):
+                      state["scenario_plan_warnings_sample"] = [str(x) for x in wlist[:5]]
+                  else:
+                      state["scenario_plan_warnings_sample"] = []
+              if warnings_extra:
+                  ws = list(state.get("scenario_plan_warnings_sample") or [])
+                  for w in warnings_extra:
+                      if w not in ws:
+                          ws.append(w)
+                  state["scenario_plan_warnings_sample"] = ws[:8]
+              if not valid:
+                  state["planner_request_effective_json"] = json.dumps(
+                      {**copy.deepcopy(base), "include_scenario_compiler": False},
+                      ensure_ascii=False,
+                  )
+              else:
+                  state["planner_request_effective_json"] = json.dumps(effective, ensure_ascii=False)
+              return {"state_json": json.dumps(state, ensure_ascii=False)}
+        code_language: python3
+        dependencies: []
+        desc: Merge ScenarioPlan into planner request; degrade to base planner if response invalid.
+        outputs:
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Merge Scenario Plan Into Planner Request
+        type: code
+        variables:
+        - value_selector: [init_loop_state, state_json]
+          value_type: string
+          variable: init_state_json
+        - value_selector: [call_scenario_plan, body]
+          value_type: string
+          variable: scenario_http_body
+        - value_selector: [normalize_inputs, planner_request_json]
+          value_type: string
+          variable: normalize_planner_request_json
+        - value_selector: [normalize_inputs, include_scenario_compiler]
+          value_type: string
+          variable: include_scenario_compiler_flag
+      height: 52
+      id: merge_scenario_plan_into_planner_request
+      position:
+        x: 2025
+        y: 180
+      positionAbsolute:
+        x: 2025
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        break_conditions:
+        - comparison_operator: is
+          id: planner-loop-break
+          value: true
+          varType: boolean
+          variable_selector: [finalize_iteration, should_exit_loop]
+        error_handle_mode: terminated
+        height: 680
+        logical_operator: and
+        loop_count: 10
+        loop_variables:
+        - id: 4f0c2b3a-34c3-4d64-8704-fc4cf76f9b41
+          label: _current_loop_state
+          value: [merge_scenario_plan_into_planner_request, state_json]
+          value_type: variable
+          var_type: string
+        selected: false
+        start_node_id: main_loop_start
+        title: Planner Executor Loop
+        type: loop
+        width: 4400
+      height: 680
+      id: main_loop_v1
+      position:
+        x: 2100
+        y: -60
+      positionAbsolute:
+        x: 2100
+        y: -60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 4400
+      zIndex: 1
+    - data:
+        desc: ''
+        isInLoop: true
+        selected: false
+        title: ''
+        type: loop-start
+      draggable: false
+      height: 48
+      id: main_loop_start
+      parentId: main_loop_v1
+      position:
+        x: 24
+        y: 70
+      positionAbsolute:
+        x: 2124
+        y: 10
+      selectable: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom-loop-start
+      width: 44
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(current_loop_state_json: str) -> dict:
+              value = str(current_loop_state_json or '').strip()
+              try:
+                  state = json.loads(value or '{}')
+              except Exception:
+                  state = {}
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Carry forward compact loop state between planner iterations.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Loop State Manager
+        type: code
+        variables:
+        - value_selector: [main_loop_v1, _current_loop_state]
+          value_type: string
+          variable: current_loop_state_json
+      height: 52
+      id: loop_state_manager
+      parentId: main_loop_v1
+      position:
+        x: 20
+        y: 140
+      positionAbsolute:
+        x: 2120
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              iterations_run = int(state.get('iterations_run') or 0)
+              max_iterations = int(state.get('max_iterations') or 3)
+              reached = iterations_run >= max_iterations
+              return {
+                  "should_continue_iteration": 'false' if reached else 'true',
+                  "stopped_reason": 'max_iterations_reached' if reached else '',
+              }
+        code_language: python3
+        dependencies: []
+        desc: State-based stop before calling planner again.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_continue_iteration:
+            children: null
+            type: string
+          stopped_reason:
+            children: null
+            type: string
+        selected: false
+        title: Check Iteration Limit
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+      height: 52
+      id: check_iteration_limit
+      parentId: main_loop_v1
+      position:
+        x: 320
+        y: 140
+      positionAbsolute:
+        x: 2420
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: should-continue-iteration-condition
+            value: 'true'
+            variable_selector: [check_iteration_limit, should_continue_iteration]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Continue planner loop only while iterations_run < max_iterations.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        selected: false
+        title: Should Continue Iteration?
+        type: if-else
+      height: 126
+      id: should_continue_iteration
+      parentId: main_loop_v1
+      position:
+        x: 620
+        y: 140
+      positionAbsolute:
+        x: 2720
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              state["stopped_reason"] = "max_iterations_reached"
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": True,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Stop loop when bounded max_iterations has been reached.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Stop Max Iterations
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+      height: 52
+      id: stop_max_iterations
+      parentId: main_loop_v1
+      position:
+        x: 920
+        y: 20
+      positionAbsolute:
+        x: 3020
+        y: -40
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, fallback_planner_request_json: str) -> dict:
+              try:
+                  state = json.loads(state_json or "{}")
+              except Exception:
+                  state = {}
+              eff = str(state.get("planner_request_effective_json") or "").strip()
+              if eff:
+                  return {"body_json": eff}
+              fb = str(fallback_planner_request_json or "").strip()
+              if not fb:
+                  fb = "{}"
+              return {"body_json": fb}
+        code_language: python3
+        dependencies: []
+        desc: Use merged planner_request_effective_json from state; fallback to base planner JSON.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          body_json:
+            children: null
+            type: string
+        selected: false
+        title: Prepare Planner Body From State
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [normalize_inputs, planner_request_json]
+          value_type: string
+          variable: fallback_planner_request_json
+      height: 52
+      id: prepare_planner_body_from_state
+      parentId: main_loop_v1
+      position:
+        x: 770
+        y: 140
+      positionAbsolute:
+        x: 2870
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {{#prepare_planner_body_from_state.body_json#}}
+          type: json
+        desc: Planner call stays inside the bounded loop and reuses backend campaign dedup.
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Planner Candidates
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/planner/{{#extract_campaign.campaign_id#}}/candidates'
+        variables: []
+      height: 140
+      id: call_planner_candidates
+      parentId: main_loop_v1
+      position:
+        x: 920
+        y: 140
+      positionAbsolute:
+        x: 3020
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              candidates = payload.get('candidates') or []
+              selected = {}
+              for candidate in candidates:
+                  command = candidate.get('command')
+                  if candidate.get('status') == 'ready' and isinstance(command, dict):
+                      selected = candidate
+                      break
+              command = selected.get('command') if selected else {}
+              missing = []
+              for candidate in candidates:
+                  if candidate.get('status') == 'blocked':
+                      missing.append({
+                          'kind': candidate.get('kind') or '',
+                          'missing_inputs': candidate.get('missing_inputs') or [],
+                          'reason': candidate.get('reason') or '',
+                      })
+              return {
+                  'has_ready_candidate': 'true' if selected else 'false',
+                  'candidate_id': str(selected.get('candidate_id') or ''),
+                  'candidate_kind': str(selected.get('kind') or ''),
+                  'command_json': json.dumps(command, ensure_ascii=False) if command else '{}',
+                  'ready_count': str(payload.get('ready_count') or 0),
+                  'blocked_count': str(payload.get('blocked_count') or 0),
+                  'skipped_existing_count': str(payload.get('skipped_existing_count') or 0),
+                  'blocked_missing_inputs_summary': json.dumps(missing[:5], ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Select first ready candidate. command_json is temporary and used only for tool start.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          blocked_count:
+            children: null
+            type: string
+          blocked_missing_inputs_summary:
+            children: null
+            type: string
+          candidate_id:
+            children: null
+            type: string
+          candidate_kind:
+            children: null
+            type: string
+          command_json:
+            children: null
+            type: string
+          has_ready_candidate:
+            children: null
+            type: string
+          ready_count:
+            children: null
+            type: string
+          skipped_existing_count:
+            children: null
+            type: string
+        selected: false
+        title: Select First Ready Candidate
+        type: code
+        variables:
+        - value_selector: [call_planner_candidates, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: select_ready_candidate
+      parentId: main_loop_v1
+      position:
+        x: 1220
+        y: 140
+      positionAbsolute:
+        x: 3320
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: has-ready-candidate-condition
+            value: 'true'
+            variable_selector: [select_ready_candidate, has_ready_candidate]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Continue only when planner returned a ready WorkerCommand.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        selected: false
+        title: Has Ready Candidate?
+        type: if-else
+      height: 126
+      id: has_ready_candidate
+      parentId: main_loop_v1
+      position:
+        x: 1520
+        y: 140
+      positionAbsolute:
+        x: 3620
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, ready_count: str, blocked_count: str, skipped_existing_count: str, blocked_missing_inputs_summary: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              summary = {
+                  "iteration_index": int(state.get("iterations_run") or 0) + 1,
+                  "candidate_kind": "",
+                  "tool_run_id": "",
+                  "tool_result_status": "",
+                  "observations_count": 0,
+                  "first_observation_type": "",
+                  "verification_plan_id": "",
+                  "evidence_id": "",
+                  "judge_verdict": "",
+                  "finding_id": "",
+                  "outcome": "no_ready_candidate",
+                  "ready_count": str(ready_count or ''),
+                  "blocked_count": str(blocked_count or ''),
+                  "skipped_existing_count": str(skipped_existing_count or ''),
+                  "blocked_missing_inputs_summary": str(blocked_missing_inputs_summary or ''),
+              }
+              state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
+              state["stopped_reason"] = "no_ready_candidate"
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": True,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Stop loop cleanly when planner returns no ready candidate.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Stop No Ready Candidate
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [select_ready_candidate, ready_count]
+          value_type: string
+          variable: ready_count
+        - value_selector: [select_ready_candidate, blocked_count]
+          value_type: string
+          variable: blocked_count
+        - value_selector: [select_ready_candidate, skipped_existing_count]
+          value_type: string
+          variable: skipped_existing_count
+        - value_selector: [select_ready_candidate, blocked_missing_inputs_summary]
+          value_type: string
+          variable: blocked_missing_inputs_summary
+      height: 52
+      id: stop_no_ready_candidate
+      parentId: main_loop_v1
+      position:
+        x: 1820
+        y: 20
+      positionAbsolute:
+        x: 3920
+        y: -40
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "execution_mode": "sync",
+              "command": {{#select_ready_candidate.command_json#}}
+            }
+          type: json
+        desc: Runs the selected planner WorkerCommand. command_json is object interpolation, not quoted text.
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Run Selected Command
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/tools/runs/start'
+        variables: []
+      height: 140
+      id: run_selected_command
+      parentId: main_loop_v1
+      position:
+        x: 1820
+        y: 140
+      positionAbsolute:
+        x: 3920
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              result = payload.get('result') or payload.get('tool_result') or {}
+              return {
+                  'tool_run_id': str(payload.get('tool_run_id') or result.get('tool_run_id') or ''),
+                  'tool_result_status': str(result.get('status') or payload.get('status') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          tool_result_status:
+            children: null
+            type: string
+          tool_run_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Tool Run
+        type: code
+        variables:
+        - value_selector: [run_selected_command, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_tool_run
+      parentId: main_loop_v1
+      position:
+        x: 2120
+        y: 140
+      positionAbsolute:
+        x: 4220
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: tool-failed-condition
+            value: failed
+            variable_selector: [extract_tool_run, tool_result_status]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Stop the loop on failed tool result without a recoverable path in Phase 14A.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        selected: false
+        title: Has Tool Failed?
+        type: if-else
+      height: 126
+      id: has_tool_failed
+      parentId: main_loop_v1
+      position:
+        x: 2420
+        y: 140
+      positionAbsolute:
+        x: 4520
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              next_index = int(state.get("iterations_run") or 0) + 1
+              summary = {
+                  "iteration_index": next_index,
+                  "candidate_kind": str(candidate_kind or ''),
+                  "tool_run_id": str(tool_run_id or ''),
+                  "tool_result_status": str(tool_result_status or ''),
+                  "observations_count": 0,
+                  "first_observation_type": "",
+                  "verification_plan_id": "",
+                  "evidence_id": "",
+                  "judge_verdict": "",
+                  "finding_id": "",
+                  "outcome": "tool_failed",
+              }
+              state["iterations_run"] = next_index
+              state["last_candidate_kind"] = str(candidate_kind or '')
+              state["last_tool_run_status"] = str(tool_result_status or '')
+              state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
+              state["stopped_reason"] = "tool_failed"
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": True,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Stop bounded loop after failed tool result.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Stop Tool Failed
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [select_ready_candidate, candidate_kind]
+          value_type: string
+          variable: candidate_kind
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+      height: 52
+      id: stop_tool_failed
+      parentId: main_loop_v1
+      position:
+        x: 2720
+        y: 20
+      positionAbsolute:
+        x: 4820
+        y: -40
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Normalize Observations
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/normalize/{{#extract_tool_run.tool_run_id#}}'
+        variables: []
+      height: 158
+      id: normalize_observations
+      parentId: main_loop_v1
+      position:
+        x: 2720
+        y: 140
+      positionAbsolute:
+        x: 4820
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              observations = payload.get('observations') or []
+              cross = [obs for obs in observations if obs.get('type') == 'cross_role_access_signal']
+              validated_headers = [obs for obs in observations if obs.get('type') == 'validated_security_header_issue']
+              alerts = [obs for obs in observations if obs.get('type') == 'zap_alert']
+              discovered = [obs for obs in observations if obs.get('type') == 'discovered_endpoint']
+              selected = cross[0] if cross else (
+                  validated_headers[0] if validated_headers else (
+                      alerts[0] if alerts else (
+                          discovered[0] if discovered else {}
+                      )
+                  )
+              )
+              first_observation_id = str(selected.get('observation_id') or selected.get('id') or '')
+              return {
+                  'has_observation': 'true' if first_observation_id else 'false',
+                  'first_observation_id': first_observation_id,
+                  'first_observation_type': str(selected.get('type') or ''),
+                  'observations_count': str(len(observations)),
+                  'cross_role_access_count': str(len(cross)),
+                  'zap_alerts_count': str(len(alerts)),
+                  'discovered_endpoints_count': str(len(discovered)),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Prefer cross_role_access_signal, then validated_security_header_issue, then zap_alert, then discovered_endpoint.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          cross_role_access_count:
+            children: null
+            type: string
+          discovered_endpoints_count:
+            children: null
+            type: string
+          first_observation_id:
+            children: null
+            type: string
+          first_observation_type:
+            children: null
+            type: string
+          has_observation:
+            children: null
+            type: string
+          observations_count:
+            children: null
+            type: string
+          zap_alerts_count:
+            children: null
+            type: string
+        selected: false
+        title: Summarize/Select Observation
+        type: code
+        variables:
+        - value_selector: [normalize_observations, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: summarize_observations
+      parentId: main_loop_v1
+      position:
+        x: 3020
+        y: 140
+      positionAbsolute:
+        x: 5120
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: has-observation-condition
+            value: 'true'
+            variable_selector: [summarize_observations, has_observation]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Continue only when a selected observation exists.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        selected: false
+        title: Has Observation?
+        type: if-else
+      height: 126
+      id: has_observation
+      parentId: main_loop_v1
+      position:
+        x: 3320
+        y: 140
+      positionAbsolute:
+        x: 5420
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              next_index = int(state.get("iterations_run") or 0) + 1
+              summary = {
+                  "iteration_index": next_index,
+                  "candidate_kind": str(candidate_kind or ''),
+                  "tool_run_id": str(tool_run_id or ''),
+                  "tool_result_status": str(tool_result_status or ''),
+                  "observations_count": int(str(observations_count or '0') or 0),
+                  "first_observation_type": "",
+                  "verification_plan_id": "",
+                  "evidence_id": "",
+                  "judge_verdict": "",
+                  "finding_id": "",
+                  "outcome": "no_observations",
+              }
+              state["iterations_run"] = next_index
+              state["last_candidate_kind"] = str(candidate_kind or '')
+              state["last_tool_run_status"] = str(tool_result_status or '')
+              state["last_observation_type"] = ""
+              state["last_verification_plan_id"] = ""
+              state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": False,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Record compact no-observation summary and continue loop.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Record No Observations
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [select_ready_candidate, candidate_kind]
+          value_type: string
+          variable: candidate_kind
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+        - value_selector: [summarize_observations, observations_count]
+          value_type: string
+          variable: observations_count
+      height: 52
+      id: record_no_observations
+      parentId: main_loop_v1
+      position:
+        x: 3620
+        y: 20
+      positionAbsolute:
+        x: 5720
+        y: -40
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Triage Observation
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/observations/triage/{{#summarize_observations.first_observation_id#}}'
+        variables: []
+      height: 158
+      id: triage_observation
+      parentId: main_loop_v1
+      position:
+        x: 3620
+        y: 140
+      positionAbsolute:
+        x: 5720
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              plan = payload.get('verification_plan') or payload.get('plan') or {}
+              return {
+                  'verification_plan_id': str(payload.get('verification_plan_id') or plan.get('verification_plan_id') or plan.get('plan_id') or ''),
+                  'verification_goal': str(plan.get('goal') or payload.get('goal') or ''),
+                  'verification_strategy': str(plan.get('strategy') or payload.get('strategy') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          verification_goal:
+            children: null
+            type: string
+          verification_plan_id:
+            children: null
+            type: string
+          verification_strategy:
+            children: null
+            type: string
+        selected: false
+        title: Extract Verification Plan
+        type: code
+        variables:
+        - value_selector: [triage_observation, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_verification_plan
+      parentId: main_loop_v1
+      position:
+        x: 3920
+        y: 140
+      positionAbsolute:
+        x: 6020
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          def main(first_observation_type: str, verification_plan_id: str) -> dict:
+              obs_type = str(first_observation_type or '')
+              has_plan = bool(str(verification_plan_id or '').strip())
+              is_evidence_capable = obs_type in {
+                  'cross_role_access_signal',
+                  'validated_security_header_issue',
+              } and has_plan
+              is_pending_only = obs_type in {
+                  'zap_alert',
+                  'discovered_endpoint',
+              }
+              return {
+                  'is_evidence_capable': 'true' if is_evidence_capable else 'false',
+                  'is_pending_only': 'true' if is_pending_only else 'false',
+                  'verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification',
+              }
+        code_language: python3
+        dependencies: []
+        desc: cross_role_access_signal and validated_security_header_issue enter Evidence/JudgeApply. zap_alert and discovered_endpoint stay pending-only.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          is_evidence_capable:
+            children: null
+            type: string
+          is_pending_only:
+            children: null
+            type: string
+          verification_route:
+            children: null
+            type: string
+        selected: false
+        title: Route By Observation Type
+        type: code
+        variables:
+        - value_selector: [summarize_observations, first_observation_type]
+          value_type: string
+          variable: first_observation_type
+        - value_selector: [extract_verification_plan, verification_plan_id]
+          value_type: string
+          variable: verification_plan_id
+      height: 52
+      id: route_by_observation_type
+      parentId: main_loop_v1
+      position:
+        x: 4220
+        y: 140
+      positionAbsolute:
+        x: 6320
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: is-evidence-capable-condition
+            value: 'true'
+            variable_selector: [route_by_observation_type, is_evidence_capable]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Evidence/JudgeApply is only for evidence-capable observations in Phase 14A loop.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        selected: false
+        title: Is Evidence-Capable Observation?
+        type: if-else
+      height: 126
+      id: is_evidence_capable
+      parentId: main_loop_v1
+      position:
+        x: 4520
+        y: 140
+      positionAbsolute:
+        x: 6620
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Build EvidencePack
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/evidence/build-from-plan/{{#extract_verification_plan.verification_plan_id#}}'
+        variables: []
+      height: 158
+      id: build_evidence_pack
+      parentId: main_loop_v1
+      position:
+        x: 4820
+        y: 140
+      positionAbsolute:
+        x: 6920
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              pack = payload.get('evidence_pack') or payload.get('evidence') or {}
+
+              def safe_path(value):
+                  raw = str(value or '')
+                  return raw.split('?', 1)[0]
+
+              def request_ref(exchange):
+                  if not isinstance(exchange, dict):
+                      return None
+                  ref = exchange.get('request_ref') or {}
+                  if not isinstance(ref, dict):
+                      return None
+                  return {
+                      'request_id': ref.get('request_id') or '',
+                      'role': ref.get('role') or '',
+                      'method': ref.get('method') or '',
+                      'path_template': ref.get('path_template') or '',
+                      'status_code': ref.get('status_code') or 0,
+                      'classification': ref.get('classification') or '',
+                      'operation_id': ref.get('operation_id') or '',
+                  }
+
+              summary = {
+                  'campaign_id': pack.get('campaign_id'),
+                  'evidence_id': pack.get('evidence_id'),
+                  'task_id': pack.get('task_id'),
+                  'observation_id': pack.get('observation_id'),
+                  'verification_plan_id': pack.get('verification_plan_id'),
+                  'owasp_category': pack.get('owasp_category'),
+                  'vulnerability_class': pack.get('vulnerability_class'),
+                  'operation_id': pack.get('operation_id'),
+                  'endpoint': pack.get('endpoint'),
+                  'method': pack.get('method'),
+                  'status': pack.get('status'),
+                  'judge_ready': pack.get('judge_ready'),
+                  'missing_evidence': pack.get('missing_evidence') or [],
+                  'confidence': pack.get('confidence') or 0.0,
+                  'hypothesis': pack.get('hypothesis') or '',
+                  'derived_signals': pack.get('derived_signals') or [],
+                  'has_baseline': bool(pack.get('baseline')),
+                  'has_attack': bool(pack.get('attack')),
+                  'has_ownership_proof': bool(pack.get('ownership_proof')),
+                  'has_diff': bool(pack.get('diff')),
+                  'controls_count': len(pack.get('controls') or []),
+                  'replay_steps_count': len(pack.get('replay_steps') or []),
+                  'artifact_refs_count': len(pack.get('artifact_refs') or []),
+                  'baseline_ref': request_ref(pack.get('baseline') or {}),
+                  'attack_ref': request_ref(pack.get('attack') or {}),
+                  'replay_step_refs': [
+                      {
+                          'order': int(step.get('order') or 0),
+                          'role': str(step.get('role') or ''),
+                          'method': str(step.get('method') or ''),
+                          'path_template': safe_path(step.get('path_template') or ''),
+                          'path': safe_path(step.get('path') or ''),
+                          'description': str(step.get('description') or ''),
+                          'request_id': str(step.get('request_id') or ''),
+                      }
+                      for step in (pack.get('replay_steps') or [])
+                      if isinstance(step, dict)
+                  ][:5],
+              }
+              return {
+                  'evidence_id': str(pack.get('evidence_id') or ''),
+                  'judge_input_json': json.dumps(summary, ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Compact evidence only. No body or header blobs, and no artifact blobs.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          evidence_id:
+            children: null
+            type: string
+          judge_input_json:
+            children: null
+            type: string
+        selected: false
+        title: Compact Judge Input
+        type: code
+        variables:
+        - value_selector: [build_evidence_pack, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: compact_evidence_for_judge
+      parentId: main_loop_v1
+      position:
+        x: 5120
+        y: 140
+      positionAbsolute:
+        x: 7220
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: LLM Judge returns only strict JudgeVerdictPayload JSON. Backend JudgeApply creates findings.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        model:
+          completion_params:
+            max_tokens: 900
+            temperature: 0.0
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: |
+            You are Judge for a backend-owned REST API DAST pipeline.
+
+            Evaluate only compact EvidencePack summary.
+            Do not create findings.
+            Do not call tools.
+            Do not invent evidence.
+            Use only request refs, status values, booleans, counts, and compact evidence metadata.
+            Do not require secret-bearing metadata, payload contents, session secrets, or stored blob contents.
+            Validated security header misconfiguration evidence follows the same JudgeVerdictPayload contract.
+            Return JSON only, no markdown/prose/code fences.
+
+            Output must match JudgeVerdictPayload exactly:
+            {
+              "schema_version": "judge-verdict/v1",
+              "verdict": "confirmed|rejected|rework|duplicate|out_of_scope|inconclusive",
+              "confidence": 0.0,
+              "severity": "info|low|medium|high|critical",
+              "reason": "short grounded reason",
+              "finding_candidate": {
+                "title": "",
+                "severity": "",
+                "vulnerability_class": "",
+                "summary": "",
+                "extras": {}
+              },
+              "duplicate_of_finding_id": "",
+              "judge_source": "dify",
+              "judge_model": "{{#normalize_inputs.judge_model#}}"
+            }
+
+            If status != ready_for_judge, do not confirm.
+            If judge_ready=false, do not confirm.
+            If missing_evidence non-empty, return rework or inconclusive.
+            Type-aware judging:
+            - For BOLA / cross_role_access_signal evidence: confirmed requires baseline, attack, ownership proof, negative control/control, diff, and replay steps.
+            - For security_header_misconfiguration / validated_security_header_issue evidence:
+              do not require BOLA baseline, attack, ownership_proof, or diff.
+              confirmed is allowed when status=ready_for_judge, judge_ready=true, missing_evidence is empty,
+              vulnerability_class=security_header_misconfiguration, derived_signals contains validated_security_header_issue,
+              replay_steps_count>=1 (or replay_step_refs contains a validation step), and header_name + actual_state are present
+              in derived_signals or compact summary.
+            - Apply BOLA-only evidence requirements only to BOLA evidence types.
+        - id: user
+          role: user
+          text: |-
+            Evaluate this compact EvidencePack summary.
+
+            EvidencePack summary:
+            {{#compact_evidence_for_judge.judge_input_json#}}
+
+            Decision guidance:
+            - Confirm only if the evidence is structurally ready and supports the vulnerability hypothesis.
+            - Rework if specific evidence is missing and can be gathered.
+            - Inconclusive if evidence is incomplete but no clear rework action is available.
+            - Rejected if the compact evidence contradicts the vulnerability hypothesis.
+            - Out_of_scope only if the evidence clearly targets an out-of-scope asset.
+            - Duplicate only if duplicate_of_finding_id is available.
+
+            Return strict JSON only.
+        selected: false
+        title: LLM Judge
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 164
+      id: llm_judge
+      parentId: main_loop_v1
+      position:
+        x: 5420
+        y: 140
+      positionAbsolute:
+        x: 7520
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+          import re
+
+          ALLOWED = {
+              'confirmed',
+              'rejected',
+              'rework',
+              'duplicate',
+              'out_of_scope',
+              'inconclusive',
+          }
+          SEVERITIES = {'info', 'low', 'medium', 'high', 'critical'}
+          REQUIRED = [
+              'schema_version',
+              'verdict',
+              'confidence',
+              'severity',
+              'reason',
+              'finding_candidate',
+              'duplicate_of_finding_id',
+              'judge_source',
+              'judge_model',
+          ]
+
+          def fallback(judge_model: str) -> dict:
+              return {
+                  'schema_version': 'judge-verdict/v1',
+                  'verdict': 'inconclusive',
+                  'confidence': 0.0,
+                  'severity': 'info',
+                  'reason': 'LLM judge returned invalid JSON; backend apply receives safe inconclusive fallback.',
+                  'finding_candidate': {
+                      'title': '',
+                      'severity': '',
+                      'vulnerability_class': '',
+                      'summary': '',
+                      'extras': {'fallback_reason': 'invalid_llm_json'},
+                  },
+                  'duplicate_of_finding_id': '',
+                  'judge_source': 'dify',
+                  'judge_model': judge_model,
+              }
+
+          def clean_text(text: str) -> str:
+              value = (text or '').strip()
+              fence = re.match(r'^```(?:json)?\s*(.*?)\s*```$', value, re.DOTALL)
+              if fence:
+                  value = fence.group(1).strip()
+              return value
+
+          def _is_valid_confidence(value) -> bool:
+              try:
+                  parsed = float(value)
+              except (TypeError, ValueError):
+                  return False
+              return 0.0 <= parsed <= 1.0
+
+          def _truncate(value: str, max_len: int) -> str:
+              text = str(value or '')
+              if len(text) <= max_len:
+                  return text
+              return text[:max_len]
+
+          def main(llm_text: str, judge_model: str) -> dict:
+              model_name = str(judge_model or 'bridge-full-backend-planner-dast-llm').strip()
+              try:
+                  payload = json.loads(clean_text(llm_text))
+                  if not isinstance(payload, dict):
+                      raise ValueError('payload_not_object')
+                  for field in REQUIRED:
+                      if field not in payload:
+                          raise ValueError(f'missing_{field}')
+                  if payload.get('verdict') not in ALLOWED:
+                      raise ValueError('invalid_verdict')
+                  if str(payload.get('severity') or '') not in SEVERITIES:
+                      raise ValueError('invalid_severity')
+                  if not _is_valid_confidence(payload.get('confidence')):
+                      raise ValueError('invalid_confidence')
+                  if not isinstance(payload.get('reason'), str):
+                      raise ValueError('invalid_reason')
+                  if not isinstance(payload.get('duplicate_of_finding_id'), str):
+                      raise ValueError('invalid_duplicate_of_finding_id')
+                  if not isinstance(payload.get('finding_candidate'), dict):
+                      raise ValueError('finding_candidate_not_object')
+                  candidate = payload.get('finding_candidate') or {}
+                  if not isinstance(candidate.get('title', ''), str):
+                      raise ValueError('invalid_candidate_title')
+                  candidate_severity = candidate.get('severity', '')
+                  if not isinstance(candidate_severity, str):
+                      raise ValueError('invalid_candidate_severity_type')
+                  if candidate_severity and candidate_severity not in SEVERITIES:
+                      raise ValueError('invalid_candidate_severity')
+                  if not isinstance(candidate.get('vulnerability_class', ''), str):
+                      raise ValueError('invalid_candidate_vulnerability_class')
+                  if not isinstance(candidate.get('summary', ''), str):
+                      raise ValueError('invalid_candidate_summary')
+                  if not isinstance(candidate.get('extras', {}), dict):
+                      raise ValueError('invalid_candidate_extras')
+              except Exception:
+                  payload = fallback(model_name)
+
+              payload['schema_version'] = 'judge-verdict/v1'
+              payload['judge_source'] = 'dify'
+              payload['judge_model'] = model_name
+              payload['severity'] = str(payload.get('severity') or 'info')
+              payload['confidence'] = float(payload.get('confidence') or 0.0)
+              payload['reason'] = _truncate(payload.get('reason') or '', 600)
+              if not isinstance(payload.get('finding_candidate'), dict):
+                  payload['finding_candidate'] = fallback(model_name)['finding_candidate']
+              payload['finding_candidate']['title'] = _truncate(payload['finding_candidate'].get('title') or '', 240)
+              payload['finding_candidate']['summary'] = _truncate(payload['finding_candidate'].get('summary') or '', 1000)
+              payload.setdefault('duplicate_of_finding_id', '')
+              return {'judge_verdict_json': json.dumps(payload, ensure_ascii=False)}
+        code_language: python3
+        dependencies: []
+        desc: Parse and validate LLM Judge output, with safe fallback for invalid JSON.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          judge_verdict_json:
+            children: null
+            type: string
+        selected: false
+        title: Parse/Validate Judge Verdict
+        type: code
+        variables:
+        - value_selector: [llm_judge, text]
+          value_type: string
+          variable: llm_text
+        - value_selector: [normalize_inputs, judge_model]
+          value_type: string
+          variable: judge_model
+      height: 52
+      id: parse_judge_verdict
+      parentId: main_loop_v1
+      position:
+        x: 5720
+        y: 140
+      positionAbsolute:
+        x: 7820
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {
+              "campaign_id": "{{#extract_campaign.campaign_id#}}",
+              "evidence_id": "{{#compact_evidence_for_judge.evidence_id#}}",
+              "task_id": "{{#normalize_inputs.task_id#}}",
+              "verdict": {{#parse_judge_verdict.judge_verdict_json#}},
+              "max_rework_depth": 2,
+              "create_rework_on_inconclusive": true
+            }
+          type: json
+        desc: ''
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Apply Judge Verdict
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/judge/apply'
+        variables: []
+      height: 140
+      id: apply_judge_verdict
+      parentId: main_loop_v1
+      position:
+        x: 6020
+        y: 140
+      positionAbsolute:
+        x: 8120
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '{}')
+              except Exception:
+                  payload = {}
+              return {
+                  'apply_status': str(payload.get('status') or ''),
+                  'finding_id': str(payload.get('finding_id') or ''),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          apply_status:
+            children: null
+            type: string
+          finding_id:
+            children: null
+            type: string
+        selected: false
+        title: Extract Apply Result
+        type: code
+        variables:
+        - value_selector: [apply_judge_verdict, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_apply_result
+      parentId: main_loop_v1
+      position:
+        x: 6320
+        y: 140
+      positionAbsolute:
+        x: 8420
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: ''
+          type: none
+        desc: ''
+        headers: Content-Type:application/json
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        method: get
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 0
+          max_read_timeout: 0
+          max_write_timeout: 0
+        title: Get Confirmed Findings
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/findings/confirmed/{{#extract_campaign.campaign_id#}}'
+        variables: []
+      height: 158
+      id: list_confirmed_findings
+      parentId: main_loop_v1
+      position:
+        x: 6620
+        y: 140
+      positionAbsolute:
+        x: 8720
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(body: str) -> dict:
+              try:
+                  payload = json.loads(body or '[]')
+              except Exception:
+                  payload = []
+              items = payload if isinstance(payload, list) else []
+              finding_ids = []
+              for item in items:
+                  if isinstance(item, dict):
+                      finding_ids.append(str(item.get('finding_id') or ''))
+              return {
+                  'confirmed_findings_count': str(len(items)),
+                  'finding_ids_json': json.dumps([item for item in finding_ids if item], ensure_ascii=False),
+              }
+        code_language: python3
+        dependencies: []
+        desc: ''
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          confirmed_findings_count:
+            children: null
+            type: string
+          finding_ids_json:
+            children: null
+            type: string
+        selected: false
+        title: Extract Findings Summary
+        type: code
+        variables:
+        - value_selector: [list_confirmed_findings, body]
+          value_type: string
+          variable: body
+      height: 52
+      id: extract_findings_summary
+      parentId: main_loop_v1
+      position:
+        x: 6920
+        y: 140
+      positionAbsolute:
+        x: 9020
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, first_observation_type: str, verification_plan_id: str, evidence_id: str, judge_verdict_json: str, finding_id: str, confirmed_findings_count: str, finding_ids_json: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              try:
+                  verdict_payload = json.loads(judge_verdict_json or '{}')
+              except Exception:
+                  verdict_payload = {}
+              try:
+                  finding_ids = json.loads(finding_ids_json or '[]')
+              except Exception:
+                  finding_ids = []
+              next_index = int(state.get("iterations_run") or 0) + 1
+              verdict_name = str(verdict_payload.get("verdict") or '')
+              finding_id_value = str(finding_id or '').strip()
+              if finding_id_value:
+                  outcome = "finding_created"
+              elif verdict_name:
+                  outcome = f"judge_{verdict_name}"
+              else:
+                  outcome = "judged_no_finding"
+              summary = {
+                  "iteration_index": next_index,
+                  "candidate_kind": str(candidate_kind or ''),
+                  "tool_run_id": str(tool_run_id or ''),
+                  "tool_result_status": str(tool_result_status or ''),
+                  "observations_count": int(str(observations_count or '0') or 0),
+                  "first_observation_type": str(first_observation_type or ''),
+                  "verification_plan_id": str(verification_plan_id or ''),
+                  "evidence_id": str(evidence_id or ''),
+                  "judge_verdict": verdict_name,
+                  "finding_id": finding_id_value,
+                  "outcome": outcome,
+              }
+              state["iterations_run"] = next_index
+              state["confirmed_findings_count"] = int(str(confirmed_findings_count or '0') or 0)
+              state["finding_ids"] = finding_ids if isinstance(finding_ids, list) else []
+              state["last_candidate_kind"] = str(candidate_kind or '')
+              state["last_tool_run_status"] = str(tool_result_status or '')
+              state["last_observation_type"] = str(first_observation_type or '')
+              state["last_verification_plan_id"] = str(verification_plan_id or '')
+              state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": False,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Record compact finding summary and continue loop after first finding.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Record Finding Created
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [select_ready_candidate, candidate_kind]
+          value_type: string
+          variable: candidate_kind
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+        - value_selector: [summarize_observations, observations_count]
+          value_type: string
+          variable: observations_count
+        - value_selector: [summarize_observations, first_observation_type]
+          value_type: string
+          variable: first_observation_type
+        - value_selector: [extract_verification_plan, verification_plan_id]
+          value_type: string
+          variable: verification_plan_id
+        - value_selector: [compact_evidence_for_judge, evidence_id]
+          value_type: string
+          variable: evidence_id
+        - value_selector: [parse_judge_verdict, judge_verdict_json]
+          value_type: string
+          variable: judge_verdict_json
+        - value_selector: [extract_apply_result, finding_id]
+          value_type: string
+          variable: finding_id
+        - value_selector: [extract_findings_summary, confirmed_findings_count]
+          value_type: string
+          variable: confirmed_findings_count
+        - value_selector: [extract_findings_summary, finding_ids_json]
+          value_type: string
+          variable: finding_ids_json
+      height: 52
+      id: record_finding_created
+      parentId: main_loop_v1
+      position:
+        x: 7220
+        y: 140
+      positionAbsolute:
+        x: 9320
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observation_id: str, observation_type: str, verification_plan_id: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              next_index = int(state.get("iterations_run") or 0) + 1
+              summary = {
+                  "iteration_index": next_index,
+                  "candidate_kind": str(candidate_kind or ''),
+                  "tool_run_id": str(tool_run_id or ''),
+                  "tool_result_status": str(tool_result_status or ''),
+                  "observations_count": 1,
+                  "first_observation_type": str(observation_type or ''),
+                  "verification_plan_id": str(verification_plan_id or ''),
+                  "evidence_id": "",
+                  "judge_verdict": "",
+                  "finding_id": "",
+                  "outcome": "pending_verification",
+              }
+              pending = {
+                  "observation_id": str(observation_id or ''),
+                  "observation_type": str(observation_type or ''),
+                  "verification_plan_id": str(verification_plan_id or ''),
+                  "candidate_kind": str(candidate_kind or ''),
+              }
+              state["iterations_run"] = next_index
+              state["pending_verification_count"] = int(state.get("pending_verification_count") or 0) + 1
+              state["last_candidate_kind"] = str(candidate_kind or '')
+              state["last_tool_run_status"] = str(tool_result_status or '')
+              state["last_observation_type"] = str(observation_type or '')
+              state["last_verification_plan_id"] = str(verification_plan_id or '')
+              state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
+              state["pending_summaries"] = (state.get("pending_summaries") or []) + [pending]
+              return {
+                  "state_json": json.dumps(state, ensure_ascii=False),
+                  "should_exit_loop": False,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Record compact pending summary and continue loop for raw discovery signals.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Record Pending Verification
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
+        - value_selector: [select_ready_candidate, candidate_kind]
+          value_type: string
+          variable: candidate_kind
+        - value_selector: [extract_tool_run, tool_run_id]
+          value_type: string
+          variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_result_status]
+          value_type: string
+          variable: tool_result_status
+        - value_selector: [summarize_observations, first_observation_id]
+          value_type: string
+          variable: observation_id
+        - value_selector: [summarize_observations, first_observation_type]
+          value_type: string
+          variable: observation_type
+        - value_selector: [extract_verification_plan, verification_plan_id]
+          value_type: string
+          variable: verification_plan_id
+      height: 52
+      id: record_pending_verification
+      parentId: main_loop_v1
+      position:
+        x: 4820
+        y: 20
+      positionAbsolute:
+        x: 6920
+        y: -40
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          def _pick(*values):
+              for value in values:
+                  if isinstance(value, bool):
+                      return value
+                  if str(value or '').strip():
+                      return value
+              return ''
+
+          def main(
+              current_state_json: str,
+              stop_max_iterations_state_json: str = '',
+              stop_max_iterations_exit: bool = False,
+              stop_no_ready_candidate_state_json: str = '',
+              stop_no_ready_candidate_exit: bool = False,
+              stop_tool_failed_state_json: str = '',
+              stop_tool_failed_exit: bool = False,
+              record_no_observations_state_json: str = '',
+              record_no_observations_exit: bool = False,
+              record_pending_verification_state_json: str = '',
+              record_pending_verification_exit: bool = False,
+              record_finding_created_state_json: str = '',
+              record_finding_created_exit: bool = False,
+          ) -> dict:
+              state_json = _pick(
+                  stop_max_iterations_state_json,
+                  stop_no_ready_candidate_state_json,
+                  stop_tool_failed_state_json,
+                  record_no_observations_state_json,
+                  record_pending_verification_state_json,
+                  record_finding_created_state_json,
+                  current_state_json,
+              )
+              should_exit_loop = any([
+                  bool(stop_max_iterations_exit),
+                  bool(stop_no_ready_candidate_exit),
+                  bool(stop_tool_failed_exit),
+                  bool(record_no_observations_exit),
+                  bool(record_pending_verification_exit),
+                  bool(record_finding_created_exit),
+              ])
+              return {
+                  "state_json": str(state_json or current_state_json or ''),
+                  "should_exit_loop": bool(should_exit_loop),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Merge branch-local compact state updates and decide whether loop should stop.
+        isInIteration: false
+        isInLoop: true
+        loop_id: main_loop_v1
+        outputs:
+          should_exit_loop:
+            children: null
+            type: boolean
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Finalize Iteration
+        type: code
+        variables:
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: current_state_json
+        - value_selector: [stop_max_iterations, state_json]
+          value_type: string
+          variable: stop_max_iterations_state_json
+        - value_selector: [stop_max_iterations, should_exit_loop]
+          value_type: boolean
+          variable: stop_max_iterations_exit
+        - value_selector: [stop_no_ready_candidate, state_json]
+          value_type: string
+          variable: stop_no_ready_candidate_state_json
+        - value_selector: [stop_no_ready_candidate, should_exit_loop]
+          value_type: boolean
+          variable: stop_no_ready_candidate_exit
+        - value_selector: [stop_tool_failed, state_json]
+          value_type: string
+          variable: stop_tool_failed_state_json
+        - value_selector: [stop_tool_failed, should_exit_loop]
+          value_type: boolean
+          variable: stop_tool_failed_exit
+        - value_selector: [record_no_observations, state_json]
+          value_type: string
+          variable: record_no_observations_state_json
+        - value_selector: [record_no_observations, should_exit_loop]
+          value_type: boolean
+          variable: record_no_observations_exit
+        - value_selector: [record_pending_verification, state_json]
+          value_type: string
+          variable: record_pending_verification_state_json
+        - value_selector: [record_pending_verification, should_exit_loop]
+          value_type: boolean
+          variable: record_pending_verification_exit
+        - value_selector: [record_finding_created, state_json]
+          value_type: string
+          variable: record_finding_created_state_json
+        - value_selector: [record_finding_created, should_exit_loop]
+          value_type: boolean
+          variable: record_finding_created_exit
+      height: 52
+      id: finalize_iteration
+      parentId: main_loop_v1
+      position:
+        x: 7520
+        y: 140
+      positionAbsolute:
+        x: 9620
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        isInIteration: false
+        isInLoop: true
+        items:
+        - input_type: variable
+          operation: over-write
+          value: [finalize_iteration, state_json]
+          variable_selector: [main_loop_v1, _current_loop_state]
+          write_mode: over-write
+        loop_id: main_loop_v1
+        selected: false
+        title: Assign Loop State
+        type: assigner
+        version: '2'
+      height: 84
+      id: assign_loop_state
+      parentId: main_loop_v1
+      position:
+        x: 7820
+        y: 140
+      positionAbsolute:
+        x: 9920
+        y: 80
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+      zIndex: 1002
+    - data:
+        code: |
+          def main(seed_state_json: str, loop_state_json: str = '', current_state_json: str = '') -> dict:
+              value = str(loop_state_json or '').strip()
+              if not value:
+                  value = str(current_state_json or '').strip()
+              return {"state_json": value if value else str(seed_state_json or '')}
+        code_language: python3
+        dependencies: []
+        desc: Resolve last compact loop state after bounded planner loop completion.
+        outputs:
+          state_json:
+            children: null
+            type: string
+        selected: false
+        title: Final Loop State
+        type: code
+        variables:
+        - value_selector: [merge_scenario_plan_into_planner_request, state_json]
+          value_type: string
+          variable: seed_state_json
+        - value_selector: [main_loop_v1, _current_loop_state]
+          value_type: string
+          variable: loop_state_json
+        - value_selector: [finalize_iteration, state_json]
+          value_type: string
+          variable: current_state_json
+      height: 52
+      id: final_loop_state
+      position:
+        x: 6600
+        y: 180
+      positionAbsolute:
+        x: 6600
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          def main(state_json: str) -> dict:
+              try:
+                  state = json.loads(state_json or '{}')
+              except Exception:
+                  state = {}
+              text = (
+                  "Full backend planner DAST loop completed.\n\n"
+                  f"campaign_id: {state.get('campaign_id', '')}\n"
+                  f"iterations_run: {state.get('iterations_run', 0)}\n"
+                  f"max_iterations: {state.get('max_iterations', 0)}\n"
+                  f"stopped_reason: {state.get('stopped_reason', '')}\n"
+                  f"confirmed_findings_count: {state.get('confirmed_findings_count', 0)}\n"
+                  f"finding_ids: {json.dumps(state.get('finding_ids') or [], ensure_ascii=False)}\n"
+                  f"pending_verification_count: {state.get('pending_verification_count', 0)}\n"
+                  f"last_candidate_kind: {state.get('last_candidate_kind', '')}\n"
+                  f"last_tool_run_status: {state.get('last_tool_run_status', '')}\n"
+                  f"iteration_summaries: {json.dumps(state.get('iteration_summaries') or [], ensure_ascii=False)}\n"
+                  f"pending_summaries: {json.dumps(state.get('pending_summaries') or [], ensure_ascii=False)}\n"
+                  "\nScenarioPlan (compact):\n"
+                  f"scenario_plan_source: {state.get('scenario_plan_source', '')}\n"
+                  f"scenario_plan_graph_empty: {state.get('scenario_plan_graph_empty', '')}\n"
+                  f"scenarios_total: {state.get('scenarios_total', 0)}\n"
+                  f"accepted_scenarios_count: {state.get('accepted_scenarios_count', 0)}\n"
+                  f"blocked_scenarios_count: {state.get('blocked_scenarios_count', 0)}\n"
+                  f"rejected_scenarios_count: {state.get('rejected_scenarios_count', 0)}\n"
+                  f"scenario_types: {json.dumps(state.get('scenario_types') or [], ensure_ascii=False)}\n"
+                  f"scenario_plan_warnings_sample: {json.dumps(state.get('scenario_plan_warnings_sample') or [], ensure_ascii=False)}\n"
+                  f"scenario_plan_unavailable: {state.get('scenario_plan_unavailable', False)}\n"
+              )
+              return {"answer_text": text}
+        code_language: python3
+        dependencies: []
+        desc: Final compact report only. No command_json, planner_request_effective_json, full scenario_plan, or rationale.
+        outputs:
+          answer_text:
+            children: null
+            type: string
+        selected: false
+        title: Build Final Report
+        type: code
+        variables:
+        - value_selector: [final_loop_state, state_json]
+          value_type: string
+          variable: state_json
+      height: 52
+      id: build_final_report
+      position:
+        x: 6900
+        y: 180
+      positionAbsolute:
+        x: 6900
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#build_final_report.answer_text#}}'
+        desc: ''
+        selected: false
+        title: Answer Final Report
+        type: answer
+        variables: []
+      height: 103
+      id: answer_final_report
+      position:
+        x: 7200
+        y: 180
+      positionAbsolute:
+        x: 7200
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+  viewport:
+    x: 0
+    y: 0
+    zoom: 0.55

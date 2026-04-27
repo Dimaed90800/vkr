@@ -14,7 +14,9 @@ or evidence packs. Tests assert that, too.
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend.main import app
@@ -519,6 +521,12 @@ def test_routes_graph_build_400_when_openapi_spec_text_missing() -> None:
     )
     assert response_blank.status_code == 400
 
+    response_both_blank = client.post(
+        f"/v1/graph/{cid}/build",
+        json={"openapi_spec_text": "   ", "openapi_url": ""},
+    )
+    assert response_both_blank.status_code == 400
+
 
 def test_routes_graph_build_returns_400_for_invalid_openapi_spec() -> None:
     client = _fresh_client()
@@ -546,6 +554,162 @@ def test_routes_graph_build_404_for_missing_campaign() -> None:
     assert response.status_code == 404
     body = response.json()
     assert body["detail"]["error"] == "campaign_not_found"
+
+
+def test_graph_build_from_openapi_text_still_works() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    build_response = client.post(
+        f"/v1/graph/{cid}/build",
+        json={"openapi_spec_text": SAMPLE_SPEC_TEXT, "openapi_url": ""},
+    )
+    assert build_response.status_code == 201
+    assert build_response.json()["operations_count"] == 3
+
+
+def test_graph_build_from_openapi_url_fetches_and_persists_graph() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns",
+        json={
+            "target_url": "http://localhost:8888",
+            "openapi_url": "https://example.com/openapi.json",
+        },
+    )
+    cid = create_response.json()["campaign_id"]
+    with patch(
+        "backend.api.routes_graph._fetch_openapi_spec_from_url",
+        return_value=SAMPLE_SPEC_TEXT,
+    ) as mock_fetch:
+        build_response = client.post(
+            f"/v1/graph/{cid}/build",
+            json={"openapi_spec_text": "", "openapi_url": "https://example.com/openapi.json"},
+        )
+    mock_fetch.assert_called_once()
+    assert build_response.status_code == 201
+    payload = build_response.json()
+    assert payload["operations_count"] == 3
+    summary_response = client.get(f"/v1/graph/{cid}/summary")
+    assert summary_response.status_code == 200
+    assert summary_response.json()["operations_total"] == 3
+
+
+def test_graph_build_uses_campaign_openapi_url_when_request_has_no_text_or_url() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns",
+        json={
+            "target_url": "http://localhost:8888",
+            "openapi_url": "https://example.com/from-campaign.json",
+        },
+    )
+    cid = create_response.json()["campaign_id"]
+    with patch(
+        "backend.api.routes_graph._fetch_openapi_spec_from_url",
+        return_value=SAMPLE_SPEC_TEXT,
+    ) as mock_fetch:
+        build_response = client.post(f"/v1/graph/{cid}/build", json={})
+    mock_fetch.assert_called_once_with("https://example.com/from-campaign.json")
+    assert build_response.status_code == 201
+    assert build_response.json()["operations_count"] == 3
+
+
+def test_graph_build_rejects_empty_text_and_empty_url() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    response = client.post(
+        f"/v1/graph/{cid}/build",
+        json={"openapi_spec_text": "", "openapi_url": ""},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "invalid_graph_build_request"
+
+
+def test_graph_build_rejects_invalid_url_scheme() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    response = client.post(
+        f"/v1/graph/{cid}/build",
+        json={"openapi_url": "ftp://example.com/openapi.json"},
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "invalid_openapi_url"
+
+
+def test_graph_build_handles_fetch_failure_controlled() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    mock_inst = MagicMock()
+    mock_inst.get.side_effect = httpx.ConnectError("boom")
+    mock_cm = MagicMock()
+    mock_cm.__enter__.return_value = mock_inst
+    mock_cm.__exit__.return_value = None
+    with patch("backend.api.routes_graph.httpx.Client", return_value=mock_cm):
+        response = client.post(
+            f"/v1/graph/{cid}/build",
+            json={"openapi_url": "https://example.com/openapi.json"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "openapi_url_fetch_failed"
+
+
+def test_graph_build_handles_non_200_fetch() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    mock_resp.content = b"err"
+    mock_inst = MagicMock()
+    mock_inst.get.return_value = mock_resp
+    mock_cm = MagicMock()
+    mock_cm.__enter__.return_value = mock_inst
+    mock_cm.__exit__.return_value = None
+    with patch("backend.api.routes_graph.httpx.Client", return_value=mock_cm):
+        response = client.post(
+            f"/v1/graph/{cid}/build",
+            json={"openapi_url": "https://example.com/openapi.json"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "openapi_url_fetch_failed"
+
+
+def test_graph_build_rejects_too_large_spec() -> None:
+    client = _fresh_client()
+    create_response = client.post(
+        "/v1/campaigns", json={"target_url": "http://localhost:8888"}
+    )
+    cid = create_response.json()["campaign_id"]
+    huge = b"x" * (5 * 1024 * 1024 + 1)
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = huge
+    mock_inst = MagicMock()
+    mock_inst.get.return_value = mock_resp
+    mock_cm = MagicMock()
+    mock_cm.__enter__.return_value = mock_inst
+    mock_cm.__exit__.return_value = None
+    with patch("backend.api.routes_graph.httpx.Client", return_value=mock_cm):
+        response = client.post(
+            f"/v1/graph/{cid}/build",
+            json={"openapi_url": "https://example.com/openapi.json"},
+        )
+    assert response.status_code == 400
+    assert response.json()["detail"]["error"] == "openapi_url_too_large"
 
 
 def test_graph_summary_returns_empty_summary_when_graph_not_built() -> None:

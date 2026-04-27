@@ -132,6 +132,7 @@ class GraphSummary(BaseModel):
 
 class GraphBuildRequest(BaseModel):
     openapi_spec_text: str = ""
+    openapi_url: str = ""
 
 
 class GraphBuildResponse(BaseModel):

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -570,3 +571,37 @@ def test_scenario_plan_route_invalid_body_returns_400() -> None:
     r = client.post("/v1/scenarios/plan/cmp_x", json={"max_operations": 0})
     assert r.status_code == 400
     assert r.json()["error"] == "invalid_scenario_plan_request"
+
+
+def test_scenario_plan_sees_graph_after_build_from_openapi_url() -> None:
+    """Phase 15C-fix: graph built via URL fetch → ScenarioPlan is not graph-empty."""
+    from tests.test_api_graph_service import SAMPLE_SPEC_TEXT
+
+    _reset_store()
+    cr = client.post(
+        "/v1/campaigns",
+        json={
+            "target_url": "http://localhost:8888",
+            "openapi_url": "https://example.com/crAPI-openapi.json",
+        },
+    )
+    assert cr.status_code == 201
+    cid = cr.json()["campaign_id"]
+    with patch(
+        "backend.api.routes_graph._fetch_openapi_spec_from_url",
+        return_value=SAMPLE_SPEC_TEXT,
+    ):
+        br = client.post(f"/v1/graph/{cid}/build", json={})
+    assert br.status_code == 201
+    assert br.json()["operations_count"] > 0
+
+    r = client.post(
+        f"/v1/scenarios/plan/{cid}",
+        json=ScenarioPlanRequestBody(
+            llm={"enabled": False, "model": "", "prompt_version": "scenario-planner/v1"},
+        ).model_dump(mode="json"),
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["graph_empty"] is False
+    assert "api_graph_empty_or_missing" not in data["warnings"]
