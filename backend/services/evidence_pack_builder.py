@@ -88,6 +88,7 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.nuclei_match.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
     ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
+    ObservationType.validated_cookie_flag_issue.value: "API8_SECURITY_MISCONFIGURATION",
 }
 
 
@@ -248,6 +249,8 @@ class EvidencePackBuilder:
             self._fill_mass_assignment_signal(pack, obs, plan)
         elif obs_type == ObservationType.validated_cors_issue.value:
             self._fill_validated_cors_issue_cors(pack, obs, plan)
+        elif obs_type == ObservationType.validated_cookie_flag_issue.value:
+            self._fill_validated_cookie_flag_issue(pack, obs, plan)
         else:
             self._fill_not_judge_ready(pack, obs, code="unsupported_observation_type")
 
@@ -445,6 +448,12 @@ class EvidencePackBuilder:
             return any(str(s).startswith("acao_state:") for s in (pack.derived_signals or []))
         if code == "origin_probe_context":
             return any(str(s).startswith("origin_probe_label:") for s in (pack.derived_signals or []))
+        if code == "validated_cookie_flag_issue":
+            return "validated_cookie_flag_issue" in (pack.derived_signals or [])
+        if code == "cookie_flag_context":
+            return any(str(s).startswith("cookie_name_hash:") for s in (pack.derived_signals or []))
+        if code == "endpoint_context":
+            return bool((pack.endpoint or "").strip())
         return False
 
     # ------------------------------------------------------------------
@@ -486,6 +495,8 @@ class EvidencePackBuilder:
             return "potential_injection"
         if obs_type == ObservationType.validated_cors_issue.value:
             return "cors_misconfiguration"
+        if obs_type == ObservationType.validated_cookie_flag_issue.value:
+            return "cookie_flag_misconfiguration"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -1449,6 +1460,105 @@ class EvidencePackBuilder:
                 code="tool_name_mismatch",
                 description="validated_cors_issue must come from cors_validator.",
                 required_for="cors_misconfiguration",
+            ))
+
+    def _fill_validated_cookie_flag_issue(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        tool_name = str(details.get("tool_name") or "").strip()
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        request_url = str(details.get("request_url") or "").strip()
+        path_template = str(details.get("path_template") or "").strip()
+        cookie_name_hash = str(details.get("cookie_name_hash") or "").strip()
+        issue_codes_raw = details.get("issue_codes")
+        issue_codes = (
+            [str(x).strip() for x in issue_codes_raw if str(x).strip()]
+            if isinstance(issue_codes_raw, list)
+            else []
+        )
+        strong_codes = {
+            "missing_httponly",
+            "missing_secure",
+            "samesite_none_without_secure",
+        }
+        has_strong = any(code in strong_codes for code in issue_codes)
+        has_httponly = details.get("has_httponly") is True
+        has_secure = details.get("has_secure") is True
+        is_https = details.get("is_https") is True
+        samesite_state = str(details.get("samesite_state") or "missing").strip().lower() or "missing"
+
+        pack.owasp_category = "API8_SECURITY_MISCONFIGURATION"
+        pack.vulnerability_class = "cookie_flag_misconfiguration"
+        if op_id:
+            pack.operation_id = op_id
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
+        if op is not None:
+            if not pack.method:
+                pack.method = (op.method or "").upper()
+            if not pack.endpoint:
+                pack.endpoint = EvidencePackBuilder._strip_path_query(op.path_template or "")
+        if not pack.endpoint:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(path_template or "")
+        pack.hypothesis = "Validated cookie flag misconfiguration observed during safe replay."
+
+        derived = [
+            "validated_cookie_flag_issue",
+            f"tool_name:{tool_name or 'cookie_flag_validator'}",
+            f"cookie_name_hash:{cookie_name_hash}",
+            f"has_httponly:{str(bool(has_httponly)).lower()}",
+            f"has_secure:{str(bool(has_secure)).lower()}",
+            f"samesite_state:{samesite_state}",
+            f"is_https:{str(bool(is_https)).lower()}",
+            f"validation_mode:{validation_mode or 'baseline_cookie_flag_check'}",
+        ]
+        for code in issue_codes[:10]:
+            derived.append(f"issue_code:{code}")
+        pack.derived_signals = derived
+
+        location = request_url or path_template or pack.endpoint
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=(pack.method or "GET").upper(),
+                path_template=pack.endpoint or "",
+                url=location,
+                request_ref=None,
+                description="Validated cookie flag replay against safe baseline endpoint",
+            ),
+        ]
+
+        if not has_strong:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="strong_cookie_issue_missing",
+                description="validated_cookie_flag_issue requires a strong cookie issue code in MVP.",
+                required_for="cookie_flag_misconfiguration",
+            ))
+        if not validation_mode:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="validation_mode_missing",
+                description="validated_cookie_flag_issue evidence requires validation_mode.",
+                required_for="cookie_flag_misconfiguration",
+            ))
+        if not (op_id or request_url or path_template):
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="target_location_missing",
+                description="validated_cookie_flag_issue evidence requires operation_id or target location.",
+                required_for="cookie_flag_misconfiguration",
+            ))
+        if not cookie_name_hash:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="cookie_name_hash_missing",
+                description="validated_cookie_flag_issue evidence requires cookie_name_hash.",
+                required_for="cookie_flag_misconfiguration",
+            ))
+        if tool_name and tool_name != "cookie_flag_validator":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description="validated_cookie_flag_issue must come from cookie_flag_validator.",
+                required_for="cookie_flag_misconfiguration",
             ))
 
     def _fill_not_judge_ready(

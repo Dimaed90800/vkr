@@ -170,6 +170,7 @@ def test_init_loop_state_initializes_fair_selection_fields() -> None:
         '"injection_test": 3',
         '"schemathesis_negative_test": 4',
         '"cors_validator": 2',
+        '"cookie_flag_validator": 2',
     ):
         assert field in code
 
@@ -693,6 +694,7 @@ def test_effective_planner_request_preserves_enable_cors_baseline_true_when_cust
     state = json.loads(merged["state_json"])
     effective = json.loads(state["planner_request_effective_json"])
     assert effective["enable_cors_baseline"] is True
+    assert effective["enable_cookie_baseline"] is True
 
 
 def test_select_ready_candidate_skips_capped_first_ready_and_picks_next_kind() -> None:
@@ -877,6 +879,7 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
     assert sample[0]["worker_class"] == "misconfiguration"
     assert sample[0]["strategy"] == "validate_cors_policy"
     assert sample[0]["cors_candidate_source"] == "baseline"
+    assert sample[0]["cookie_candidate_source"] == ""
     assert sample[0]["validation_mode"] == "baseline_cors_check"
     assert set(sample[0].keys()) == {
         "kind",
@@ -888,6 +891,7 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
         "worker_class",
         "strategy",
         "cors_candidate_source",
+        "cookie_candidate_source",
         "validation_mode",
         "audit_flags",
         "reason_codes",
@@ -896,8 +900,53 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
         "mass_assignment_candidate_result",
     }
     blob = json.dumps(sample, ensure_ascii=False).lower()
-    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
+    for bad in ("authorization", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
         assert bad not in blob
+
+
+def test_select_ready_candidate_ready_sample_includes_cookie_candidate_source() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_cookie",
+                        "kind": "cookie_flag_validator",
+                        "status": "ready",
+                        "reason": "Baseline cookie flag validation candidate generated from safe campaign/passive context.",
+                        "summary": {
+                            "operation_id": "",
+                            "scenario_type": "",
+                            "cookie_candidate_source": "baseline",
+                            "validation_mode": "baseline_cookie_flag_check",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "cookie_flag_validator",
+                            "worker_class": "misconfiguration",
+                            "strategy": "validate_cookie_flags",
+                            "inputs": {"headers": {"Cookie": "secret=value"}},
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"cookie_flag_validator": 2},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    sample = json.loads(result["ready_candidates_sample_json"])
+    assert sample[0]["kind"] == "cookie_flag_validator"
+    assert sample[0]["cookie_candidate_source"] == "baseline"
+    assert sample[0]["validation_mode"] == "baseline_cookie_flag_check"
 
 
 def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:

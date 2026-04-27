@@ -5,6 +5,7 @@ transport. It enforces campaign scope immediately before sending requests.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -58,6 +59,7 @@ class SafeHttpResult:
     request_cookies_redacted: dict[str, Any] = field(default_factory=dict)
     request_body_redacted: Any = None
     response_headers_redacted: dict[str, Any] = field(default_factory=dict)
+    cookie_summaries: list[dict[str, Any]] = field(default_factory=list)
     error: SafeHttpError | None = None
 
     @property
@@ -156,6 +158,11 @@ class SafeHttpClient:
 
         base_result.status_code = response.status_code
         base_result.response_content_type = response.headers.get("content-type", "")
+        base_result.cookie_summaries = _parse_set_cookie_summaries(
+            response.headers.get_list("set-cookie"),
+            campaign_id=campaign.campaign_id,
+            is_https=urlparse(resolved_url).scheme.lower() == "https",
+        )
         base_result.response_headers_redacted, _ = redact_sensitive_data(dict(response.headers), None)
 
         location = response.headers.get("location")
@@ -246,3 +253,56 @@ class SafeHttpClient:
             except json.JSONDecodeError:
                 return text
         return text
+
+
+def _parse_set_cookie_summaries(
+    header_values: list[str],
+    *,
+    campaign_id: str,
+    is_https: bool,
+) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    for raw_header in header_values or []:
+        if not isinstance(raw_header, str):
+            continue
+        line = raw_header.strip()
+        if not line:
+            continue
+        segments = [segment.strip() for segment in line.split(";") if segment.strip()]
+        if not segments:
+            continue
+        name_value = segments[0]
+        if "=" not in name_value:
+            continue
+        cookie_name = name_value.split("=", 1)[0].strip().lower()
+        if not cookie_name:
+            continue
+
+        has_httponly = False
+        has_secure = False
+        samesite_state = "missing"
+        for attr in segments[1:]:
+            attr_name, _, attr_value = attr.partition("=")
+            normalized_name = attr_name.strip().lower()
+            normalized_value = attr_value.strip().lower()
+            if normalized_name == "httponly":
+                has_httponly = True
+            elif normalized_name == "secure":
+                has_secure = True
+            elif normalized_name == "samesite":
+                if normalized_value in {"none", "lax", "strict"}:
+                    samesite_state = normalized_value
+                elif normalized_value:
+                    samesite_state = "unknown"
+
+        name_hash = hashlib.sha256(
+            f"{campaign_id}|{cookie_name}".encode("utf-8")
+        ).hexdigest()[:16]
+        summaries.append({
+            "cookie_name_hash": name_hash,
+            "has_httponly": has_httponly,
+            "has_secure": has_secure,
+            "samesite_state": samesite_state,
+            "is_https": is_https,
+        })
+    return summaries

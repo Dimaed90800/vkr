@@ -29,6 +29,7 @@ class PlannerCandidateKind(str, Enum):
     bola_replay_probe = "bola_replay_probe"
     security_header_validator = "security_header_validator"
     cors_validator = "cors_validator"
+    cookie_flag_validator = "cookie_flag_validator"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
     property_mutation_test = "property_mutation_test"
@@ -81,6 +82,7 @@ class PlannerRequest(BaseModel):
     scenario_plan: ScenarioPlanInput | None = None
     include_scenario_compiler: bool = True
     enable_cors_baseline: bool = False
+    enable_cookie_baseline: bool = False
 
 
 class PlannerCandidate(BaseModel):

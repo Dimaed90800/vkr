@@ -150,6 +150,8 @@ class CommandValidator:
             self._validate_property_mutation_test(command, campaign, errors)
         if (command.tool_name or "").strip() == "cors_validator":
             self._validate_cors_validator(command, campaign, errors)
+        if (command.tool_name or "").strip() == "cookie_flag_validator":
+            self._validate_cookie_flag_validator(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -669,6 +671,91 @@ class CommandValidator:
             errors.append(ValidationError(
                 code="cors_budget_timeout",
                 message="cors_validator timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_cookie_flag_validator(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "misconfiguration":
+            errors.append(ValidationError(
+                code="cookie_worker_class_invalid",
+                message="cookie_flag_validator requires worker_class misconfiguration.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "validate_cookie_flags":
+            errors.append(ValidationError(
+                code="cookie_strategy_invalid",
+                message="cookie_flag_validator requires strategy validate_cookie_flags.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "request_url",
+            "operation_id",
+            "path_template",
+            "method",
+            "validation_mode",
+            "max_response_bytes",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="cookie_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for cookie_flag_validator.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        request_url = str(inputs.get("request_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="cookie_target_url_required",
+                message="inputs.target_url is required for cookie_flag_validator.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="cookie_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        if not request_url:
+            errors.append(ValidationError(
+                code="cookie_request_url_required",
+                message="inputs.request_url is required for cookie_flag_validator.",
+            ))
+
+        method = str(inputs.get("method") or "GET").strip().upper()
+        if method != "GET":
+            errors.append(ValidationError(
+                code="cookie_method_not_allowed",
+                message="cookie_flag_validator supports only GET.",
+                details={"method": method},
+            ))
+
+        validation_mode = str(inputs.get("validation_mode") or "baseline_cookie_flag_check").strip()
+        if validation_mode and validation_mode != "baseline_cookie_flag_check":
+            errors.append(ValidationError(
+                code="cookie_validation_mode_invalid",
+                message="validation_mode must be baseline_cookie_flag_check in MVP.",
+            ))
+
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="cookie_budget_max_requests",
+                message="cookie_flag_validator max_requests must be <= 1.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="cookie_budget_timeout",
+                message="cookie_flag_validator timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
 

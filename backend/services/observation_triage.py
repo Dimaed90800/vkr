@@ -150,6 +150,12 @@ _CORS_STRONG_ISSUES = frozenset({
     "cors_origin_reflection_with_credentials",
 })
 
+_COOKIE_STRONG_ISSUES = frozenset({
+    "missing_httponly",
+    "missing_secure",
+    "samesite_none_without_secure",
+})
+
 class ObservationTriage:
 
     def triage(self, observation_id: str) -> tuple[Observation | None, VerificationPlan | None, str | None]:
@@ -180,6 +186,8 @@ class ObservationTriage:
             return self._triage_mass_assignment_signal(obs)
         if obs_type == "validated_cors_issue":
             return self._triage_validated_cors_issue(obs)
+        if obs_type == "validated_cookie_flag_issue":
+            return self._triage_validated_cookie_flag_issue(obs)
 
         rule = _TRIAGE_RULES.get(obs_type)
         if rule is None:
@@ -399,6 +407,63 @@ class ObservationTriage:
                     "validated_cors_issue",
                     "cors_policy_state",
                     "origin_probe_context",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_validated_cookie_flag_issue(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        issue_codes_raw = details.get("issue_codes")
+        issue_codes = (
+            [str(x).strip() for x in issue_codes_raw if str(x).strip()]
+            if isinstance(issue_codes_raw, list)
+            else []
+        )
+        has_strong = any(code in _COOKIE_STRONG_ISSUES for code in issue_codes)
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        cookie_name_hash = str(details.get("cookie_name_hash") or "").strip()
+        has_location = bool(
+            str(obs.operation_id or details.get("operation_id") or "").strip()
+            or str(details.get("request_url") or details.get("path_template") or "").strip()
+        )
+
+        strong_enough = has_strong and bool(validation_mode) and bool(cookie_name_hash) and has_location
+        if strong_enough:
+            obs.security_relevance = SecurityRelevance.medium
+            obs.recommended_next_action = "prove_cookie_flag_misconfiguration"
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="prove_cookie_flag_misconfiguration",
+                worker_class="misconfiguration",
+                strategy="prove_cookie_flag_misconfiguration",
+                required_evidence=[
+                    "validated_cookie_flag_issue",
+                    "cookie_flag_context",
+                    "endpoint_context",
                 ],
                 commands=[],
                 status=VerificationPlanStatus.pending,

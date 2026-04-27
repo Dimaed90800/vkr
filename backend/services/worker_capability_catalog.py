@@ -218,16 +218,19 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         tool_name="cookie_flag_validator",
         worker_class="misconfiguration",
         scenario_types=["passive_signal_validation"],
-        observation_types=["zap_alert"],
+        observation_types=["validated_cookie_flag_issue"],
         owasp_categories=["API8_SECURITY_MISCONFIGURATION"],
-        status="planned",
-        adapter_available=False,
+        status="partial",
+        adapter_available=True,
         execution_mode="sync",
-        triage_support=False,
-        evidence_support=False,
-        judge_support=False,
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
         risk_level="medium",
-        notes="Planned Set-Cookie flag analysis; may chain from passive signals.",
+        notes=(
+            "Phase API8-2: bounded cookie_flag_validator replay with sanitized Set-Cookie flag metadata only; "
+            "no raw Set-Cookie/header/body/token values are stored."
+        ),
     ),
     WorkerCapability(
         worker_name="rate_limit_validator",

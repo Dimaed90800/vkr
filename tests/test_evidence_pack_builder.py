@@ -2451,6 +2451,103 @@ def test_build_validated_cors_issue_pack_weak_case_not_judge_ready():
     assert any(m.code == "strong_cors_issue_missing" for m in pack.missing_evidence)
 
 
+def test_build_validated_cookie_flag_issue_pack_strong_case_ready_for_judge():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="cookie_flag_validator")
+    op_id = "op_GET_/api/v1/session"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="GET",
+        path_template="/api/v1/session",
+        owasp_candidates=[],
+    )
+    obs = _make_obs(
+        ObservationType.validated_cookie_flag_issue.value,
+        observation_id="obs_cookie_ready",
+        operation_id=op_id,
+        details={
+            "tool_name": "cookie_flag_validator",
+            "operation_id": op_id,
+            "path_template": "/api/v1/session",
+            "request_url": "https://testapp.local/api/v1/session",
+            "validation_mode": "baseline_cookie_flag_check",
+            "cookie_name_hash": "deadbeefcafefeed",
+            "issue_codes": ["missing_httponly"],
+            "has_httponly": False,
+            "has_secure": True,
+            "samesite_state": "lax",
+            "is_https": True,
+            "status_code": 200,
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_cookie_flag_misconfiguration",
+        required_evidence=[
+            "validated_cookie_flag_issue",
+            "cookie_flag_context",
+            "endpoint_context",
+        ],
+        plan_id="vplan_cookie_ready",
+        worker_class="misconfiguration",
+        strategy="prove_cookie_flag_misconfiguration",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_cookie_ready")
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.vulnerability_class == "cookie_flag_misconfiguration"
+    assert pack.owasp_category == "API8_SECURITY_MISCONFIGURATION"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("set-cookie", "sessionid", "abc123", "response_body", "request_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_build_validated_cookie_flag_issue_pack_missing_hash_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="cookie_flag_validator")
+    obs = _make_obs(
+        ObservationType.validated_cookie_flag_issue.value,
+        observation_id="obs_cookie_weak",
+        operation_id="op_GET_/api/v1/session",
+        details={
+            "tool_name": "cookie_flag_validator",
+            "operation_id": "op_GET_/api/v1/session",
+            "path_template": "/api/v1/session",
+            "request_url": "https://testapp.local/api/v1/session",
+            "validation_mode": "baseline_cookie_flag_check",
+            "issue_codes": ["missing_httponly"],
+            "has_httponly": False,
+            "has_secure": True,
+            "samesite_state": "lax",
+            "is_https": True,
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_cookie_flag_misconfiguration",
+        required_evidence=[
+            "validated_cookie_flag_issue",
+            "cookie_flag_context",
+            "endpoint_context",
+        ],
+        plan_id="vplan_cookie_weak",
+        worker_class="misconfiguration",
+        strategy="prove_cookie_flag_misconfiguration",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_cookie_weak")
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    assert any(m.code == "cookie_name_hash_missing" for m in pack.missing_evidence)
+
+
 def test_list_evidence_packs_by_campaign_route_returns_list():
     _reset_store()
     _create_campaign()

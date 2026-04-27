@@ -819,6 +819,7 @@ workflow:
               "include_blocked": True,
               "max_candidates": 50,
               "enable_cors_baseline": True,
+              "enable_cookie_baseline": True,
               "zap": {
                   "enabled": True,
                   "target_url": "",
@@ -1335,6 +1336,7 @@ workflow:
                       "security_header_validator": 2,
                       "security_header_check": 2,
                       "cors_validator": 2,
+                      "cookie_flag_validator": 2,
                       "zap_discovery_passive": 1,
                       "bola_replay_probe": 2,
                   },
@@ -1514,6 +1516,7 @@ workflow:
               "include_blocked": True,
               "max_candidates": 50,
               "enable_cors_baseline": True,
+              "enable_cookie_baseline": True,
               "zap": {"enabled": True, "target_url": "", "zap_base_url": "http://zap:8080", "seed_urls": [], "use_spider": True, "use_ajax_spider": False, "max_duration_sec": 30, "max_discovered_urls": 100, "max_alerts": 100},
               "bola": {"enabled": True, "object_pairs": []},
           }
@@ -2006,6 +2009,7 @@ workflow:
               KIND_PRIORITY = [
                   "property_mutation_test",
                   "cors_validator",
+                  "cookie_flag_validator",
                   "bola_replay_probe",
                   "security_header_validator",
                   "security_header_check",
@@ -2057,6 +2061,7 @@ workflow:
                       'worker_class': str(command.get('worker_class') or ''),
                       'strategy': str(command.get('strategy') or ''),
                       'cors_candidate_source': str(summary.get('cors_candidate_source') or ''),
+                      'cookie_candidate_source': str(summary.get('cookie_candidate_source') or ''),
                       'validation_mode': str(summary.get('validation_mode') or ''),
                       'audit_flags': summary.get('audit_flags') or [],
                       'reason_codes': summary.get('reason_codes') or [],
@@ -2140,6 +2145,7 @@ workflow:
                       str(row.get('operation_id') or ''),
                       str(row.get('reason') or ''),
                       str(row.get('cors_candidate_source') or ''),
+                      str(row.get('cookie_candidate_source') or ''),
                       str(row.get('validation_mode') or ''),
                       str(row.get('mass_assignment_candidate_result') or ''),
                   )

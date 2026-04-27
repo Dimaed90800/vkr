@@ -1264,6 +1264,90 @@ def test_triage_validated_cors_issue_weak_store_only():
     except Exception:
         pass
 
+
+def test_normalize_validated_cookie_flag_issue_observation_lite_mapped():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "cookie_flag_validator"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="validated_cookie_flag_issue",
+            confidence=0.8,
+            details={
+                "tool_name": "cookie_flag_validator",
+                "operation_id": "op_GET_/api/v1/session",
+                "path_template": "/api/v1/session",
+                "request_url": "https://testapp.local/api/v1/session",
+                "validation_mode": "baseline_cookie_flag_check",
+                "cookie_name_hash": "deadbeefcafefeed",
+                "issue_codes": ["missing_httponly"],
+                "has_httponly": False,
+                "has_secure": True,
+                "samesite_state": "lax",
+                "is_https": True,
+                "status_code": 200,
+                "security_relevance": "medium",
+                "recommended_next_action": "prove_cookie_flag_misconfiguration",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == ObservationType.validated_cookie_flag_issue
+    assert obs.security_relevance == SecurityRelevance.medium
+    assert obs.recommended_next_action == "prove_cookie_flag_misconfiguration"
+    assert obs.judge_worthy is False
+
+
+def test_triage_validated_cookie_flag_issue_strong_creates_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "validated_cookie_flag_issue",
+        observation_id="obs_cookie_triage_ok",
+        operation_id="op_GET_/api/v1/session",
+        details={
+            "issue_codes": ["missing_httponly"],
+            "validation_mode": "baseline_cookie_flag_check",
+            "request_url": "https://testapp.local/api/v1/session",
+            "cookie_name_hash": "deadbeefcafefeed",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "prove_cookie_flag_misconfiguration"
+    assert plan is not None
+    assert plan.goal == "prove_cookie_flag_misconfiguration"
+    assert plan.worker_class == "misconfiguration"
+    assert plan.commands == []
+
+
+def test_triage_validated_cookie_flag_issue_weak_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "validated_cookie_flag_issue",
+        observation_id="obs_cookie_triage_weak",
+        details={
+            "issue_codes": ["missing_samesite"],
+            "validation_mode": "baseline_cookie_flag_check",
+            "request_url": "https://testapp.local/api/v1/session",
+            "cookie_name_hash": "deadbeefcafefeed",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None
+
     try:
         VerificationPlan(
             verification_plan_id="vplan_bad_status",

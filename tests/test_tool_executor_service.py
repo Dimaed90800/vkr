@@ -453,6 +453,12 @@ def test_registry_cors_validator_has_sync_adapter() -> None:
     assert reg.get_execution_mode("cors_validator") == "sync"
 
 
+def test_registry_cookie_flag_validator_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("cookie_flag_validator") is True
+    assert reg.get_execution_mode("cookie_flag_validator") == "sync"
+
+
 def test_tool_executor_dispatches_cors_validator() -> None:
     _reset_store()
     _create_campaign()
@@ -473,7 +479,17 @@ def test_tool_executor_dispatches_cors_validator() -> None:
         },
         budget=CommandBudget(max_requests=2, timeout_sec=15),
     )
-    result = ToolExecutor().execute_sync(cmd)
+    fake_result = ToolResult(
+        tool_run_id="toolrun_cors_test",
+        campaign_id="cmp_test1",
+        tool_name="cors_validator",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.cors_validator_adapter.CorsValidatorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
     assert result.status == "finished"
     assert result.tool_name == "cors_validator"
 
@@ -548,6 +564,67 @@ def test_cors_validator_rejects_out_of_scope_request_url() -> None:
     v = CommandValidator().validate(cmd)
     assert not v.valid
     assert any(e.code == "host_not_allowed" for e in v.errors)
+
+
+def test_tool_executor_dispatches_cookie_flag_validator() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="misconfiguration",
+        strategy="validate_cookie_flags",
+        tool_name="cookie_flag_validator",
+        operation_id="op_GET_/api/v1/session",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/v1/session",
+            "operation_id": "op_GET_/api/v1/session",
+            "path_template": "/api/v1/session",
+            "method": "GET",
+            "validation_mode": "baseline_cookie_flag_check",
+            "max_response_bytes": 262144,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_cookie_test",
+        campaign_id="cmp_test1",
+        tool_name="cookie_flag_validator",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.cookie_flag_validator_adapter.CookieFlagValidatorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "cookie_flag_validator"
+
+
+def test_cookie_flag_validator_rejects_method_budget_and_scope() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="misconfiguration",
+        strategy="validate_cookie_flags",
+        tool_name="cookie_flag_validator",
+        operation_id="op_cookie",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://evil.local/api/v1/session",
+            "method": "POST",
+            "validation_mode": "custom_mode",
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "host_not_allowed" in codes
+    assert "cookie_method_not_allowed" in codes
+    assert "cookie_validation_mode_invalid" in codes
+    assert "cookie_budget_max_requests" in codes
+    assert "cookie_budget_timeout" in codes
 
 
 def test_tool_executor_dispatches_property_mutation_test() -> None:

@@ -1,6 +1,8 @@
 """Phase 12A — backend WorkerCommand planner tests."""
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from backend.main import app
@@ -1743,6 +1745,61 @@ def test_planner_cors_zap_alert_path_avoids_duplicate_baseline_candidate() -> No
     cors = [c for c in resp.candidates if c.kind.value == "cors_validator"]
     assert len(cors) == 1
     assert cors[0].summary.get("cors_candidate_source") != "baseline"
+
+
+def test_planner_creates_baseline_cookie_flag_validator_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_zap_hdr_for_cookie",
+        alert_name="X-Frame-Options Header Not Set",
+        url="http://target.local/frame?token=abc",
+        path="/frame",
+        operation_id="op_GET_/frame",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "enable_cookie_baseline": True,
+        }),
+    )
+    cookies = [c for c in resp.candidates if c.kind.value == "cookie_flag_validator"]
+    assert len(cookies) == 1
+    cand = cookies[0]
+    assert cand.status.value == "ready"
+    assert cand.command is not None
+    assert cand.command.tool_name == "cookie_flag_validator"
+    assert cand.summary.get("cookie_candidate_source") == "baseline"
+    assert cand.command.inputs.get("validation_mode") == "baseline_cookie_flag_check"
+    assert cand.command.inputs.get("method") == "GET"
+    assert cand.command.budget.max_requests <= 1
+    assert cand.command.budget.timeout_sec <= 15
+    summary_blob = json.dumps(cand.summary, sort_keys=True).lower()
+    for bad in ("set-cookie", "request_body", "response_body", "headers", "bearer ", "token=abc"):
+        assert bad not in summary_blob
+
+
+def test_planner_cookie_flag_validator_disabled_without_flag() -> None:
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_passive_cookie_disabled",
+        alert_name="X-Frame-Options Header Not Set",
+        url="http://target.local/frame",
+        path="/frame",
+        operation_id="op_GET_/frame",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+        }),
+    )
+    cookies = [c for c in resp.candidates if c.kind.value == "cookie_flag_validator"]
+    assert cookies == []
 
 
 def test_planner_scenario_duplicate_schema_ops_deduped():

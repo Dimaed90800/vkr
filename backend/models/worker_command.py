@@ -94,6 +94,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "custom_header_checker",
         "security_header_validator",
         "cors_validator",
+        "cookie_flag_validator",
     ],
     "ssrf_external": [
         "custom_ssrf_checker",

@@ -99,6 +99,18 @@ def test_cors_validator_capability_is_partial_and_finding_capable() -> None:
     assert w.judge_support is True
 
 
+def test_cookie_flag_validator_capability_is_partial_and_finding_capable() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("cookie_flag_validator")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert "validated_cookie_flag_issue" in w.observation_types
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
+
+
 def test_get_by_tool_name() -> None:
     assert WorkerCapabilityCatalog().get_by_tool_name("nuclei") is not None
     assert WorkerCapabilityCatalog().get_by_tool_name("no_such_tool_xyz") is None

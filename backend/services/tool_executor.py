@@ -34,6 +34,7 @@ try:
     )
     from backend.services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from backend.services.adapters.cors_validator_adapter import CorsValidatorAdapter
+    from backend.services.adapters.cookie_flag_validator_adapter import CookieFlagValidatorAdapter
     from backend.services.adapters.injection_test_adapter import InjectionTestAdapter
     from backend.services.adapters.property_mutation_test_adapter import (
         PropertyMutationTestAdapter,
@@ -64,6 +65,7 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from services.adapters.cors_validator_adapter import CorsValidatorAdapter
+    from services.adapters.cookie_flag_validator_adapter import CookieFlagValidatorAdapter
     from services.adapters.injection_test_adapter import InjectionTestAdapter
     from services.adapters.property_mutation_test_adapter import (
         PropertyMutationTestAdapter,
@@ -118,6 +120,7 @@ class ToolExecutor:
         self._zap_discovery_passive = ZapDiscoveryPassiveAdapter(zap_client=zap_passive_client)
         self._security_header_validator = SecurityHeaderValidatorAdapter(http_client=http_client)
         self._cors_validator = CorsValidatorAdapter(http_client=http_client)
+        self._cookie_flag_validator = CookieFlagValidatorAdapter(http_client=http_client)
         self._schemathesis_negative = SchemathesisNegativeTestAdapter()
         self._injection_test = injection_adapter or InjectionTestAdapter(http_client=http_client)
         self._property_mutation_test = property_mutation_adapter or PropertyMutationTestAdapter()
@@ -176,6 +179,8 @@ class ToolExecutor:
             return self._security_header_validator.execute(command, campaign, tool_run_id)
         if command.tool_name == "cors_validator":
             return self._cors_validator.execute(command, campaign, tool_run_id)
+        if command.tool_name == "cookie_flag_validator":
+            return self._cookie_flag_validator.execute(command, campaign, tool_run_id)
         if command.tool_name == "schemathesis_negative_test":
             return self._schemathesis_negative.execute(command, campaign, tool_run_id)
         if command.tool_name == "injection_test":

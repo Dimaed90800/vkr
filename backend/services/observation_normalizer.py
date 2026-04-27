@@ -121,11 +121,16 @@ class ObservationNormalizer:
                 "injection_signal",
                 "mass_assignment_signal",
                 "validated_cors_issue",
+                "validated_cookie_flag_issue",
             }:
                 rec_act = str(lite_details.get("recommended_next_action") or "")
                 sec_raw = str(
                     lite_details.get("security_relevance")
-                    or ("medium" if str(lite.observation_type) == "validated_cors_issue" else "unknown")
+                    or (
+                        "medium"
+                        if str(lite.observation_type) in {"validated_cors_issue", "validated_cookie_flag_issue"}
+                        else "unknown"
+                    )
                 ).lower()
                 try:
                     sec_rel = SecurityRelevance(sec_raw)
@@ -149,6 +154,7 @@ class ObservationNormalizer:
                         "injection_signal",
                         "mass_assignment_signal",
                         "validated_cors_issue",
+                        "validated_cookie_flag_issue",
                     }
                     else SecurityRelevance.unknown
                 ),

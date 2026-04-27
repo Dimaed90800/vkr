@@ -87,6 +87,13 @@ class PlannerService:
                 enable_baseline=bool(getattr(request, "enable_cors_baseline", False)),
             ),
         )
+        candidates.extend(
+            self._cookie_flag_candidates(
+                campaign,
+                graph_summary.model_dump(mode="json"),
+                enable_baseline=bool(getattr(request, "enable_cookie_baseline", False)),
+            ),
+        )
 
         operations = self._graph.list_operations(campaign_id)
         valid_op_ids = frozenset(op.operation_id for op in operations)
@@ -395,6 +402,34 @@ class PlannerService:
             candidates.append(baseline)
         return candidates
 
+    def _cookie_flag_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+        *,
+        enable_baseline: bool,
+    ) -> list[PlannerCandidate]:
+        if not enable_baseline:
+            return []
+        passive_context_exists = False
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            obs_type = self._raw_observation_type(raw)
+            if obs_type in {ObservationType.zap_alert.value, ObservationType.discovered_endpoint.value}:
+                passive_context_exists = True
+                break
+        if not passive_context_exists:
+            return []
+
+        baseline_url, baseline_source = self._select_cors_baseline_url(campaign)
+        return [
+            self._baseline_cookie_flag_candidate(
+                campaign=campaign,
+                graph_summary=graph_summary,
+                request_url=baseline_url,
+                candidate_source=baseline_source,
+            )
+        ]
+
     def _select_cors_baseline_url(self, campaign: Campaign) -> tuple[str, str]:
         for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
             obs_type = self._raw_observation_type(raw)
@@ -474,6 +509,85 @@ class PlannerService:
             kind=PlannerCandidateKind.cors_validator,
             priority=37.0,
             reason="Baseline CORS validation candidate generated from safe campaign/passive context.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
+    def _baseline_cookie_flag_candidate(
+        self,
+        *,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+        request_url: str,
+        candidate_source: str,
+    ) -> PlannerCandidate:
+        safe_request_url = sanitize_url_for_storage(request_url) if request_url else ""
+        dedup_key = "|".join([
+            campaign.campaign_id,
+            "cookie_flag_validator",
+            "baseline",
+            safe_request_url,
+        ])
+        summary = {
+            "cookie_candidate_source": "baseline",
+            "baseline_url_source": candidate_source,
+            "operation_id": "",
+            "path_template": "",
+            "request_url": safe_request_url,
+            "validation_mode": "baseline_cookie_flag_check",
+            "audit_flags": [],
+            "reason_codes": [],
+            "graph_summary": graph_summary,
+        }
+        if self._existing_cookie_flag_observation(
+            campaign.campaign_id,
+            safe_request_url,
+            "baseline_cookie_flag_check",
+        ):
+            return self._candidate(
+                kind=PlannerCandidateKind.cookie_flag_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=36.0,
+                reason="Matching validated_cookie_flag_issue observation already exists.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+        existing_run = self._existing_cookie_flag_run(campaign.campaign_id, dedup_key)
+        if existing_run is not None:
+            return self._candidate(
+                kind=PlannerCandidateKind.cookie_flag_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=36.0,
+                reason="Existing active/finished cookie_flag_validator ToolRun found.",
+                dedup_key=dedup_key,
+                summary={**summary, "existing_tool_run_id": existing_run.get("tool_run_id", "")},
+            )
+
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id="task_cookie_flag_validator_baseline",
+            worker_class="misconfiguration",
+            strategy="validate_cookie_flags",
+            tool_name="cookie_flag_validator",
+            operation_id="",
+            seed_request_id="",
+            inputs={
+                "target_url": campaign.target_url,
+                "request_url": request_url,
+                "operation_id": "",
+                "path_template": "",
+                "method": "GET",
+                "validation_mode": "baseline_cookie_flag_check",
+                "max_response_bytes": 262144,
+            },
+            budget=CommandBudget(max_requests=1, timeout_sec=15),
+            success_criteria=["cookie_flag_validation_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.cookie_flag_validator,
+            priority=36.0,
+            reason="Baseline cookie flag validation candidate generated from safe campaign/passive context.",
             dedup_key=dedup_key,
             command=command,
             summary=summary,
@@ -804,10 +918,11 @@ class PlannerService:
             PlannerCandidateKind.bola_replay_probe: 0,
             PlannerCandidateKind.security_header_validator: 1,
             PlannerCandidateKind.cors_validator: 2,
-            PlannerCandidateKind.schemathesis_negative_test: 3,
-            PlannerCandidateKind.injection_test: 4,
-            PlannerCandidateKind.property_mutation_test: 5,
-            PlannerCandidateKind.zap_discovery_passive: 6,
+            PlannerCandidateKind.cookie_flag_validator: 3,
+            PlannerCandidateKind.schemathesis_negative_test: 4,
+            PlannerCandidateKind.injection_test: 5,
+            PlannerCandidateKind.property_mutation_test: 6,
+            PlannerCandidateKind.zap_discovery_passive: 7,
             PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(
@@ -1244,6 +1359,52 @@ class PlannerService:
             resolved = urljoin(campaign_target_url.rstrip("/") + "/", path.lstrip("/"))
             return PlannerService._canonical_url_or_path(resolved)
         return path
+
+    @staticmethod
+    def _existing_cookie_flag_observation(
+        campaign_id: str,
+        request_url: str,
+        validation_mode: str,
+    ) -> bool:
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "validated_cookie_flag_issue":
+                continue
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            existing_request_url = sanitize_url_for_storage(str(details.get("request_url") or "").strip())
+            existing_validation_mode = str(details.get("validation_mode") or "").strip()
+            if existing_request_url == request_url and existing_validation_mode == validation_mode:
+                return True
+        return False
+
+    @staticmethod
+    def _existing_cookie_flag_run(
+        campaign_id: str,
+        requested_dedup_key: str,
+    ) -> dict[str, Any] | None:
+        active_or_done = {"accepted", "queued", "running", "finished", "partial"}
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "cookie_flag_validator":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            if str(run.get("dedup_key") or "").strip() == requested_dedup_key:
+                return run
+            command_id = str(run.get("command_id") or "").strip()
+            if not command_id:
+                continue
+            command = memory_store.get_command(command_id) or {}
+            inputs = command.get("inputs") if isinstance(command, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            existing_key = "|".join([
+                campaign_id,
+                "cookie_flag_validator",
+                "baseline",
+                sanitize_url_for_storage(str(inputs.get("request_url") or "").strip()),
+            ])
+            if existing_key == requested_dedup_key:
+                return run
+        return None
 
     @staticmethod
     def _redact_path_query(path_value: str) -> str:
