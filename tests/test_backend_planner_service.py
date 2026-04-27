@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from backend.main import app
 from backend.models.campaign import Campaign, CampaignLimits
 from backend.models.observation import Observation, ObservationType, SecurityRelevance
+from backend.models.api_graph import ApiGraph, Operation
 from backend.models.planner import PlannerRequest
 from backend.models.tool_run import (
     ToolExecutionMode,
@@ -48,10 +49,12 @@ def _campaign(
     *,
     allowed_hosts: list[str] | None = None,
     max_duration_sec: int = 1800,
+    openapi_url: str | None = None,
 ) -> Campaign:
     campaign = Campaign(
         campaign_id=campaign_id,
         target_url="http://target.local",
+        openapi_url=openapi_url,
         allowed_hosts=["target.local"] if allowed_hosts is None else allowed_hosts,
         roles_json=[
             {"name": "owner", "headers": {"X-Role": "owner"}},
@@ -61,6 +64,49 @@ def _campaign(
     )
     memory_store.store_campaign(campaign_id, campaign.model_dump(mode="json"))
     return campaign
+
+
+def _store_graph_vehicle_op(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+                method="GET",
+                path_template="/api/v1/vehicles/{vehicleId}",
+                owasp_candidates=["API1_BOLA"],
+                risk_hints=["object_id_in_path"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _schema_scenario_payload(
+    *,
+    scenario_id: str = "scn_schema",
+    operation_ids: list[str] | None = None,
+    candidate_workers: list[str] | None = None,
+    rationale: str = "schema test",
+    status: str = "accepted",
+    scenario_type: str = "schema_negative_testing",
+) -> dict:
+    return {
+        "scenario_id": scenario_id,
+        "status": status,
+        "scenario_type": scenario_type,
+        "vulnerability_classes": ["SCHEMA"],
+        "operation_ids": operation_ids or ["op_GET_/api/v1/vehicles/{vehicleId}"],
+        "resource_type": "",
+        "required_preconditions": ["openapi_schema"],
+        "candidate_workers": candidate_workers or ["schemathesis_negative_test"],
+        "confidence": 0.7,
+        "rationale": rationale,
+        "blocking_codes": [],
+        "errors": [],
+        "warnings": [],
+    }
 
 
 def _bola_pair(**overrides) -> dict:
@@ -1037,3 +1083,416 @@ def test_planner_route_invalid_body_returns_controlled_400():
     assert response.status_code == 400
     payload = response.json()
     assert payload["error"] == "invalid_planner_request"
+
+
+def test_planner_without_scenario_plan_unchanged():
+    _reset_store()
+    _campaign()
+
+    def _shape(r):
+        return {
+            "totals": (r.candidates_total, r.ready_count, r.blocked_count, r.skipped_existing_count),
+            "candidates": [
+                (c.kind.value, c.status.value, c.dedup_key, tuple(c.missing_inputs))
+                for c in r.candidates
+            ],
+        }
+
+    req_a = PlannerRequest(zap={"enabled": False}, bola={"enabled": True, "object_pairs": [_bola_pair()]})
+    req_b = PlannerRequest.model_validate({
+        "zap": {"enabled": False},
+        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+        "scenario_plan": None,
+        "include_scenario_compiler": True,
+    })
+    r1 = PlannerService().plan("cmp_plan", req_a)
+    r2 = PlannerService().plan("cmp_plan", req_b)
+    assert _shape(r1) == _shape(r2)
+
+
+def test_planner_scenario_schema_negative_testing_adds_schemathesis_candidate_when_openapi_source_available():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "max_candidates": 20,
+        "scenario_plan": {
+            "source": "llm_openapi_scenario_planner",
+            "scenarios": [_schema_scenario_payload()],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    st = [c for c in resp.candidates if c.kind.value == "schemathesis_negative_test"]
+    assert len(st) == 1
+    assert st[0].status == "ready"
+    assert st[0].command is not None
+    assert st[0].command.tool_name == "schemathesis_negative_test"
+    assert st[0].command.strategy == "schema_negative_testing"
+    assert st[0].command.operation_id == "op_GET_/api/v1/vehicles/{vehicleId}"
+
+
+def test_planner_scenario_schema_negative_testing_blocked_without_openapi_source():
+    _reset_store()
+    _campaign(openapi_url=None)
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "test",
+            "scenarios": [_schema_scenario_payload()],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    st = [c for c in resp.candidates if c.kind.value == "schemathesis_negative_test"]
+    assert not st
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("openapi_source" in c.missing_inputs for c in audit)
+
+
+def test_planner_scenario_candidate_command_validates():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_schema_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    cmd = next(c.command for c in resp.candidates if c.kind.value == "schemathesis_negative_test" and c.command)
+    assert CommandValidator().validate(cmd).valid
+
+
+def test_planner_scenario_does_not_trust_llm_worker_name_for_tool_choice():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [_schema_scenario_payload(candidate_workers=["totally_fake_tool_name"])],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    cmd = next(c.command for c in resp.candidates if c.command and c.kind.value == "schemathesis_negative_test")
+    assert cmd.tool_name == "schemathesis_negative_test"
+
+
+def test_planner_scenario_rejects_or_blocks_unknown_operation_id():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [_schema_scenario_payload(operation_ids=["op_UNKNOWN_missing"])],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("unknown_operation_id" in (m or "") for c in audit for m in c.missing_inputs)
+
+
+def test_planner_scenario_raw_url_rejected_or_blocked():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [_schema_scenario_payload(rationale="see https://evil.example/x")],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("raw_url_not_allowed" in c.missing_inputs for c in audit)
+
+
+def test_planner_scenario_secret_rejected_or_blocked():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [_schema_scenario_payload(rationale="Bearer leaked-secret-token")],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("secret_pattern_in_scenario_fields" in c.missing_inputs for c in audit)
+
+
+def test_planner_bola_scenario_without_object_pairs_blocked_no_command():
+    _reset_store()
+    _campaign()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": True, "object_pairs": []},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                {
+                    "scenario_id": "scn_bola",
+                    "status": "accepted",
+                    "scenario_type": "access_control_bola",
+                    "vulnerability_classes": ["BOLA"],
+                    "operation_ids": ["op_GET_/api/v1/vehicles/{vehicleId}"],
+                    "resource_type": "",
+                    "required_preconditions": ["two_authenticated_roles"],
+                    "candidate_workers": ["bola_replay_probe"],
+                    "confidence": 0.5,
+                    "rationale": "bola",
+                    "blocking_codes": [],
+                    "errors": [],
+                    "warnings": [],
+                },
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    bola_audit = [c for c in audit if (c.summary or {}).get("audit_code") == "bola_scenario_blocked"]
+    assert bola_audit
+    assert bola_audit[0].command is None
+    assert "object_pairs" in bola_audit[0].missing_inputs
+
+
+def test_planner_security_header_scenario_boosts_existing_validator_candidates():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+    body_no = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+    }
+    body_yes = {
+        **body_no,
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                {
+                    "scenario_id": "scn_hdr",
+                    "status": "accepted",
+                    "scenario_type": "security_header_validation",
+                    "vulnerability_classes": ["MISCONFIG"],
+                    "operation_ids": [],
+                    "resource_type": "",
+                    "required_preconditions": ["passive_signal_context"],
+                    "candidate_workers": ["security_header_validator"],
+                    "confidence": 0.5,
+                    "rationale": "hdr",
+                    "blocking_codes": [],
+                    "errors": [],
+                    "warnings": [],
+                },
+            ],
+        },
+    }
+    r0 = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body_no))
+    r1 = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body_yes))
+    c0 = next(c for c in r0.candidates if c.kind.value == "security_header_validator")
+    c1 = next(c for c in r1.candidates if c.kind.value == "security_header_validator")
+    assert c1.priority > c0.priority
+    assert (c1.summary or {}).get("scenario_priority_boost")
+
+
+def test_planner_security_header_scenario_without_passive_context_blocked():
+    _reset_store()
+    _campaign()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                {
+                    "scenario_id": "scn_hdr",
+                    "status": "accepted",
+                    "scenario_type": "security_header_validation",
+                    "vulnerability_classes": ["MISCONFIG"],
+                    "operation_ids": [],
+                    "resource_type": "",
+                    "required_preconditions": ["passive_signal_context"],
+                    "candidate_workers": ["security_header_validator"],
+                    "confidence": 0.5,
+                    "rationale": "hdr",
+                    "blocking_codes": [],
+                    "errors": [],
+                    "warnings": [],
+                },
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    audit = [c for c in resp.candidates if c.kind.value == "scenario_plan_blocked"]
+    assert any("passive_signal_context" in c.missing_inputs for c in audit)
+
+
+def test_planner_scenario_duplicate_schema_ops_deduped():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    oid = "op_GET_/api/v1/vehicles/{vehicleId}"
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _schema_scenario_payload(scenario_id="scn_a", operation_ids=[oid]),
+                _schema_scenario_payload(scenario_id="scn_b", operation_ids=[oid]),
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    st = [c for c in resp.candidates if c.kind.value == "schemathesis_negative_test" and c.status == "ready"]
+    assert len(st) == 1
+    assert any("scenario_duplicate_schema_op_merged" in w for w in resp.warnings)
+
+
+def test_planner_scenario_ordering_bola_header_schemathesis_zap_blocked():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    _store_zap_alert_observation()
+    body = {
+        "zap": {"enabled": True},
+        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+        "max_candidates": 30,
+        "scenario_plan": {"source": "t", "scenarios": [_schema_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    ready_kinds = [c.kind.value for c in resp.candidates if c.status == "ready"]
+    assert ready_kinds[:3] == [
+        "bola_replay_probe",
+        "security_header_validator",
+        "schemathesis_negative_test",
+    ]
+
+
+def test_planner_scenarios_do_not_create_toolrun_evidence_finding():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    cmds_before = len(memory_store.commands)
+    runs_before = len(memory_store.tool_runs)
+    ev_before = len(memory_store.evidence_packs)
+    fin_before = len(memory_store.confirmed_findings)
+    PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "scenario_plan": {"source": "t", "scenarios": [_schema_scenario_payload()]},
+        }),
+    )
+    assert len(memory_store.commands) == cmds_before
+    assert len(memory_store.tool_runs) == runs_before
+    assert len(memory_store.evidence_packs) == ev_before
+    assert len(memory_store.confirmed_findings) == fin_before
+
+
+def test_planner_include_scenario_compiler_false_disables_scenario_influence():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    _store_zap_alert_observation()
+    cmds_before = len(memory_store.commands)
+    runs_before = len(memory_store.tool_runs)
+    ev_before = len(memory_store.evidence_packs)
+    fin_before = len(memory_store.confirmed_findings)
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "include_scenario_compiler": False,
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _schema_scenario_payload(),
+                {
+                    "scenario_id": "scn_hdr",
+                    "status": "accepted",
+                    "scenario_type": "security_header_validation",
+                    "vulnerability_classes": ["MISCONFIG"],
+                    "operation_ids": [],
+                    "resource_type": "",
+                    "required_preconditions": ["passive_signal_context"],
+                    "candidate_workers": ["security_header_validator"],
+                    "confidence": 0.99,
+                    "rationale": "would boost if compiler on",
+                    "blocking_codes": [],
+                    "errors": [],
+                    "warnings": [],
+                },
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    assert not any(c.kind.value == "schemathesis_negative_test" for c in resp.candidates)
+    assert not any("scenario_priority_boost" in (c.summary or {}) for c in resp.candidates)
+    hdr = [c for c in resp.candidates if c.kind.value == "security_header_validator"]
+    assert hdr and hdr[0].status == "ready"
+    assert hdr[0].command is not None
+    assert len(memory_store.commands) == cmds_before
+    assert len(memory_store.tool_runs) == runs_before
+    assert len(memory_store.evidence_packs) == ev_before
+    assert len(memory_store.confirmed_findings) == fin_before
+
+
+def test_planner_include_scenario_compiler_false_disables_scenario_influence():
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    _store_graph_vehicle_op()
+    _store_zap_alert_observation()
+    cmds_before = len(memory_store.commands)
+    runs_before = len(memory_store.tool_runs)
+    ev_before = len(memory_store.evidence_packs)
+    fin_before = len(memory_store.confirmed_findings)
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "include_scenario_compiler": False,
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _schema_scenario_payload(),
+                {
+                    "scenario_id": "scn_hdr",
+                    "status": "accepted",
+                    "scenario_type": "security_header_validation",
+                    "vulnerability_classes": ["MISCONFIG"],
+                    "operation_ids": [],
+                    "resource_type": "",
+                    "required_preconditions": ["passive_signal_context"],
+                    "candidate_workers": ["security_header_validator"],
+                    "confidence": 0.99,
+                    "rationale": "would boost if compiler on",
+                    "blocking_codes": [],
+                    "errors": [],
+                    "warnings": [],
+                },
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    assert not any(c.kind.value == "schemathesis_negative_test" for c in resp.candidates)
+    assert not any("scenario_priority_boost" in (c.summary or {}) for c in resp.candidates)
+    hdr = [c for c in resp.candidates if c.kind.value == "security_header_validator"]
+    assert hdr and hdr[0].status == "ready"
+    assert hdr[0].command is not None
+    assert len(memory_store.commands) == cmds_before
+    assert len(memory_store.tool_runs) == runs_before
+    assert len(memory_store.evidence_packs) == ev_before
+    assert len(memory_store.confirmed_findings) == fin_before

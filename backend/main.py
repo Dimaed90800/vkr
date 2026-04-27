@@ -14,6 +14,7 @@ try:
     from backend.api.routes_discovery import router as discovery_router
     from backend.api.routes_planning import router as planning_router
     from backend.api.routes_planner import planner_router
+    from backend.api.routes_scenarios import scenarios_router
     from backend.api.routes_recon import router as recon_router
     from backend.api.routes_scheduling import router as scheduling_router
     from backend.api.routes_surface_acquisition import router as surface_acquisition_router
@@ -38,6 +39,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from api.routes_discovery import router as discovery_router
     from api.routes_planning import router as planning_router
     from api.routes_planner import planner_router
+    from api.routes_scenarios import scenarios_router
     from api.routes_recon import router as recon_router
     from api.routes_scheduling import router as scheduling_router
     from api.routes_surface_acquisition import router as surface_acquisition_router
@@ -66,6 +68,7 @@ app.include_router(traffic_discovery_router, prefix="/v1")
 app.include_router(surface_acquisition_router, prefix="/v1")
 app.include_router(planning_router, prefix="/v1")
 app.include_router(planner_router)
+app.include_router(scenarios_router)
 app.include_router(scheduling_router, prefix="/v1")
 app.include_router(tests_router, prefix="/v1")
 app.include_router(tool_wrappers_router, prefix="/v1")

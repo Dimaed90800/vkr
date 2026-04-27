@@ -21,6 +21,7 @@ try:
     from backend.models.worker_command import CommandBudget, WorkerCommand
     from backend.services.api_graph_service import ApiGraphService
     from backend.services.command_validator import CommandValidator
+    from backend.services.scenario_plan_compiler import ScenarioPlanCompiler
     from backend.services.http.safe_http_client import sanitize_url_for_storage
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
@@ -38,6 +39,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from models.worker_command import CommandBudget, WorkerCommand
     from services.api_graph_service import ApiGraphService
     from services.command_validator import CommandValidator
+    from services.scenario_plan_compiler import ScenarioPlanCompiler
     from services.http.safe_http_client import sanitize_url_for_storage
     from storage.memory_store import memory_store
 
@@ -53,6 +55,7 @@ class PlannerService:
     def __init__(self) -> None:
         self._graph = ApiGraphService()
         self._validator = CommandValidator()
+        self._scenario_compiler = ScenarioPlanCompiler(validator=self._validator)
 
     def plan(self, campaign_id: str, request: PlannerRequest) -> PlannerResponse:
         raw_campaign = memory_store.get_campaign(campaign_id)
@@ -77,6 +80,35 @@ class PlannerService:
         if request.bola.enabled:
             candidates.extend(self._bola_candidates(campaign, request, graph_summary.model_dump(mode="json")))
         candidates.extend(self._security_header_candidates(campaign, graph_summary.model_dump(mode="json")))
+
+        operations = self._graph.list_operations(campaign_id)
+        valid_op_ids = frozenset(op.operation_id for op in operations)
+        compiled = self._scenario_compiler.compile(
+            campaign=campaign,
+            request=request,
+            valid_operation_ids=valid_op_ids,
+            graph_operations_total=int(graph_summary.operations_total or 0),
+            base_candidates=candidates,
+        )
+        adjusted: list[PlannerCandidate] = []
+        for item in candidates:
+            add_p = compiled.priority_add_by_dedup_key.get(item.dedup_key, 0.0)
+            if add_p:
+                adjusted.append(
+                    item.model_copy(
+                        update={
+                            "priority": float(item.priority) + add_p,
+                            "summary": {
+                                **(item.summary or {}),
+                                "scenario_priority_boost": add_p,
+                            },
+                        },
+                    ),
+                )
+            else:
+                adjusted.append(item)
+        candidates = adjusted + compiled.extra_candidates
+        warnings.extend(compiled.warnings)
 
         if not request.include_blocked:
             candidates = [
@@ -540,7 +572,9 @@ class PlannerService:
         kind_order = {
             PlannerCandidateKind.bola_replay_probe: 0,
             PlannerCandidateKind.security_header_validator: 1,
-            PlannerCandidateKind.zap_discovery_passive: 2,
+            PlannerCandidateKind.schemathesis_negative_test: 2,
+            PlannerCandidateKind.zap_discovery_passive: 3,
+            PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(
             candidates,

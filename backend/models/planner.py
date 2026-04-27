@@ -11,8 +11,10 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 try:
+    from backend.models.scenario_plan import ValidatedScenarioItem
     from backend.models.worker_command import WorkerCommand
 except ModuleNotFoundError:  # pragma: no cover
+    from models.scenario_plan import ValidatedScenarioItem
     from models.worker_command import WorkerCommand
 
 
@@ -26,6 +28,8 @@ class PlannerCandidateKind(str, Enum):
     zap_discovery_passive = "zap_discovery_passive"
     bola_replay_probe = "bola_replay_probe"
     security_header_validator = "security_header_validator"
+    schemathesis_negative_test = "schemathesis_negative_test"
+    scenario_plan_blocked = "scenario_plan_blocked"
 
 
 class BolaObjectPairHint(BaseModel):
@@ -59,11 +63,20 @@ class BolaPlannerHints(BaseModel):
     object_pairs: list[BolaObjectPairHint] = Field(default_factory=list)
 
 
+class ScenarioPlanInput(BaseModel):
+    """Optional Phase 15B payload: validated ScenarioPlan rows (hints only)."""
+
+    source: str = ""
+    scenarios: list[ValidatedScenarioItem] = Field(default_factory=list)
+
+
 class PlannerRequest(BaseModel):
     include_blocked: bool = True
     max_candidates: int = 10
     zap: ZapDiscoveryHint = Field(default_factory=ZapDiscoveryHint)
     bola: BolaPlannerHints = Field(default_factory=BolaPlannerHints)
+    scenario_plan: ScenarioPlanInput | None = None
+    include_scenario_compiler: bool = True
 
 
 class PlannerCandidate(BaseModel):
