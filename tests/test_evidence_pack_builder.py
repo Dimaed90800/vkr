@@ -186,6 +186,9 @@ def _store_api_graph_with_op(
     method: str,
     path_template: str,
     owasp_candidates: list[str] | None = None,
+    auth_required: bool = False,
+    resource_type: str = "",
+    risk_hints: list[str] | None = None,
 ) -> None:
     graph = ApiGraph(
         campaign_id=campaign_id,
@@ -196,6 +199,9 @@ def _store_api_graph_with_op(
                 path_template=path_template,
                 owasp_candidates=owasp_candidates or [],
                 sources=["openapi"],
+                auth_required=auth_required,
+                resource_type=resource_type,
+                risk_hints=risk_hints or [],
             ),
         ],
     )
@@ -753,8 +759,226 @@ def test_schema_mismatch_schemathesis_strong_signals_ready_for_judge():
     assert "exit_code:1" in pack.derived_signals
     assert "signal:5xx" in pack.derived_signals
     assert "signal:schema_violation" in pack.derived_signals
+    assert "strong_signal_count:3" in pack.derived_signals
+    assert "signal_interpretation:server_error_on_negative_contract_test" in pack.derived_signals
+    assert "signal_interpretation:unexpected_success_on_invalid_input" in pack.derived_signals
+    assert "signal_interpretation:response_schema_contract_violation" in pack.derived_signals
+    assert any(s.startswith("impact_summary:") for s in pack.derived_signals)
     assert pack.replay_steps
     assert pack.replay_steps[0].description.startswith("Schemathesis negative testing")
+
+
+def test_schema_mismatch_strong_signals_include_interpretation_and_impact_summary():
+    """Phase 16E-A: interpretation lines and impact_summary on strong Schemathesis signals."""
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "operation_id": "op_GET_/api/v1/items/{id}",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_interp",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_interp")
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert "signal_interpretation:server_error_on_negative_contract_test" in pack.derived_signals
+    assert "strong_signal_count:1" in pack.derived_signals
+    imp = next(s for s in pack.derived_signals if s.startswith("impact_summary:"))
+    assert "server error" in imp.lower()
+
+
+def test_schema_mismatch_multiple_strong_signals_combines_impact_summary_compactly():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "operation_id": "op_GET_/api/v1/items/{id}",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx", "unexpected_2xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_multi",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_multi")
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert "signal_interpretation:server_error_on_negative_contract_test" in pack.derived_signals
+    assert "signal_interpretation:unexpected_success_on_invalid_input" in pack.derived_signals
+    imp = next(s for s in pack.derived_signals if s.startswith("impact_summary:"))
+    assert "server error" in imp.lower() and "invalid" in imp.lower()
+
+
+def test_schema_mismatch_graph_context_added_when_operation_exists():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    op_id = "op_GET_/api/v1/items/{id}"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="GET",
+        path_template="/api/v1/items/{id}",
+        owasp_candidates=["API1_BOLA", "API8_MISCONFIG"],
+        auth_required=True,
+        resource_type="Item",
+        risk_hints=["pii", "authz", "extra_hint"],
+    )
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id=op_id,
+        details={
+            "operation_id": op_id,
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["schema_violation"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_graph",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_graph")
+    assert pack is not None
+    assert "method:GET" in pack.derived_signals
+    assert "path_template:/api/v1/items/{id}" in pack.derived_signals
+    assert "auth_required:true" in pack.derived_signals
+    assert "resource_type:Item" in pack.derived_signals
+    assert "risk_hint:pii" in pack.derived_signals
+    assert "risk_hint:authz" in pack.derived_signals
+    assert "risk_hint:extra_hint" in pack.derived_signals
+    assert "owasp_candidate:API1_BOLA" in pack.derived_signals
+    assert "owasp_candidate:API8_MISCONFIG" in pack.derived_signals
+
+
+def test_schema_mismatch_graph_context_missing_does_not_block_ready_if_required_fields_present():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id="op_UNKNOWN_not_in_graph",
+        details={
+            "operation_id": "op_UNKNOWN_not_in_graph",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_nograph",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_nograph")
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert not any(s.startswith("method:") for s in pack.derived_signals)
+    assert not any(s.startswith("path_template:") for s in pack.derived_signals)
+
+
+def test_schema_mismatch_does_not_add_raw_body_headers_or_url_query():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    op_id = "op_GET_/api/v1/items/{id}"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="GET",
+        path_template="/api/v1/items/{id}?token=secret&sig=abc",
+        owasp_candidates=[],
+    )
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id=op_id,
+        details={
+            "operation_id": op_id,
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+            "malicious_note": "Authorization: Bearer X",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_safe",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_safe")
+    blob = "\n".join(pack.derived_signals)
+    assert "?" not in blob
+    assert "Bearer" not in blob
+    assert "Authorization" not in blob
+    assert "token=secret" not in blob
+
+
+def test_phase16e_regression_security_header_evidence_unchanged():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        operation_id="",
+        details={
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+            "actual_state": "missing",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_header_1",
+            "url": "http://testapp.local/frame",
+        },
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert pack is not None
+    assert pack.vulnerability_class == "security_header_misconfiguration"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert "validated_security_header_issue" in pack.derived_signals
+    assert "impact_summary:" not in "\n".join(pack.derived_signals)
+
+
+def test_phase16e_regression_bola_cross_role_evidence_unchanged():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    ctx = _setup_complete_bola_corpus()
+    obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        operation_id=ctx["op_id"],
+        confidence=0.9,
+        details={
+            "object_id": ctx["object_id"],
+            "owner_role": ctx["owner_role"],
+            "attacker_role": ctx["attacker_role"],
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.baseline is not None and pack.baseline.request_ref is not None
+    assert pack.attack is not None and pack.attack.request_ref is not None
+    assert pack.ownership_proof is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert "impact_summary:" not in "\n".join(pack.derived_signals)
 
 
 def test_schema_mismatch_missing_signal_types_incomplete():

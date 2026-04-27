@@ -202,7 +202,35 @@ def test_loop_scenarios_judge_prompt_has_schema_contract_guidance() -> None:
 
 def test_loop_scenarios_schema_contract_prompt_does_not_require_bola_proof() -> None:
     prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
-    assert "do not require BOLA baseline, ownership proof, or diff." in prompt
+    assert (
+        "do not require BOLA baseline, ownership proof, diff, or request_ref for this class."
+        in prompt
+    )
+
+
+def test_loop_scenarios_compact_judge_input_includes_schema_contract_fields() -> None:
+    code = _node_data("compact_evidence_for_judge")["code"]
+    assert "strong_schema_signals" in code
+    assert "schema_contract_interpretation" in code
+    assert "tool_run_ids" in code
+    assert "observation_id" in code
+
+
+def test_loop_scenarios_judge_prompt_schema_contract_rework_policy() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"].lower()
+    assert "rework only if operation context" in prompt
+    assert "reject or inconclusive" in prompt
+
+
+def test_loop_scenarios_judge_prompt_does_not_rework_schema_for_missing_bola_refs() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"].lower()
+    assert "do not use absence of baseline" in prompt
+
+
+def test_loop_scenarios_schema_contract_compact_input_has_no_raw_body_headers_tokens() -> None:
+    code = _node_data("compact_evidence_for_judge")["code"]
+    for bad in ("request_body", "response_body", "Authorization", "Cookie:", "Bearer "):
+        assert bad not in code
 
 
 def test_final_report_contains_compact_scenario_summary() -> None:

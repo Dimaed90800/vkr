@@ -844,6 +844,74 @@ class EvidencePackBuilder:
         except (TypeError, ValueError):
             return fallback
 
+    @staticmethod
+    def _schema_mismatch_impact_summary_text(signal_types: list[str]) -> str:
+        st = set(signal_types)
+        p5 = "5xx" in st
+        pu = "unexpected_2xx" in st
+        ps = "schema_violation" in st
+        parts: list[str] = []
+        if p5:
+            parts.append(
+                "Negative schema testing triggered server error responses, "
+                "indicating robustness/security impact."
+            )
+        if pu:
+            parts.append(
+                "Invalid or negative contract inputs were accepted successfully, "
+                "indicating insufficient input validation."
+            )
+        if ps:
+            if not p5 and not pu:
+                parts.append(
+                    "Response behavior deviated from the declared API schema contract "
+                    "and requires impact judgment."
+                )
+            elif p5 or pu:
+                parts.append("Declared API response schema contract was also violated.")
+        return " ".join(parts).strip()
+
+    @staticmethod
+    def _schema_mismatch_signal_interpretations(signal_types: list[str]) -> list[str]:
+        out: list[str] = []
+        st = set(signal_types)
+        if "5xx" in st:
+            out.append("signal_interpretation:server_error_on_negative_contract_test")
+        if "unexpected_2xx" in st:
+            out.append("signal_interpretation:unexpected_success_on_invalid_input")
+        if "schema_violation" in st:
+            out.append("signal_interpretation:response_schema_contract_violation")
+        return out
+
+    @staticmethod
+    def _strip_path_query(path_template: str) -> str:
+        return (path_template or "").split("?", 1)[0]
+
+    def _append_schema_mismatch_graph_signals(
+        self, derived: list[str], campaign_id: str, op_id: str
+    ) -> None:
+        if not op_id:
+            return
+        op = self._lookup_operation(campaign_id, op_id)
+        if op is None:
+            return
+        derived.append(f"method:{(op.method or '').upper()}")
+        derived.append(
+            f"path_template:{EvidencePackBuilder._strip_path_query(op.path_template or '')}"
+        )
+        derived.append(f"auth_required:{str(bool(op.auth_required)).lower()}")
+        rt = (op.resource_type or "").strip()
+        if rt:
+            derived.append(f"resource_type:{rt}")
+        for hint in (op.risk_hints or [])[:3]:
+            h = str(hint).strip()
+            if h:
+                derived.append(f"risk_hint:{h[:120]}")
+        for cand in (op.owasp_candidates or [])[:3]:
+            c = str(cand).strip()
+            if c:
+                derived.append(f"owasp_candidate:{c[:120]}")
+
     def _fill_schema_mismatch(
         self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
     ) -> None:
@@ -858,6 +926,7 @@ class EvidencePackBuilder:
         )
         strong_signals = {"5xx", "schema_violation", "unexpected_2xx"}
         has_strong_signal = any(s in strong_signals for s in signal_types)
+        strong_signal_count = sum(1 for s in signal_types if s in strong_signals)
         signal_count = EvidencePackBuilder._schema_mismatch_signal_count(
             details, signal_types
         )
@@ -865,15 +934,16 @@ class EvidencePackBuilder:
 
         pack.owasp_category = "API8_SECURITY_MISCONFIGURATION"
         pack.vulnerability_class = "api_schema_contract_violation"
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
         if op_id:
             pack.operation_id = op_id
-            if not pack.method or not pack.endpoint:
-                op = self._lookup_operation(obs.campaign_id, op_id)
-                if op is not None:
-                    if not pack.method:
-                        pack.method = (op.method or "").upper()
-                    if not pack.endpoint:
-                        pack.endpoint = op.path_template or ""
+            if op is not None:
+                if not pack.method:
+                    pack.method = (op.method or "").upper()
+                if not pack.endpoint:
+                    pack.endpoint = EvidencePackBuilder._strip_path_query(
+                        op.path_template or ""
+                    )
         pack.hypothesis = (
             "Schemathesis negative testing produced schema/contract mismatch "
             f"signals for operation {op_id or 'unknown_operation'}."
@@ -889,6 +959,20 @@ class EvidencePackBuilder:
             pack.derived_signals.append(f"exit_code:{exit_code}")
         for sig in signal_types:
             pack.derived_signals.append(f"signal:{sig}")
+        pack.derived_signals.append(f"strong_signal_count:{strong_signal_count}")
+        pack.derived_signals.extend(
+            EvidencePackBuilder._schema_mismatch_signal_interpretations(signal_types)
+        )
+        pack.derived_signals.append(
+            "impact_summary:"
+            + EvidencePackBuilder._schema_mismatch_impact_summary_text(signal_types)
+        )
+        self._append_schema_mismatch_graph_signals(
+            pack.derived_signals, obs.campaign_id, op_id
+        )
+
+        if pack.endpoint:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(pack.endpoint)
 
         pack.replay_steps = [
             EvidenceReplayStep(

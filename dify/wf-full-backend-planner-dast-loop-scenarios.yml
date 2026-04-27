@@ -2800,16 +2800,38 @@ workflow:
                       'operation_id': ref.get('operation_id') or '',
                   }
 
+              derived = pack.get('derived_signals') or []
+              strong_schema_signals = []
+              schema_contract_interpretation = []
+              if isinstance(derived, list):
+                  for item in derived:
+                      if not isinstance(item, str):
+                          continue
+                      if item.startswith('signal:') and item.split(':', 1)[1] in (
+                          '5xx',
+                          'schema_violation',
+                          'unexpected_2xx',
+                      ):
+                          strong_schema_signals.append(item)
+                      if item.startswith('signal_interpretation:') or item.startswith('impact_summary:'):
+                          schema_contract_interpretation.append(item)
+              tool_ids = pack.get('tool_run_ids') or []
+              if not isinstance(tool_ids, list):
+                  tool_ids = []
+
               summary = {
                   'campaign_id': pack.get('campaign_id'),
                   'evidence_id': pack.get('evidence_id'),
                   'task_id': pack.get('task_id'),
                   'observation_id': pack.get('observation_id'),
+                  'tool_run_ids': tool_ids[:5],
+                  'strong_schema_signals': strong_schema_signals[:10],
+                  'schema_contract_interpretation': schema_contract_interpretation[:12],
                   'verification_plan_id': pack.get('verification_plan_id'),
                   'owasp_category': pack.get('owasp_category'),
                   'vulnerability_class': pack.get('vulnerability_class'),
                   'operation_id': pack.get('operation_id'),
-                  'endpoint': pack.get('endpoint'),
+                  'endpoint': safe_path(pack.get('endpoint') or ''),
                   'method': pack.get('method'),
                   'status': pack.get('status'),
                   'judge_ready': pack.get('judge_ready'),
@@ -2939,12 +2961,18 @@ workflow:
               replay_steps_count>=1 (or replay_step_refs contains a validation step), and header_name + actual_state are present
               in derived_signals or compact summary.
             - For api_schema_contract_violation / schema_mismatch evidence:
-              do not require BOLA baseline, ownership proof, or diff.
-              confirmation may rely on compact Schemathesis signals only when status=ready_for_judge,
-              judge_ready=true, missing_evidence is empty, operation_id exists, derived_signals includes
-              tool_name:schemathesis_negative_test, and strong signals include at least one of
-              signal:5xx, signal:schema_violation, or signal:unexpected_2xx.
-              if only weak/unknown signals exist, or operation context is missing, return rework or inconclusive.
+              do not require BOLA baseline, ownership proof, diff, or request_ref for this class.
+              do not use absence of baseline, attack, ownership_proof, diff, or request_ref as a rework reason.
+              confirm only when status=ready_for_judge, judge_ready=true, missing_evidence is empty,
+              operation_id is present, derived_signals includes tool_name:schemathesis_negative_test,
+              and at least one strong signal is present among signal:5xx, signal:schema_violation,
+              signal:unexpected_2xx.
+              signal meaning: 5xx from negative schema testing can indicate robustness/security impact;
+              unexpected_2xx can indicate insufficient input validation; schema_violation indicates contract mismatch.
+              for schema_violation alone, confirm only if impact is sufficiently explained by impact_summary
+              and/or schema_contract_interpretation in the compact summary.
+              rework only if operation context, strong signals, or impact interpretation is missing and can be gathered.
+              reject or inconclusive if signals are weak or ambiguous and no further actionable evidence is available.
             - Apply BOLA-only evidence requirements only to BOLA evidence types.
         - id: user
           role: user
