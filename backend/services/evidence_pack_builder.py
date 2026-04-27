@@ -97,6 +97,15 @@ _NOT_JUDGE_READY_TYPES: set[str] = {
     ObservationType.sensitive_field_seen.value,
 }
 
+_INJECTION_STRONG_SIGNALS: frozenset[str] = frozenset({
+    "db_error_pattern",
+    "server_error_on_payload",
+    "reflected_marker",
+    "template_evaluation_marker",
+    "traversal_marker",
+    "nosql_operator_effect",
+})
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -232,6 +241,8 @@ class EvidencePackBuilder:
             self._fill_discovered_endpoint(pack, obs, plan)
         elif obs_type == ObservationType.schema_mismatch.value:
             self._fill_schema_mismatch(pack, obs, plan)
+        elif obs_type == ObservationType.injection_signal.value:
+            self._fill_injection_signal(pack, obs, plan)
         else:
             self._fill_not_judge_ready(pack, obs, code="unsupported_observation_type")
 
@@ -365,7 +376,34 @@ class EvidencePackBuilder:
                 for s in (pack.derived_signals or [])
                 if str(s).startswith("signal:")
             }
-            return bool(seen & strong)
+            if bool(seen & strong):
+                return True
+            der_inj = pack.derived_signals or []
+            return any(str(s).startswith("strong_signal:") for s in der_inj)
+        if code == "injection_signal":
+            der = pack.derived_signals or []
+            if "injection_signal" not in der:
+                return False
+            return any(str(s).startswith("signal:") for s in der)
+        if code == "parameter_context":
+            der = pack.derived_signals or []
+            prefixes = (
+                "parameter_name:",
+                "parameter_location:",
+                "payload_family:",
+                "payload_label:",
+            )
+            for pref in prefixes:
+                match = next((str(s) for s in der if str(s).startswith(pref)), "")
+                rest = match.split(":", 1)[-1].strip() if match else ""
+                if not rest:
+                    return False
+            return True
+        if code == "baseline_attack_delta":
+            der = pack.derived_signals or []
+            return any(str(s).startswith("baseline_status:") for s in der) and any(
+                str(s).startswith("attack_status:") for s in der
+            )
         if code.startswith("operation_id:"):
             # Legacy VerificationPlan rows mistakenly used operation_id:<op> as a code.
             expected = code[len("operation_id:") :].strip()
@@ -400,6 +438,9 @@ class EvidencePackBuilder:
         if obs_type == ObservationType.schema_mismatch.value:
             return "API8_SECURITY_MISCONFIGURATION"
 
+        if obs_type == ObservationType.injection_signal.value:
+            return "API8_SECURITY_MISCONFIGURATION"
+
         if obs_type in (
             ObservationType.unexpected_500.value,
             ObservationType.server_error_candidate.value,
@@ -418,6 +459,8 @@ class EvidencePackBuilder:
             return "api_schema_contract_violation"
         if obs_type == ObservationType.validated_security_header_issue.value:
             return "security_header_misconfiguration"
+        if obs_type == ObservationType.injection_signal.value:
+            return "potential_injection"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -1035,6 +1078,150 @@ class EvidencePackBuilder:
                     "(5xx, schema_violation, unexpected_2xx)."
                 ),
                 required_for="schema_mismatch",
+            ))
+
+    def _fill_injection_signal(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        tool_name = str(details.get("tool_name") or "").strip()
+
+        raw_signal_types = details.get("signal_types")
+        signal_types = (
+            [str(s).strip().lower() for s in raw_signal_types if str(s).strip()]
+            if isinstance(raw_signal_types, list)
+            else []
+        )
+        has_strong = any(s in _INJECTION_STRONG_SIGNALS for s in signal_types)
+
+        pack.owasp_category = "API8_SECURITY_MISCONFIGURATION"
+        pack.vulnerability_class = "potential_injection"
+
+        pname = str(details.get("parameter_name") or "").strip()
+        ploc = str(details.get("parameter_location") or "").strip()
+        pfam = str(details.get("payload_family") or "").strip()
+        plab = str(details.get("payload_label") or "").strip()
+        bline = details.get("baseline_status")
+        aline = details.get("attack_status")
+        rsp_delta = str(details.get("response_delta_class") or "").strip()
+        marker_raw = details.get("marker_reflected")
+        err_cls = str(details.get("error_pattern_class") or "").strip()
+
+        op_disp = op_id or "unknown"
+        p_disp = pname or "unknown"
+        loc_disp = ploc or "unknown"
+        pack.hypothesis = (
+            "Injection probe reported strong signals for operation "
+            f"{op_disp} parameter {p_disp} ({loc_disp})."
+        )
+
+        if op_id:
+            pack.operation_id = op_id
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
+        if op is not None:
+            if not pack.method:
+                pack.method = (op.method or "").upper()
+            if not pack.endpoint:
+                pack.endpoint = EvidencePackBuilder._strip_path_query(op.path_template or "")
+
+        def _fmt_status(v: object) -> str:
+            if v is None:
+                return ""
+            if isinstance(v, bool):
+                return str(v).lower()
+            if isinstance(v, (int, float)):
+                return str(int(v))
+            return str(v).strip()
+
+        derived: list[str] = [
+            "injection_signal",
+            f"tool_name:{tool_name}",
+            f"operation_id:{op_id}",
+        ]
+        for sig in signal_types:
+            derived.append(f"signal:{sig}")
+        for sig in signal_types:
+            if sig in _INJECTION_STRONG_SIGNALS:
+                derived.append(f"strong_signal:{sig}")
+        derived.extend([
+            f"parameter_name:{pname}",
+            f"parameter_location:{ploc}",
+            f"payload_family:{pfam}",
+            f"payload_label:{plab}",
+            f"baseline_status:{_fmt_status(bline)}",
+            f"attack_status:{_fmt_status(aline)}",
+            f"response_delta_class:{rsp_delta}",
+            f"marker_reflected:{str(bool(marker_raw)).lower()}",
+            f"error_pattern_class:{err_cls}",
+        ])
+        pack.derived_signals = derived
+
+        method = (pack.method or "GET").upper()
+        path_t = pack.endpoint or ""
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=method,
+                path_template=path_t,
+                url="",
+                request_ref=None,
+                description="Injection probe compared baseline and labeled attack metadata",
+            ),
+        ]
+
+        if plan is None or (plan.goal or "") != "validate_injection_impact":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="verification_goal_mismatch",
+                description=(
+                    "Injection evidence requires VerificationPlan goal "
+                    "'validate_injection_impact'."
+                ),
+                required_for="potential_injection",
+            ))
+        if not op_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="operation_id is required for injection evidence.",
+                required_for="potential_injection",
+            ))
+        if tool_name != "injection_test":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description=(
+                    "injection_signal evidence must come from tool_name 'injection_test'."
+                ),
+                required_for="potential_injection",
+            ))
+        if not signal_types:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="injection_signal_missing",
+                description="signal_types must be a non-empty list for injection evidence.",
+                required_for="potential_injection",
+            ))
+        if not (pname and ploc and pfam and plab):
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="injection_parameter_context_missing",
+                description=(
+                    "parameter_name, parameter_location, payload_family, and payload_label "
+                    "are required."
+                ),
+                required_for="potential_injection",
+            ))
+        if bline is None or aline is None:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="baseline_attack_delta_missing",
+                description="baseline_status and attack_status are required.",
+                required_for="potential_injection",
+            ))
+        if signal_types and not has_strong:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="impact_classification_missing",
+                description=(
+                    "signal_types must include at least one strong injection signal."
+                ),
+                required_for="potential_injection",
             ))
 
     def _fill_not_judge_ready(

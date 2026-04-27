@@ -449,8 +449,9 @@ def test_normalize_terminal_run_without_tool_result_returns_controlled_error():
 
 
 def _make_obs(obs_type: str, campaign_id: str = "cmp_obs1", **kwargs) -> Observation:
+    observation_id = kwargs.pop("observation_id", None) or f"obs_test_{obs_type}"
     obs = Observation(
-        observation_id=f"obs_test_{obs_type}",
+        observation_id=observation_id,
         campaign_id=campaign_id,
         tool_run_id="toolrun_obs_test",
         type=obs_type,
@@ -595,6 +596,85 @@ def test_triage_schema_mismatch_idempotent():
     plans = memory_store.list_verification_plans_by_campaign("cmp_obs1")
     matching = [p for p in plans if p.get("parent_observation_id") == obs.observation_id]
     assert len(matching) == 1
+
+
+def test_triage_injection_signal_strong_creates_verification_plan() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "injection_signal",
+        observation_id="obs_inj_triage_strong",
+        operation_id="op_inj_1",
+        details={
+            "signal_types": ["reflected_marker"],
+            "operation_id": "op_inj_1",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "validate_injection_impact"
+    assert triaged.security_relevance == "medium"
+    assert triaged.judge_worthy is False
+    assert plan is not None
+    assert plan.goal == "validate_injection_impact"
+    assert plan.worker_class == "contract_fuzzing"
+    assert plan.strategy == "validate_injection_impact"
+    assert plan.commands == []
+    assert plan.required_evidence == [
+        "injection_signal",
+        "parameter_context",
+        "baseline_attack_delta",
+        "impact_classification",
+    ]
+
+
+def test_triage_injection_signal_weak_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "injection_signal",
+        observation_id="obs_inj_triage_weak",
+        details={"signal_types": ["status_changed"]},
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "store_only"
+    assert plan is None
+
+
+def test_triage_injection_signal_idempotent() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "injection_signal",
+        observation_id="obs_inj_triage_idem",
+        details={"signal_types": ["db_error_pattern"]},
+    )
+    triaged_1, plan_1, err_1 = ObservationTriage().triage(obs.observation_id)
+    triaged_2, plan_2, err_2 = ObservationTriage().triage(obs.observation_id)
+    assert err_1 is None and err_2 is None
+    assert plan_1 is not None and plan_2 is not None
+    assert plan_1.verification_plan_id == plan_2.verification_plan_id
+    plans = memory_store.list_verification_plans_by_campaign("cmp_obs1")
+    assert len([p for p in plans if p.get("parent_observation_id") == obs.observation_id]) == 1
+
+
+def test_triage_injection_signal_required_evidence_canonical_codes() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "injection_signal",
+        observation_id="obs_inj_triage_codes",
+        details={"signal_types": ["template_evaluation_marker"]},
+    )
+    _, plan, _ = ObservationTriage().triage(obs.observation_id)
+    assert plan is not None
+    assert plan.required_evidence == [
+        "injection_signal",
+        "parameter_context",
+        "baseline_attack_delta",
+        "impact_classification",
+    ]
 
 
 def test_triage_schema_mismatch_does_not_create_evidence_judge_or_finding():

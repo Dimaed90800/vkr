@@ -149,6 +149,8 @@ def test_loop_scenarios_preserves_pending_only_types() -> None:
     code = _node_data("route_by_observation_type")["code"]
     assert "'zap_alert'" in code
     assert "'discovered_endpoint'" in code
+    pending_block = code.split("is_pending_only = obs_type in {", 1)[1].split("}", 1)[0]
+    assert "'injection_signal'" not in pending_block
 
 
 def test_loop_scenarios_observation_priority_includes_schema_mismatch() -> None:
@@ -230,6 +232,48 @@ def test_loop_scenarios_judge_prompt_does_not_rework_schema_for_missing_bola_ref
 def test_loop_scenarios_schema_contract_compact_input_has_no_raw_body_headers_tokens() -> None:
     code = _node_data("compact_evidence_for_judge")["code"]
     for bad in ("request_body", "response_body", "Authorization", "Cookie:", "Bearer "):
+        assert bad not in code
+
+
+def test_loop_scenarios_observation_priority_includes_injection_signal() -> None:
+    code = _node_data("summarize_observations")["code"]
+    assert "injection = [obs for obs in observations if obs.get('type') == 'injection_signal']" in code
+    assert "injection[0] if injection else (" in code
+    idx_inj = code.find("injection[0]")
+    idx_zap = code.find("alerts[0]")
+    assert idx_inj != -1 and idx_zap != -1 and idx_inj < idx_zap
+
+
+def test_loop_scenarios_injection_signal_is_evidence_capable_with_plan() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "'injection_signal'" in code
+    assert "has_plan = bool(str(verification_plan_id or '').strip())" in code
+    evidence_set = code.split("is_evidence_capable = obs_type in {", 1)[1].split(
+        "} and has_plan", 1
+    )[0]
+    assert "'injection_signal'" in evidence_set
+
+
+def test_loop_scenarios_injection_signal_without_plan_stays_pending_or_non_evidence() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "'injection_signal'" in code
+    assert "} and has_plan" in code
+    pending_block = code.split("is_pending_only = obs_type in {", 1)[1].split("}", 1)[0]
+    assert "'injection_signal'" not in pending_block
+
+
+def test_loop_scenarios_judge_prompt_has_injection_policy() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
+    assert "potential_injection / injection_signal" in prompt
+    assert "injection_strong_signals" in prompt
+    assert "baseline_attack_delta" in prompt
+
+
+def test_loop_scenarios_injection_compact_input_has_no_raw_payload_body_headers_tokens() -> None:
+    code = _node_data("compact_evidence_for_judge")["code"]
+    assert "potential_injection" in code
+    assert "injection_strong_signals" in code
+    for bad in ("request_body", "response_body", "Authorization", "Cookie:", "Bearer ", "payload_raw"):
         assert bad not in code
 
 

@@ -163,6 +163,9 @@ def _make_plan(
     goal: str,
     required_evidence: list[str],
     plan_id: str = "vplan_evp",
+    *,
+    worker_class: str = "",
+    strategy: str | None = None,
 ) -> VerificationPlan:
     plan = VerificationPlan(
         verification_plan_id=plan_id,
@@ -170,8 +173,8 @@ def _make_plan(
         parent_observation_id=obs.observation_id,
         parent_task_id=obs.task_id,
         goal=goal,
-        worker_class="",
-        strategy=goal,
+        worker_class=worker_class,
+        strategy=strategy if strategy is not None else goal,
         required_evidence=required_evidence,
         status=VerificationPlanStatus.pending,
     )
@@ -906,6 +909,333 @@ def test_phase16e_fix_regression_bola_and_security_header_evidence_unchanged():
     assert pack_h is not None
     assert pack_h.status == "ready_for_judge"
     assert pack_h.judge_ready is True
+
+
+def _inj_obs_details(**kwargs: object) -> dict:
+    base: dict = {
+        "operation_id": "op_GET_/api/v1/items/{id}",
+        "tool_name": "injection_test",
+        "parameter_name": "q",
+        "parameter_location": "query",
+        "payload_family": "sql_like",
+        "payload_label": "sql_quote_single",
+        "signal_types": ["server_error_on_payload"],
+        "baseline_status": 200,
+        "attack_status": 500,
+        "response_delta_class": "new_5xx",
+        "marker_reflected": False,
+        "error_pattern_class": "none",
+    }
+    base.update(kwargs)
+    return base
+
+
+def test_injection_signal_strong_ready_for_judge() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    op_id = "op_GET_/api/v1/items/{id}"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="GET",
+        path_template="/api/v1/items/{id}",
+        owasp_candidates=[],
+    )
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_ready",
+        operation_id=op_id,
+        details=_inj_obs_details(),
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_ready",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_ready")
+    assert pack is not None
+    assert pack.vulnerability_class == "potential_injection"
+    assert pack.owasp_category == "API8_SECURITY_MISCONFIGURATION"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert pack.missing_evidence == []
+    assert "Injection probe reported strong signals for operation" in (pack.hypothesis or "")
+    assert op_id in (pack.hypothesis or "")
+    assert "injection_signal" in pack.derived_signals
+    assert "strong_signal:server_error_on_payload" in pack.derived_signals
+    assert "parameter_name:q" in pack.derived_signals
+
+
+def test_injection_signal_missing_parameter_context_incomplete() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    d = _inj_obs_details()
+    d["parameter_name"] = ""
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_noparam",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details=d,
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_noparam",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_noparam")
+    codes = {m.code for m in pack.missing_evidence}
+    assert "injection_parameter_context_missing" in codes
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+
+
+def test_injection_signal_missing_baseline_attack_delta_incomplete() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    d = _inj_obs_details()
+    del d["baseline_status"]
+    del d["attack_status"]
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_nodelta",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details=d,
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_nodelta",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_nodelta")
+    codes = {m.code for m in pack.missing_evidence}
+    assert "baseline_attack_delta_missing" in codes
+
+
+def test_injection_signal_weak_only_incomplete() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_weak",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details=_inj_obs_details(
+            signal_types=["status_changed", "response_size_changed"],
+            baseline_status=200,
+            attack_status=200,
+            response_delta_class="unchanged",
+        ),
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_weak",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_weak")
+    codes = {m.code for m in pack.missing_evidence}
+    assert "impact_classification_missing" in codes
+    assert "impact_classification" in codes
+    assert pack.status == "incomplete"
+
+
+def test_injection_signal_wrong_tool_name_incomplete() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_badtool",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details=_inj_obs_details(tool_name="cats_fuzz_test"),
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_badtool",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_badtool")
+    assert any(m.code == "tool_name_mismatch" for m in pack.missing_evidence)
+    assert pack.status == "incomplete"
+
+
+def test_injection_signal_replay_steps_no_raw_payload_body_headers() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    op_id = "op_GET_/api/v1/items/{id}"
+    _store_api_graph_with_op(operation_id=op_id, method="GET", path_template="/api/v1/items/{id}")
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_replay",
+        operation_id=op_id,
+        details=_inj_obs_details(),
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_replay",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_replay")
+    assert pack.replay_steps
+    step = pack.replay_steps[0]
+    assert "Injection probe compared baseline" in step.description
+    blob = str(pack.model_dump(mode="json")).lower()
+    for bad in ("response_body", "request_body", "authorization:", "bearer "):
+        assert bad not in blob
+
+
+def test_injection_required_evidence_codes_satisfied() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="injection_test")
+    op_id = "op_GET_/api/v1/items/{id}"
+    _store_api_graph_with_op(operation_id=op_id, method="GET", path_template="/api/v1/items/{id}")
+    obs = _make_obs(
+        ObservationType.injection_signal.value,
+        observation_id="obs_inj_sat",
+        operation_id=op_id,
+        details=_inj_obs_details(),
+    )
+    _make_plan(
+        obs,
+        goal="validate_injection_impact",
+        required_evidence=[
+            "injection_signal",
+            "parameter_context",
+            "baseline_attack_delta",
+            "impact_classification",
+        ],
+        plan_id="vplan_inj_sat",
+        worker_class="contract_fuzzing",
+        strategy="validate_injection_impact",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_inj_sat")
+    assert EvidencePackBuilder._is_required_code_satisfied("injection_signal", pack)
+    assert EvidencePackBuilder._is_required_code_satisfied("parameter_context", pack)
+    assert EvidencePackBuilder._is_required_code_satisfied("baseline_attack_delta", pack)
+    assert EvidencePackBuilder._is_required_code_satisfied("impact_classification", pack)
+
+
+def test_regression_phase17b2_bola_evidence_unchanged() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    ctx = _setup_complete_bola_corpus()
+    bola_obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        observation_id="obs_bola_17b2",
+        operation_id=ctx["op_id"],
+        confidence=0.9,
+        details={
+            "object_id": ctx["object_id"],
+            "owner_role": ctx["owner_role"],
+            "attacker_role": ctx["attacker_role"],
+            "owner_collection_request_id": ctx["owner_collection"].request_id,
+            "attacker_collection_request_id": ctx["attacker_collection"].request_id,
+        },
+    )
+    pack_b, _, _ = EvidencePackBuilder().build_from_observation(bola_obs.observation_id)
+    assert pack_b.status == "ready_for_judge"
+    assert pack_b.judge_ready is True
+
+
+def test_regression_phase17b2_security_header_evidence_unchanged() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    hdr_obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        observation_id="obs_hdr_17b2",
+        operation_id="",
+        details={
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+            "actual_state": "missing",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_1",
+            "url": "http://testapp.local/frame",
+        },
+    )
+    pack_h, _, _ = EvidencePackBuilder().build_from_observation(hdr_obs.observation_id)
+    assert pack_h.vulnerability_class == "security_header_misconfiguration"
+    assert pack_h.status == "ready_for_judge"
+    assert pack_h.judge_ready is True
+
+
+def test_regression_phase17b2_schema_mismatch_evidence_unchanged() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        observation_id="obs_schema_17b2",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "operation_id": "op_GET_/api/v1/items/{id}",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=["schemathesis_signal", "operation_context", "impact_classification"],
+        plan_id="vplan_schema_17b2",
+    )
+    pack_s, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_17b2")
+    assert pack_s.vulnerability_class == "api_schema_contract_violation"
+    assert pack_s.status == "ready_for_judge"
+    assert pack_s.judge_ready is True
 
 
 def test_schema_mismatch_strong_signals_include_interpretation_and_impact_summary():

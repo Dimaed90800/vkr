@@ -136,6 +136,14 @@ _STORE_ONLY_TYPES = {
 
 _SCHEMA_MISMATCH_STRONG_SIGNALS = {"5xx", "unexpected_2xx", "schema_violation"}
 
+_INJECTION_STRONG_SIGNALS = frozenset({
+    "db_error_pattern",
+    "server_error_on_payload",
+    "reflected_marker",
+    "template_evaluation_marker",
+    "traversal_marker",
+    "nosql_operator_effect",
+})
 
 class ObservationTriage:
 
@@ -160,6 +168,9 @@ class ObservationTriage:
 
         if obs_type == "schema_mismatch":
             return self._triage_schema_mismatch(obs)
+
+        if obs_type == "injection_signal":
+            return self._triage_injection_signal(obs)
 
         rule = _TRIAGE_RULES.get(obs_type)
         if rule is None:
@@ -211,6 +222,56 @@ class ObservationTriage:
                 required_evidence=[
                     "schemathesis_signal",
                     "operation_context",
+                    "impact_classification",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_injection_signal(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        signal_types_raw = details.get("signal_types")
+        signal_types = (
+            [str(x).strip().lower() for x in signal_types_raw if str(x).strip()]
+            if isinstance(signal_types_raw, list)
+            else []
+        )
+        has_strong = any(sig in _INJECTION_STRONG_SIGNALS for sig in signal_types)
+        if has_strong:
+            obs.security_relevance = SecurityRelevance.medium
+            obs.recommended_next_action = "validate_injection_impact"
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_injection_impact",
+                worker_class="contract_fuzzing",
+                strategy="validate_injection_impact",
+                required_evidence=[
+                    "injection_signal",
+                    "parameter_context",
+                    "baseline_attack_delta",
                     "impact_classification",
                 ],
                 commands=[],

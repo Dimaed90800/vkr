@@ -2361,13 +2361,16 @@ workflow:
               cross = [obs for obs in observations if obs.get('type') == 'cross_role_access_signal']
               validated_headers = [obs for obs in observations if obs.get('type') == 'validated_security_header_issue']
               schema = [obs for obs in observations if obs.get('type') == 'schema_mismatch']
+              injection = [obs for obs in observations if obs.get('type') == 'injection_signal']
               alerts = [obs for obs in observations if obs.get('type') == 'zap_alert']
               discovered = [obs for obs in observations if obs.get('type') == 'discovered_endpoint']
               selected = cross[0] if cross else (
                   validated_headers[0] if validated_headers else (
                       schema[0] if schema else (
-                          alerts[0] if alerts else (
-                              discovered[0] if discovered else {}
+                          injection[0] if injection else (
+                              alerts[0] if alerts else (
+                                  discovered[0] if discovered else {}
+                              )
                           )
                       )
                   )
@@ -2384,7 +2387,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: Prefer cross_role_access_signal, then validated_security_header_issue, then schema_mismatch, then zap_alert, then discovered_endpoint.
+        desc: Prefer cross_role, validated headers, schema_mismatch, injection_signal, zap_alert, discovered_endpoint.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
@@ -2645,6 +2648,7 @@ workflow:
                   'cross_role_access_signal',
                   'validated_security_header_issue',
                   'schema_mismatch',
+                  'injection_signal',
               } and has_plan
               is_pending_only = obs_type in {
                   'zap_alert',
@@ -2819,6 +2823,30 @@ workflow:
               if not isinstance(tool_ids, list):
                   tool_ids = []
 
+              inj_strong = []
+              inj_param = {}
+              inj_delta = {}
+              vuln_cls = str(pack.get('vulnerability_class') or '')
+              if vuln_cls == 'potential_injection':
+                  if isinstance(derived, list):
+                      for item in derived:
+                          if not isinstance(item, str):
+                              continue
+                          if item.startswith('strong_signal:'):
+                              inj_strong.append(item)
+                          if item.startswith('parameter_name:'):
+                              inj_param['parameter_name'] = item.split(':', 1)[1]
+                          if item.startswith('parameter_location:'):
+                              inj_param['parameter_location'] = item.split(':', 1)[1]
+                          if item.startswith('payload_family:'):
+                              inj_param['payload_family'] = item.split(':', 1)[1]
+                          if item.startswith('payload_label:'):
+                              inj_param['payload_label'] = item.split(':', 1)[1]
+                          if item.startswith('baseline_status:'):
+                              inj_delta['baseline_status'] = item.split(':', 1)[1]
+                          if item.startswith('attack_status:'):
+                              inj_delta['attack_status'] = item.split(':', 1)[1]
+
               summary = {
                   'campaign_id': pack.get('campaign_id'),
                   'evidence_id': pack.get('evidence_id'),
@@ -2861,6 +2889,9 @@ workflow:
                       for step in (pack.get('replay_steps') or [])
                       if isinstance(step, dict)
                   ][:5],
+                  'injection_strong_signals': inj_strong[:12],
+                  'injection_parameter_context': inj_param,
+                  'baseline_attack_delta': inj_delta,
               }
               return {
                   'evidence_id': str(pack.get('evidence_id') or ''),
@@ -2973,6 +3004,16 @@ workflow:
               and/or schema_contract_interpretation in the compact summary.
               rework only if operation context, strong signals, or impact interpretation is missing and can be gathered.
               reject or inconclusive if signals are weak or ambiguous and no further actionable evidence is available.
+            - For potential_injection / injection_signal evidence:
+              do not require BOLA baseline, attack, ownership_proof, diff, or negative controls.
+              do not require raw payload strings, raw HTTP bodies, response bodies, or headers.
+              confirm only when status=ready_for_judge, judge_ready=true, missing_evidence is empty,
+              operation_id is present, parameter_name and parameter_location are present in the compact summary,
+              baseline_attack_delta includes baseline_status and attack_status, and injection_strong_signals
+              is non-empty (at least one strong_signal entry).
+              do not confirm solely on generic 500 or on weak status/size deltas without strong_signal entries.
+              rework if parameter context or baseline/attack comparison metadata is missing and can be gathered.
+              reject or inconclusive if only weak or ambiguous injection signals are indicated.
             - Apply BOLA-only evidence requirements only to BOLA evidence types.
         - id: user
           role: user
