@@ -186,9 +186,89 @@ workflow:
       zIndex: 0
     - data:
         sourceType: code
-        targetType: answer
-      id: build_final_report-to-answer_final_report
+        targetType: code
+      id: final_loop_state-to-emit_report_context_body
+      source: final_loop_state
+      sourceHandle: source
+      target: emit_report_context_body
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: http-request
+      id: emit_report_context_body-to-call_report_context
+      source: emit_report_context_body
+      sourceHandle: source
+      target: call_report_context
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: http-request
+        targetType: code
+      id: call_report_context-to-extract_report_context
+      source: call_report_context
+      sourceHandle: source
+      target: extract_report_context
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: if-else
+      id: extract_report_context-to-can_generate_markdown
+      source: extract_report_context
+      sourceHandle: source
+      target: can_generate_markdown
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: llm
+      id: can_generate_markdown-true-to-llm_report_agent
+      source: can_generate_markdown
+      sourceHandle: 'true'
+      target: llm_report_agent
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: llm
+        targetType: code
+      id: llm_report_agent-to-merge_report_output
+      source: llm_report_agent
+      sourceHandle: source
+      target: merge_report_output
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: if-else
+        targetType: code
+      id: can_generate_markdown-false-to-merge_report_output
+      source: can_generate_markdown
+      sourceHandle: 'false'
+      target: merge_report_output
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: code
+      id: build_final_report-to-merge_report_output
       source: build_final_report
+      sourceHandle: source
+      target: merge_report_output
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        sourceType: code
+        targetType: answer
+      id: merge_report_output-to-answer_final_report
+      source: merge_report_output
       sourceHandle: source
       target: answer_final_report
       targetHandle: target
@@ -4705,19 +4785,463 @@ workflow:
       type: custom
       width: 242
     - data:
-        answer: '{{#build_final_report.answer_text#}}'
+        code: |
+          import json
+
+          def _safe_error(value: str) -> str:
+              text = str(value or '').strip()
+              if not text:
+                  return ''
+              lowered = text.lower()
+              forbidden = (
+                  'authorization',
+                  'cookie',
+                  'set-cookie',
+                  'request_body',
+                  'response_body',
+                  'raw_http',
+                  'headers',
+                  'token=',
+                  'bearer ',
+              )
+              if any(marker in lowered for marker in forbidden):
+                  return 'report context snapshot unavailable'
+              return text[:180]
+
+          def main(state_json: str) -> dict:
+              status = 'snapshot_ready'
+              error = ''
+              snapshot = {}
+              raw = str(state_json or '').strip()
+              if raw:
+                  try:
+                      parsed = json.loads(raw)
+                      if isinstance(parsed, dict):
+                          snapshot = parsed
+                      else:
+                          status = 'snapshot_unavailable'
+                          error = 'final loop state is not a json object'
+                  except Exception:
+                      status = 'snapshot_unavailable'
+                      error = 'invalid final loop state json'
+              else:
+                  status = 'snapshot_unavailable'
+                  error = 'missing final loop state json'
+              body = {'runtime_state_snapshot': snapshot}
+              return {
+                  'report_context_body_json': json.dumps(body, ensure_ascii=False),
+                  'report_context_body_status': status,
+                  'report_context_body_error': _safe_error(error),
+              }
+        code_language: python3
+        dependencies: []
+        desc: Build safe report-context POST body from final loop state.
+        outputs:
+          report_context_body_error:
+            children: null
+            type: string
+          report_context_body_json:
+            children: null
+            type: string
+          report_context_body_status:
+            children: null
+            type: string
+        selected: false
+        title: Emit Report Context Body
+        type: code
+        variables:
+        - value_selector: [final_loop_state, state_json]
+          value_type: string
+          variable: state_json
+      height: 52
+      id: emit_report_context_body
+      position:
+        x: 7200
+        y: 60
+      positionAbsolute:
+        x: 7200
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        authorization:
+          config: null
+          type: no-auth
+        body:
+          data: |
+            {{#emit_report_context_body.report_context_body_json#}}
+          type: json
+        desc: Fetch backend report context enriched with runtime loop snapshot.
+        headers: Content-Type:application/json
+        method: post
+        params: ''
+        retry_config:
+          max_retries: 1
+          retry_enabled: true
+          retry_interval: 300
+        selected: false
+        ssl_verify: false
+        timeout:
+          max_connect_timeout: 30
+          max_read_timeout: 30
+          max_write_timeout: 30
+        title: Call Report Context
+        type: http-request
+        url: '{{#normalize_inputs.toolbox_url#}}/v1/reports/{{#extract_campaign.campaign_id#}}/context'
+        variables: []
+      height: 140
+      id: call_report_context
+      position:
+        x: 7500
+        y: 60
+      positionAbsolute:
+        x: 7500
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          import json
+
+          EXPECTED_SCHEMA = "report-context/v1"
+
+          def _safe_error(value: str) -> str:
+              text = str(value or '').strip()
+              if not text:
+                  return ''
+              lowered = text.lower()
+              forbidden = (
+                  'authorization',
+                  'cookie',
+                  'set-cookie',
+                  'request_body',
+                  'response_body',
+                  'raw_http',
+                  'headers',
+                  'token=',
+                  'bearer ',
+              )
+              if any(marker in lowered for marker in forbidden):
+                  return 'report context unavailable'
+              return text[:180]
+
+          def _to_int(value, default=0):
+              try:
+                  return int(value)
+              except Exception:
+                  return default
+
+          def main(body: str, status_code: str = '') -> dict:
+              status_int = _to_int(status_code, 0)
+              if status_int and not (200 <= status_int < 300):
+                  return {
+                      'report_context_json': '{}',
+                      'report_generation_status': 'context_unavailable',
+                      'report_context_error': _safe_error(f'report context http status {status_int}'),
+                      'can_generate_markdown': 'false',
+                  }
+              try:
+                  payload = json.loads(str(body or '').strip() or '{}')
+              except Exception:
+                  return {
+                      'report_context_json': '{}',
+                      'report_generation_status': 'context_unavailable',
+                      'report_context_error': 'invalid report context json',
+                      'can_generate_markdown': 'false',
+                  }
+              if not isinstance(payload, dict):
+                  return {
+                      'report_context_json': '{}',
+                      'report_generation_status': 'context_unavailable',
+                      'report_context_error': 'invalid report context json',
+                      'can_generate_markdown': 'false',
+                  }
+              if str(payload.get('schema_version') or '') != EXPECTED_SCHEMA:
+                  return {
+                      'report_context_json': '{}',
+                      'report_generation_status': 'context_unavailable',
+                      'report_context_error': 'unexpected report context schema',
+                      'can_generate_markdown': 'false',
+                  }
+              return {
+                  'report_context_json': json.dumps(payload, ensure_ascii=False),
+                  'report_generation_status': 'context_ready',
+                  'report_context_error': '',
+                  'can_generate_markdown': 'true',
+              }
+        code_language: python3
+        dependencies: []
+        desc: Validate report-context response and gate markdown generation.
+        outputs:
+          can_generate_markdown:
+            children: null
+            type: string
+          report_context_error:
+            children: null
+            type: string
+          report_context_json:
+            children: null
+            type: string
+          report_generation_status:
+            children: null
+            type: string
+        selected: false
+        title: Extract Report Context
+        type: code
+        variables:
+        - value_selector: [call_report_context, body]
+          value_type: string
+          variable: body
+        - value_selector: [call_report_context, status_code]
+          value_type: string
+          variable: status_code
+      height: 52
+      id: extract_report_context
+      position:
+        x: 7800
+        y: 60
+      positionAbsolute:
+        x: 7800
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        cases:
+        - case_id: 'true'
+          conditions:
+          - comparison_operator: is
+            id: can-generate-markdown-true
+            value: 'true'
+            variable_selector: [extract_report_context, can_generate_markdown]
+            varType: string
+          id: 'true'
+          logical_operator: and
+        desc: Run markdown report agent only when report-context is valid.
+        selected: false
+        title: Can Generate Markdown?
+        type: if-else
+      height: 126
+      id: can_generate_markdown
+      position:
+        x: 8100
+        y: 60
+      positionAbsolute:
+        x: 8100
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        context:
+          enabled: false
+          variable_selector: []
+        desc: Generate markdown report from sanitized report-context only.
+        model:
+          completion_params:
+            max_tokens: 2000
+            temperature: 0.0
+          mode: chat
+          name: openai/gpt-4o-mini
+          provider: langgenius/openai_api_compatible/openai_api_compatible
+        prompt_template:
+        - id: sys
+          role: system
+          text: |
+            Ты форматтер отчётов по безопасности.
+            Вход: ReportContext JSON со schema_version report-context/v1.
+            Пиши отчёт на русском языке.
+            Используй только факты из входного JSON.
+            Не придумывай уязвимости, endpoint-ы, severity, evidence, рекомендации и количества.
+            Только элементы confirmed_findings являются уязвимостями.
+            pending_verification, blocked_checks, ready_but_not_executed и tool_failures не являются уязвимостями.
+            Для каждой confirmed finding обязательно создай подразделы:
+            - Что найдено
+            - Как обнаружено
+            - Как воспроизвести / подтвердить
+            - Потенциальное влияние
+            - Рекомендации по устранению
+            Для каждой confirmed finding обязательно укажи:
+            - Finding ID
+            - Evidence ID
+            - OWASP category
+            - Vulnerability class
+            - Severity
+            - Endpoint
+            - Method
+            - Worker / observation / judge verdict (если доступны)
+            Если данных нет или значение not_available, пиши "не доступно".
+            Не выводи raw request/response bodies, raw HTTP headers, Authorization, Cookie, Set-Cookie, tokens, bearer, payload values.
+            В разделе "Как воспроизвести / подтвердить" не используй формулировку "авторизованный запрос", если это явно не указано в ReportContext.
+            Используй формулировки:
+            - "В рамках разрешённой тестовой среды..."
+            - "Повторить bounded-проверку..."
+            - "Сопоставить результат с Evidence ID..."
+            Сохраняй названия категорий OWASP без изменений.
+            Не изменяй severity, если она не указана во confirmed_findings.
+            Markdown only.
+        - id: user
+          role: user
+          text: |
+            Сформируй Markdown-отчёт по безопасности REST API на русском языке по ReportContext JSON ниже.
+            Используй секции строго в этом порядке:
+
+            # Отчёт по безопасности REST API
+            ## 1. Область проверки
+            ## 2. Краткое резюме
+            ## 3. Покрытие OWASP API Top 10
+            ## 4. Подтверждённые уязвимости
+            Для каждой уязвимости в секции 4 используй:
+            ### 4.N <Название>
+            #### Что найдено
+            #### Как обнаружено
+            #### Как воспроизвести / подтвердить
+            #### Потенциальное влияние
+            #### Рекомендации по устранению
+            ## 5. Детали API8 Security Misconfiguration
+            ## 6. Детали API9 Improper Inventory Management
+            ## 7. Диагностика API3 BOPLA / Mass Assignment
+            ## 8. Ожидающие проверки
+            ## 9. Заблокированные и пропущенные проверки
+            ## 10. Сводка выполнения worker-ов
+            ## 11. Ошибки инструментов
+            ## 12. Ограничения
+            ## 13. Общие рекомендации
+
+            ReportContext JSON:
+            {{#extract_report_context.report_context_json#}}
+
+            Выводи только Markdown.
+        selected: false
+        title: LLM Report Agent
+        type: llm
+        variables: []
+        vision:
+          enabled: false
+      height: 164
+      id: llm_report_agent
+      position:
+        x: 8400
+        y: 60
+      positionAbsolute:
+        x: 8400
+        y: 60
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        code: |
+          def _safe_error(value: str) -> str:
+              text = str(value or '').strip()
+              if not text:
+                  return ''
+              lowered = text.lower()
+              forbidden = (
+                  'authorization',
+                  'cookie',
+                  'set-cookie',
+                  'request_body',
+                  'response_body',
+                  'raw_http',
+                  'headers',
+                  'token=',
+                  'bearer ',
+              )
+              if any(marker in lowered for marker in forbidden):
+                  return 'report context unavailable'
+              return text[:180]
+
+          def main(
+              fallback_report: str,
+              report_generation_status: str = '',
+              report_context_error: str = '',
+              markdown_report: str = '',
+          ) -> dict:
+              md = str(markdown_report or '').strip()
+              fallback = str(fallback_report or '')
+              status = str(report_generation_status or '').strip() or 'llm_failed'
+              safe_error = _safe_error(report_context_error)
+              if md:
+                  return {
+                      'final_report': md,
+                      'report_generation_status': 'markdown_generated',
+                      'report_context_error': '',
+                  }
+              note = "Markdown report generation unavailable; returning compact fallback."
+              lines = [fallback.rstrip(), "", note]
+              if safe_error:
+                  lines.append(f"report_context_error: {safe_error}")
+              return {
+                  'final_report': "\n".join(lines).strip() + "\n",
+                  'report_generation_status': status or 'llm_failed',
+                  'report_context_error': safe_error,
+              }
+        code_language: python3
+        dependencies: []
+        desc: Prefer markdown report; otherwise return compact fallback report.
+        outputs:
+          final_report:
+            children: null
+            type: string
+          report_context_error:
+            children: null
+            type: string
+          report_generation_status:
+            children: null
+            type: string
+        selected: false
+        title: Merge Report Output
+        type: code
+        variables:
+        - value_selector: [build_final_report, answer_text]
+          value_type: string
+          variable: fallback_report
+        - value_selector: [extract_report_context, report_generation_status]
+          value_type: string
+          variable: report_generation_status
+        - value_selector: [extract_report_context, report_context_error]
+          value_type: string
+          variable: report_context_error
+        - value_selector: [llm_report_agent, text]
+          value_type: string
+          variable: markdown_report
+      height: 52
+      id: merge_report_output
+      position:
+        x: 8700
+        y: 180
+      positionAbsolute:
+        x: 8700
+        y: 180
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 242
+    - data:
+        answer: '{{#merge_report_output.final_report#}}'
         desc: ''
         selected: false
         title: Answer Final Report
         type: answer
-        variables: []
+        variables:
+        - value_selector: [merge_report_output, report_generation_status]
+          variable: report_generation_status
+        - value_selector: [merge_report_output, report_context_error]
+          variable: report_context_error
       height: 103
       id: answer_final_report
       position:
-        x: 7200
+        x: 9000
         y: 180
       positionAbsolute:
-        x: 7200
+        x: 9000
         y: 180
       sourcePosition: right
       targetPosition: left

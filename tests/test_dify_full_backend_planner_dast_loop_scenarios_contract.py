@@ -1607,6 +1607,146 @@ def test_build_final_report_includes_blocked_candidate_observability_fields() ->
     assert "seed_request_id_present" in text
 
 
+def test_report_context_http_node_exists_and_calls_reports_context_endpoint() -> None:
+    node = _node_data("call_report_context")
+    assert node["type"] == "http-request"
+    url = node["url"]
+    assert "/v1/reports/" in url
+    assert "/context" in url
+    body = _http_body("call_report_context")
+    assert "emit_report_context_body.report_context_body_json" in body
+    assert "runtime_state_snapshot" in _node_data("emit_report_context_body")["code"]
+
+
+def test_emit_report_context_body_parses_final_state_json_safely() -> None:
+    code = _node_data("emit_report_context_body")["code"]
+    assert "json.loads" in code
+    assert "runtime_state_snapshot" in code
+    assert "snapshot_unavailable" in code
+    assert "invalid final loop state json" in code
+    result = _run_code_node("emit_report_context_body", state_json='{"campaign_id":"cmp_1"}')
+    assert result["report_context_body_status"] == "snapshot_ready"
+    payload = json.loads(result["report_context_body_json"])
+    assert payload["runtime_state_snapshot"]["campaign_id"] == "cmp_1"
+
+
+def test_extract_report_context_validates_schema_and_markdown_gate() -> None:
+    code = _node_data("extract_report_context")["code"]
+    assert 'EXPECTED_SCHEMA = "report-context/v1"' in code
+    assert "report_generation_status" in code
+    assert "report_context_error" in code
+    assert "can_generate_markdown" in code
+    assert "unexpected report context schema" in code
+
+    ok = _run_code_node(
+        "extract_report_context",
+        body=json.dumps({"schema_version": "report-context/v1", "campaign": {}}, ensure_ascii=False),
+        status_code="200",
+    )
+    assert ok["report_generation_status"] == "context_ready"
+    assert ok["can_generate_markdown"] == "true"
+
+    bad_schema = _run_code_node(
+        "extract_report_context",
+        body=json.dumps({"schema_version": "wrong/v1"}, ensure_ascii=False),
+        status_code="200",
+    )
+    assert bad_schema["report_generation_status"] == "context_unavailable"
+    assert bad_schema["can_generate_markdown"] == "false"
+    assert bad_schema["report_context_error"] == "unexpected report context schema"
+
+
+def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -> None:
+    prompts = _node_data("llm_report_agent")["prompt_template"]
+    sys_prompt = prompts[0]["text"]
+    user_prompt = prompts[1]["text"]
+    assert "Пиши отчёт на русском языке" in sys_prompt
+    assert "Не придумывай уязвимости" in sys_prompt
+    assert "Только элементы confirmed_findings являются уязвимостями" in sys_prompt
+    assert "pending_verification, blocked_checks" in sys_prompt
+    assert "Markdown only" in sys_prompt
+    assert "Что найдено" in sys_prompt
+    assert "Как обнаружено" in sys_prompt
+    assert "Как воспроизвести / подтвердить" in sys_prompt
+    assert "Потенциальное влияние" in sys_prompt
+    assert "Рекомендации по устранению" in sys_prompt
+    assert "report-context/v1" in sys_prompt
+    assert "Finding ID" in sys_prompt
+    assert "Evidence ID" in sys_prompt
+    assert "OWASP category" in sys_prompt
+    assert "Vulnerability class" in sys_prompt
+    assert "не используй формулировку \"авторизованный запрос\"" in sys_prompt
+    assert "В рамках разрешённой тестовой среды" in sys_prompt
+    assert "Повторить bounded-проверку" in sys_prompt
+    assert "Сопоставить результат с Evidence ID" in sys_prompt
+    assert "авторизованный запрос" not in user_prompt.lower()
+    for needle in (
+        "Authorization",
+        "Cookie",
+        "Set-Cookie",
+        "request/response bodies",
+        "raw HTTP headers",
+        "tokens",
+        "bearer",
+    ):
+        assert needle in sys_prompt
+    for section in (
+        "## 1. Область проверки",
+        "## 2. Краткое резюме",
+        "## 3. Покрытие OWASP API Top 10",
+        "## 4. Подтверждённые уязвимости",
+        "## 5. Детали API8 Security Misconfiguration",
+        "## 6. Детали API9 Improper Inventory Management",
+        "## 7. Диагностика API3 BOPLA / Mass Assignment",
+        "## 8. Ожидающие проверки",
+        "## 9. Заблокированные и пропущенные проверки",
+        "## 10. Сводка выполнения worker-ов",
+        "## 11. Ошибки инструментов",
+        "## 12. Ограничения",
+        "## 13. Общие рекомендации",
+    ):
+        assert section in user_prompt
+
+
+def test_report_markdown_branching_and_merge_fallback_edges_exist() -> None:
+    assert _has_edge("final_loop_state", "emit_report_context_body")
+    assert _has_edge("emit_report_context_body", "call_report_context")
+    assert _has_edge("call_report_context", "extract_report_context")
+    assert _has_edge("extract_report_context", "can_generate_markdown")
+    assert _has_edge("can_generate_markdown", "llm_report_agent", source_handle="true")
+    assert _has_edge("can_generate_markdown", "merge_report_output", source_handle="false")
+    assert _has_edge("llm_report_agent", "merge_report_output")
+    assert _has_edge("build_final_report", "merge_report_output")
+    assert _has_edge("merge_report_output", "answer_final_report")
+
+
+def test_merge_report_output_prefers_markdown_else_uses_compact_fallback() -> None:
+    code = _node_data("merge_report_output")["code"]
+    assert "markdown_generated" in code
+    assert "Markdown report generation unavailable; returning compact fallback." in code
+    assert "fallback_report" in code
+    with_md = _run_code_node(
+        "merge_report_output",
+        fallback_report="compact",
+        report_generation_status="context_ready",
+        report_context_error="",
+        markdown_report="# REST API DAST Security Report",
+    )
+    assert with_md["final_report"].startswith("# REST API DAST Security Report")
+    assert with_md["report_generation_status"] == "markdown_generated"
+    without_md = _run_code_node(
+        "merge_report_output",
+        fallback_report="compact report",
+        report_generation_status="context_unavailable",
+        report_context_error="invalid report context json",
+        markdown_report="",
+    )
+    assert "compact report" in without_md["final_report"]
+    assert "Markdown report generation unavailable; returning compact fallback." in without_md["final_report"]
+    assert without_md["report_generation_status"] == "context_unavailable"
+    assert without_md["report_context_error"] == "invalid report context json"
+
+
 def test_final_loop_state_sets_max_iterations_reached_when_reason_missing() -> None:
     result = _run_code_node(
         "final_loop_state",
