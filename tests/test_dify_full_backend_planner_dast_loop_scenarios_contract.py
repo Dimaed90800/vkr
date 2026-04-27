@@ -142,11 +142,11 @@ def test_loop_scenarios_preserves_evidence_capable_types() -> None:
     code = _node_data("route_by_observation_type")["code"]
     assert "'cross_role_access_signal'" in code
     assert "'validated_security_header_issue'" in code
+    assert "'schema_mismatch'" in code
 
 
 def test_loop_scenarios_preserves_pending_only_types() -> None:
     code = _node_data("route_by_observation_type")["code"]
-    assert "'schema_mismatch'" in code
     assert "'zap_alert'" in code
     assert "'discovered_endpoint'" in code
 
@@ -158,7 +158,7 @@ def test_loop_scenarios_observation_priority_includes_schema_mismatch() -> None:
     assert "schema[0] if schema else (" in code
 
 
-def test_loop_scenarios_schema_mismatch_is_pending_only() -> None:
+def test_loop_scenarios_schema_mismatch_is_evidence_capable() -> None:
     code = _node_data("route_by_observation_type")["code"]
     assert "'schema_mismatch'" in code
     assert "is_evidence_capable = obs_type in {" in code
@@ -166,10 +166,43 @@ def test_loop_scenarios_schema_mismatch_is_pending_only() -> None:
     assert "'cross_role_access_signal'" in code
 
 
-def test_loop_scenarios_schema_mismatch_does_not_reach_judge_apply() -> None:
+def test_loop_scenarios_schema_mismatch_removed_from_pending_only() -> None:
     code = _node_data("route_by_observation_type")["code"]
-    assert "verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification'" in code
+    pending_block = code.split("is_pending_only = obs_type in {", 1)[1].split("}", 1)[0]
+    assert "'schema_mismatch'" not in pending_block
+
+
+def test_loop_scenarios_schema_mismatch_reaches_build_evidence_pack_tail() -> None:
+    assert _has_edge("route_by_observation_type", "is_evidence_capable")
+    assert _has_edge("is_evidence_capable", "build_evidence_pack", source_handle="true")
+    assert _has_edge("build_evidence_pack", "compact_evidence_for_judge")
+
+
+def test_loop_scenarios_schema_mismatch_without_verification_plan_stays_pending() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "has_plan = bool(str(verification_plan_id or '').strip())" in code
     assert "'schema_mismatch'" in code
+    assert "} and has_plan" in code
+    evidence_set = code.split("is_evidence_capable = obs_type in {", 1)[1].split(
+        "} and has_plan", 1
+    )[0]
+    assert "'schema_mismatch'" in evidence_set
+    assert "verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification'" in code
+    assert _has_edge("is_evidence_capable", "record_pending_verification", source_handle="false")
+
+
+def test_loop_scenarios_judge_prompt_has_schema_contract_guidance() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
+    assert "api_schema_contract_violation / schema_mismatch evidence" in prompt
+    assert "tool_name:schemathesis_negative_test" in prompt
+    assert "signal:5xx" in prompt
+    assert "signal:schema_violation" in prompt
+    assert "signal:unexpected_2xx" in prompt
+
+
+def test_loop_scenarios_schema_contract_prompt_does_not_require_bola_proof() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
+    assert "do not require BOLA baseline, ownership proof, or diff." in prompt
 
 
 def test_final_report_contains_compact_scenario_summary() -> None:

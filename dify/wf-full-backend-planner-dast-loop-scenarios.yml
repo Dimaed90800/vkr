@@ -2644,9 +2644,9 @@ workflow:
               is_evidence_capable = obs_type in {
                   'cross_role_access_signal',
                   'validated_security_header_issue',
+                  'schema_mismatch',
               } and has_plan
               is_pending_only = obs_type in {
-                  'schema_mismatch',
                   'zap_alert',
                   'discovered_endpoint',
               }
@@ -2657,7 +2657,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: cross_role_access_signal and validated_security_header_issue enter Evidence/JudgeApply. schema_mismatch, zap_alert, and discovered_endpoint stay pending-only.
+        desc: cross_role_access_signal, validated_security_header_issue, and schema_mismatch enter Evidence/JudgeApply when verification_plan_id exists. zap_alert and discovered_endpoint stay pending-only.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
@@ -2938,6 +2938,13 @@ workflow:
               vulnerability_class=security_header_misconfiguration, derived_signals contains validated_security_header_issue,
               replay_steps_count>=1 (or replay_step_refs contains a validation step), and header_name + actual_state are present
               in derived_signals or compact summary.
+            - For api_schema_contract_violation / schema_mismatch evidence:
+              do not require BOLA baseline, ownership proof, or diff.
+              confirmation may rely on compact Schemathesis signals only when status=ready_for_judge,
+              judge_ready=true, missing_evidence is empty, operation_id exists, derived_signals includes
+              tool_name:schemathesis_negative_test, and strong signals include at least one of
+              signal:5xx, signal:schema_violation, or signal:unexpected_2xx.
+              if only weak/unknown signals exist, or operation context is missing, return rework or inconclusive.
             - Apply BOLA-only evidence requirements only to BOLA evidence types.
         - id: user
           role: user

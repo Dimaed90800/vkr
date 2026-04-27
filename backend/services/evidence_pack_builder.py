@@ -352,6 +352,20 @@ class EvidencePackBuilder:
             return any(
                 "impact" in (s.description or "").lower() for s in pack.replay_steps
             )
+        if code == "schemathesis_signal":
+            return any(
+                s.startswith("signal:") for s in (pack.derived_signals or [])
+            )
+        if code == "operation_context":
+            return bool((pack.operation_id or "").strip())
+        if code == "impact_classification":
+            strong = {"5xx", "schema_violation", "unexpected_2xx"}
+            seen = {
+                str(s).split("signal:", 1)[1]
+                for s in (pack.derived_signals or [])
+                if str(s).startswith("signal:")
+            }
+            return bool(seen & strong)
         if code == "auth_bypass_confirmed":
             return (
                 pack.attack is not None
@@ -373,10 +387,7 @@ class EvidencePackBuilder:
             return operation.owasp_candidates[0]
 
         if obs_type == ObservationType.schema_mismatch.value:
-            impact = str(obs.details.get("impact", "")).lower()
-            if any(needle in impact for needle in ("rate", "consumption", "resource_abuse")):
-                return "API4_UNRESTRICTED_RESOURCE_CONSUMPTION"
-            return "API3_BOPLA"
+            return "API8_SECURITY_MISCONFIGURATION"
 
         if obs_type in (
             ObservationType.unexpected_500.value,
@@ -392,6 +403,8 @@ class EvidencePackBuilder:
     @staticmethod
     def _vulnerability_class(obs: Observation) -> str:
         obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
+        if obs_type == ObservationType.schema_mismatch.value:
+            return "api_schema_contract_violation"
         if obs_type == ObservationType.validated_security_header_issue.value:
             return "security_header_misconfiguration"
         return obs_type
@@ -807,56 +820,125 @@ class EvidencePackBuilder:
                 required_for="discovered_endpoint",
             ))
 
+    @staticmethod
+    def _schema_mismatch_signal_count(
+        details: Mapping[str, object], signal_types: list[str]
+    ) -> int:
+        """Parse ``signal_count`` from observation details; never raise on garbage input."""
+        raw = details.get("signal_count")
+        fallback = len(signal_types)
+        if raw is None:
+            return fallback
+        if isinstance(raw, str) and not raw.strip():
+            return fallback
+        if isinstance(raw, bool):
+            return fallback
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, float):
+            if raw != int(raw):
+                return fallback
+            return int(raw)
+        try:
+            return int(raw)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return fallback
+
     def _fill_schema_mismatch(
         self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
     ) -> None:
-        impact = obs.details.get("impact")
-        if not impact:
-            pack.status = EvidencePackStatus.not_judge_ready
-            pack.judge_ready = False
-            pack.missing_evidence.append(MissingEvidenceItem(
-                code="impact_details_missing",
-                description="Schema mismatch alone is not judge-worthy without impact context.",
-                required_for="schema_mismatch",
-            ))
-            pack.hypothesis = "Schema mismatch without impact; not judge-ready."
-            return
-
-        pack.hypothesis = "Schema mismatch with declared impact; needs validation."
-
-        attack_ref = self._resolve_request_ref(obs.campaign_id, obs.request_id)
-        if attack_ref is not None:
-            pack.attack = EvidenceAttack(
-                role=attack_ref.role,
-                request_ref=attack_ref,
-                description="Schema-violating request",
-            )
-
-        validation_id = obs.details.get("impact_validation_request_id")
-        validation_ref = self._resolve_request_ref(
-            obs.campaign_id, str(validation_id) if validation_id else ""
+        details = obs.details or {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        tool_name = str(details.get("tool_name") or "").strip()
+        raw_signal_types = details.get("signal_types")
+        signal_types = (
+            [str(s).strip().lower() for s in raw_signal_types if str(s).strip()]
+            if isinstance(raw_signal_types, list)
+            else []
         )
-        if validation_ref is not None:
-            pack.replay_steps.append(EvidenceReplayStep(
-                order=1,
-                role=validation_ref.role,
-                method=validation_ref.method,
-                path_template=validation_ref.path_template,
-                url=validation_ref.url,
-                request_ref=validation_ref,
-                description="Impact validation",
-            ))
+        strong_signals = {"5xx", "schema_violation", "unexpected_2xx"}
+        has_strong_signal = any(s in strong_signals for s in signal_types)
+        signal_count = EvidencePackBuilder._schema_mismatch_signal_count(
+            details, signal_types
+        )
+        exit_code = details.get("exit_code")
 
-        if attack_ref is None:
+        pack.owasp_category = "API8_SECURITY_MISCONFIGURATION"
+        pack.vulnerability_class = "api_schema_contract_violation"
+        if op_id:
+            pack.operation_id = op_id
+            if not pack.method or not pack.endpoint:
+                op = self._lookup_operation(obs.campaign_id, op_id)
+                if op is not None:
+                    if not pack.method:
+                        pack.method = (op.method or "").upper()
+                    if not pack.endpoint:
+                        pack.endpoint = op.path_template or ""
+        pack.hypothesis = (
+            "Schemathesis negative testing produced schema/contract mismatch "
+            f"signals for operation {op_id or 'unknown_operation'}."
+        )
+
+        pack.derived_signals = [
+            "schema_mismatch",
+            f"tool_name:{tool_name or 'unknown'}",
+            f"operation_id:{op_id or ''}",
+            f"signal_count:{signal_count}",
+        ]
+        if exit_code is not None and str(exit_code) != "":
+            pack.derived_signals.append(f"exit_code:{exit_code}")
+        for sig in signal_types:
+            pack.derived_signals.append(f"signal:{sig}")
+
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=pack.method or "",
+                path_template=pack.endpoint or "",
+                url="",
+                request_ref=None,
+                description="Schemathesis negative testing produced schema/contract mismatch signals",
+            )
+        ]
+
+        if plan is None or (plan.goal or "") != "validate_schema_mismatch_impact":
             pack.missing_evidence.append(MissingEvidenceItem(
-                code="schema_mismatch_request_missing",
-                description="Original schema-violating request not found in corpus.",
+                code="verification_goal_mismatch",
+                description=(
+                    "Schema mismatch evidence requires VerificationPlan goal "
+                    "'validate_schema_mismatch_impact'."
+                ),
                 required_for="schema_mismatch",
             ))
-        if validation_ref is None:
+        if not op_id:
             pack.missing_evidence.append(MissingEvidenceItem(
-                code="impact_validation_missing",
-                description="Impact validation request is required.",
+                code="operation_context_missing",
+                description="operation_id is required for schema_mismatch evidence.",
+                required_for="schema_mismatch",
+            ))
+        if tool_name != "schemathesis_negative_test":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description=(
+                    "schema_mismatch evidence must come from tool_name "
+                    "'schemathesis_negative_test'."
+                ),
+                required_for="schema_mismatch",
+            ))
+        if not signal_types:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="schemathesis_signal_missing",
+                description="signal_types must be a non-empty list for schema_mismatch evidence.",
+                required_for="schema_mismatch",
+            ))
+        if signal_types and not has_strong_signal:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="impact_classification_missing",
+                description=(
+                    "signal_types must include at least one strong signal "
+                    "(5xx, schema_violation, unexpected_2xx)."
+                ),
                 required_for="schema_mismatch",
             ))
 
