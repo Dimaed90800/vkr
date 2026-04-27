@@ -134,6 +134,8 @@ _STORE_ONLY_TYPES = {
     "sensitive_field_seen",
 }
 
+_SCHEMA_MISMATCH_STRONG_SIGNALS = {"5xx", "unexpected_2xx", "schema_violation"}
+
 
 class ObservationTriage:
 
@@ -182,21 +184,48 @@ class ObservationTriage:
     def _triage_schema_mismatch(
         self, obs: Observation,
     ) -> tuple[Observation, VerificationPlan | None, None]:
-        has_impact = bool(obs.details.get("impact"))
-        if has_impact:
-            obs.security_relevance = SecurityRelevance.low
-            obs.recommended_next_action = "impact_validation"
+        details = obs.details if isinstance(obs.details, dict) else {}
+        signal_types_raw = details.get("signal_types")
+        signal_types = (
+            [str(x).strip().lower() for x in signal_types_raw if str(x).strip()]
+            if isinstance(signal_types_raw, list)
+            else []
+        )
+        has_strong_signal = any(sig in _SCHEMA_MISMATCH_STRONG_SIGNALS for sig in signal_types)
+        if has_strong_signal:
+            obs.security_relevance = SecurityRelevance.medium
+            obs.recommended_next_action = "validate_schema_mismatch_impact"
             obs.judge_worthy = False
             self._persist_obs(obs)
             existing_plan = self._find_existing_active_plan(obs)
             if existing_plan is not None:
                 return obs, existing_plan, None
-            plan = self._create_plan(obs, {
-                "goal": "impact_validation",
-                "worker_class": "contract_fuzzing",
-                "strategy": "impact_validation",
-                "required_evidence": ["impact_confirmed"],
-            })
+            op_id = str(obs.operation_id or details.get("operation_id") or "")
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_schema_mismatch_impact",
+                worker_class="contract_fuzzing",
+                strategy="validate_schema_mismatch_impact",
+                required_evidence=[
+                    "schemathesis_signal",
+                    "operation_context",
+                    "impact_classification",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            if op_id:
+                # Keep plan compact while preserving operation context.
+                plan.required_evidence = list(plan.required_evidence) + [f"operation_id:{op_id}"]
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
             return obs, plan, None
 
         obs.security_relevance = SecurityRelevance.informational

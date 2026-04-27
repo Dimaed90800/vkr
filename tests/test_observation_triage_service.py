@@ -465,10 +465,42 @@ def test_triage_cross_role_access_creates_prove_ownership_plan():
     assert "owner_collection_contains_object" in plan.required_evidence
 
 
-def test_triage_schema_mismatch_store_only_without_impact():
+def test_triage_schema_mismatch_with_5xx_creates_verification_plan():
     _reset_store()
     _create_campaign()
-    obs = _make_obs("schema_mismatch", details={})
+    obs = _make_obs("schema_mismatch", operation_id="op_GET_/api/v1/items/{id}", details={
+        "signal_types": ["5xx", "schema_violation"],
+        "operation_id": "op_GET_/api/v1/items/{id}",
+    })
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "validate_schema_mismatch_impact"
+    assert triaged.judge_worthy is False
+    assert triaged.security_relevance == "medium"
+    assert plan is not None
+    assert plan.verification_plan_id
+    assert plan.goal == "validate_schema_mismatch_impact"
+    assert plan.worker_class == "contract_fuzzing"
+    assert plan.strategy == "validate_schema_mismatch_impact"
+    for evidence in ("schemathesis_signal", "operation_context", "impact_classification"):
+        assert evidence in plan.required_evidence
+
+
+def test_triage_schema_mismatch_with_unexpected_2xx_creates_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs("schema_mismatch", details={"signal_types": ["unexpected_2xx"]})
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "validate_schema_mismatch_impact"
+    assert plan is not None
+    assert plan.goal == "validate_schema_mismatch_impact"
+
+
+def test_triage_schema_mismatch_without_strong_signals_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs("schema_mismatch", details={"signal_types": []})
     triaged, plan, err = ObservationTriage().triage(obs.observation_id)
     assert err is None
     assert triaged.recommended_next_action == "store_only"
@@ -476,15 +508,49 @@ def test_triage_schema_mismatch_store_only_without_impact():
     assert plan is None
 
 
-def test_triage_schema_mismatch_with_impact_creates_plan():
+def test_triage_schema_mismatch_unknown_signals_store_only():
     _reset_store()
     _create_campaign()
-    obs = _make_obs("schema_mismatch", details={"impact": "data_leak"})
+    obs = _make_obs("schema_mismatch", details={"signal_types": ["warning", "unknown"]})
     triaged, plan, err = ObservationTriage().triage(obs.observation_id)
     assert err is None
-    assert triaged.recommended_next_action == "impact_validation"
+    assert triaged.recommended_next_action == "store_only"
+    assert plan is None
+
+
+def test_triage_schema_mismatch_idempotent():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs("schema_mismatch", details={"signal_types": ["5xx"]})
+    triaged_1, plan_1, err_1 = ObservationTriage().triage(obs.observation_id)
+    triaged_2, plan_2, err_2 = ObservationTriage().triage(obs.observation_id)
+    assert err_1 is None and err_2 is None
+    assert triaged_1 is not None and triaged_2 is not None
+    assert plan_1 is not None and plan_2 is not None
+    assert plan_1.verification_plan_id == plan_2.verification_plan_id
+    plans = memory_store.list_verification_plans_by_campaign("cmp_obs1")
+    matching = [p for p in plans if p.get("parent_observation_id") == obs.observation_id]
+    assert len(matching) == 1
+
+
+def test_triage_schema_mismatch_does_not_create_evidence_judge_or_finding():
+    _reset_store()
+    _create_campaign()
+    ev_before = len(memory_store.evidence_records)
+    fin_before = len(memory_store.findings)
+    judge_before = len(memory_store.judge_decisions)
+    runs_before = len(memory_store.tool_runs)
+    cmds_before = len(memory_store.commands)
+    obs = _make_obs("schema_mismatch", details={"signal_types": ["schema_violation"]})
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged.recommended_next_action == "validate_schema_mismatch_impact"
     assert plan is not None
-    assert plan.goal == "impact_validation"
+    assert len(memory_store.evidence_records) == ev_before
+    assert len(memory_store.findings) == fin_before
+    assert len(memory_store.judge_decisions) == judge_before
+    assert len(memory_store.tool_runs) == runs_before
+    assert len(memory_store.commands) == cmds_before
 
 
 def test_triage_unsupported_tool_error_store_only():
@@ -750,6 +816,20 @@ def test_routes_triage_returns_observation_and_plan():
     assert body["observation"]["recommended_next_action"] == "replay_minimized_payload"
     assert body["verification_plan"] is not None
     assert body["verification_plan"]["goal"] == "replay_minimized_payload"
+
+
+def test_routes_triage_schema_mismatch_with_strong_signal_returns_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs("schema_mismatch", details={"signal_types": ["5xx", "schema_violation"]})
+
+    client = _get_test_client()
+    resp = client.post(f"/v1/observations/triage/{obs.observation_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observation"]["recommended_next_action"] == "validate_schema_mismatch_impact"
+    assert body["verification_plan"] is not None
+    assert body["verification_plan"]["goal"] == "validate_schema_mismatch_impact"
 
 
 def test_routes_triage_404_for_missing_observation():
