@@ -811,7 +811,7 @@ workflow:
 
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
-              "max_candidates": 10,
+              "max_candidates": 50,
               "zap": {
                   "enabled": True,
                   "target_url": "",
@@ -1277,9 +1277,21 @@ workflow:
                   "last_tool_run_status": "",
                   "last_observation_type": "",
                   "last_verification_plan_id": "",
+                  "last_selection_outcome": "",
                   "stopped_reason": "",
                   "iteration_summaries": [],
                   "pending_summaries": [],
+                  "kind_caps": {
+                      "schemathesis_negative_test": 4,
+                      "injection_test": 3,
+                      "property_mutation_test": 2,
+                      "security_header_validator": 2,
+                      "security_header_check": 2,
+                      "zap_discovery_passive": 1,
+                      "bola_replay_probe": 2,
+                  },
+                  "executed_by_kind": {},
+                  "skipped_by_kind_cap_count": {},
                   "planner_request_base_json": str(planner_request_json or ''),
                   "include_scenario_compiler": str(include_scenario_compiler or 'true').strip().lower() or 'true',
                   "scenario_plan_source": "",
@@ -1447,7 +1459,7 @@ workflow:
 
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
-              "max_candidates": 10,
+              "max_candidates": 50,
               "zap": {"enabled": True, "target_url": "", "zap_base_url": "http://zap:8080", "seed_urls": [], "use_spider": True, "use_ajax_spider": False, "max_duration_sec": 30, "max_discovered_urls": 100, "max_alerts": 100},
               "bola": {"enabled": True, "object_pairs": []},
           }
@@ -1912,16 +1924,44 @@ workflow:
         code: |
           import json
 
-          def main(body: str) -> dict:
+          def _load_json(raw, default):
+              try:
+                  value = json.loads(str(raw or '').strip() or '{}')
+              except Exception:
+                  return default
+              return value if isinstance(value, type(default)) else default
+
+          def _int_value(value) -> int:
+              try:
+                  return int(value)
+              except Exception:
+                  return 0
+
+          def main(body: str, state_json: str) -> dict:
               try:
                   payload = json.loads(body or '{}')
               except Exception:
                   payload = {}
+              state = _load_json(state_json, {})
               candidates = payload.get('candidates') or []
+              kind_caps = state.get('kind_caps') if isinstance(state.get('kind_caps'), dict) else {}
+              executed_by_kind = state.get('executed_by_kind') if isinstance(state.get('executed_by_kind'), dict) else {}
+              skipped_by_kind_cap_count = state.get('skipped_by_kind_cap_count') if isinstance(state.get('skipped_by_kind_cap_count'), dict) else {}
               selected = {}
+              skipped_by_kind_cap_delta = {}
+              ready_seen = False
               for candidate in candidates:
                   command = candidate.get('command')
-                  if candidate.get('status') == 'ready' and isinstance(command, dict):
+                  if candidate.get('status') != 'ready' or not isinstance(command, dict):
+                      continue
+                  ready_seen = True
+                  kind = str(candidate.get('kind') or '')
+                  cap = kind_caps.get(kind)
+                  executed = _int_value(executed_by_kind.get(kind, 0))
+                  if cap is not None and executed >= _int_value(cap):
+                      skipped_by_kind_cap_delta[kind] = skipped_by_kind_cap_delta.get(kind, 0) + 1
+                      continue
+                  if isinstance(command, dict):
                       selected = candidate
                       break
               command = selected.get('command') if selected else {}
@@ -1933,6 +1973,12 @@ workflow:
                           'missing_inputs': candidate.get('missing_inputs') or [],
                           'reason': candidate.get('reason') or '',
                       })
+              if selected:
+                  selection_outcome = 'selected_ready'
+              elif ready_seen:
+                  selection_outcome = 'caps_exhausted'
+              else:
+                  selection_outcome = 'no_ready_candidate'
               return {
                   'has_ready_candidate': 'true' if selected else 'false',
                   'candidate_id': str(selected.get('candidate_id') or ''),
@@ -1942,6 +1988,8 @@ workflow:
                   'blocked_count': str(payload.get('blocked_count') or 0),
                   'skipped_existing_count': str(payload.get('skipped_existing_count') or 0),
                   'blocked_missing_inputs_summary': json.dumps(missing[:5], ensure_ascii=False),
+                  'selection_outcome': selection_outcome,
+                  'skipped_by_kind_cap_delta_json': json.dumps(skipped_by_kind_cap_delta, ensure_ascii=False),
               }
         code_language: python3
         dependencies: []
@@ -1974,6 +2022,12 @@ workflow:
           skipped_existing_count:
             children: null
             type: string
+          skipped_by_kind_cap_delta_json:
+            children: null
+            type: string
+          selection_outcome:
+            children: null
+            type: string
         selected: false
         title: Select First Ready Candidate
         type: code
@@ -1981,6 +2035,9 @@ workflow:
         - value_selector: [call_planner_candidates, body]
           value_type: string
           variable: body
+        - value_selector: [loop_state_manager, state_json]
+          value_type: string
+          variable: state_json
       height: 52
       id: select_ready_candidate
       parentId: main_loop_v1
@@ -2031,11 +2088,39 @@ workflow:
         code: |
           import json
 
-          def main(state_json: str, ready_count: str, blocked_count: str, skipped_existing_count: str, blocked_missing_inputs_summary: str) -> dict:
+          def _load_map(raw: str) -> dict:
+              try:
+                  value = json.loads(str(raw or '{}'))
+              except Exception:
+                  value = {}
+              return value if isinstance(value, dict) else {}
+
+          def _merge_counts(state: dict, delta_json: str) -> dict:
+              delta = _load_map(delta_json)
+              counts = state.get("skipped_by_kind_cap_count")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              for kind, value in delta.items():
+                  kind_name = str(kind or '').strip()
+                  if not kind_name:
+                      continue
+                  try:
+                      add = int(value)
+                  except Exception:
+                      add = 0
+                  if add > 0:
+                      merged[kind_name] = int(merged.get(kind_name, 0) or 0) + add
+              state["skipped_by_kind_cap_count"] = merged
+              return delta
+
+          def main(state_json: str, ready_count: str, blocked_count: str, skipped_existing_count: str, blocked_missing_inputs_summary: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
+              outcome = str(selection_outcome or '').strip() or "no_ready_candidate"
               summary = {
                   "iteration_index": int(state.get("iterations_run") or 0) + 1,
                   "candidate_kind": "",
@@ -2047,14 +2132,17 @@ workflow:
                   "evidence_id": "",
                   "judge_verdict": "",
                   "finding_id": "",
-                  "outcome": "no_ready_candidate",
+                  "outcome": outcome,
+                  "selection_outcome": outcome,
                   "ready_count": str(ready_count or ''),
                   "blocked_count": str(blocked_count or ''),
                   "skipped_existing_count": str(skipped_existing_count or ''),
                   "blocked_missing_inputs_summary": str(blocked_missing_inputs_summary or ''),
+                  "skipped_by_kind_cap_delta": skipped_delta,
               }
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
-              state["stopped_reason"] = "no_ready_candidate"
+              state["last_selection_outcome"] = outcome
+              state["stopped_reason"] = "caps_exhausted" if outcome == "caps_exhausted" else "no_ready_candidate"
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
                   "should_exit_loop": True,
@@ -2091,6 +2179,12 @@ workflow:
         - value_selector: [select_ready_candidate, blocked_missing_inputs_summary]
           value_type: string
           variable: blocked_missing_inputs_summary
+        - value_selector: [select_ready_candidate, selection_outcome]
+          value_type: string
+          variable: selection_outcome
+        - value_selector: [select_ready_candidate, skipped_by_kind_cap_delta_json]
+          value_type: string
+          variable: skipped_by_kind_cap_delta_json
       height: 52
       id: stop_no_ready_candidate
       parentId: main_loop_v1
@@ -2235,11 +2329,50 @@ workflow:
         code: |
           import json
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str) -> dict:
+          def _load_map(raw: str) -> dict:
+              try:
+                  value = json.loads(str(raw or '{}'))
+              except Exception:
+                  value = {}
+              return value if isinstance(value, dict) else {}
+
+          def _merge_counts(state: dict, delta_json: str) -> dict:
+              delta = _load_map(delta_json)
+              counts = state.get("skipped_by_kind_cap_count")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              for kind, value in delta.items():
+                  kind_name = str(kind or '').strip()
+                  if not kind_name:
+                      continue
+                  try:
+                      add = int(value)
+                  except Exception:
+                      add = 0
+                  if add > 0:
+                      merged[kind_name] = int(merged.get(kind_name, 0) or 0) + add
+              state["skipped_by_kind_cap_count"] = merged
+              return delta
+
+          def _increment_executed(state: dict, candidate_kind: str) -> None:
+              kind = str(candidate_kind or '').strip()
+              if not kind:
+                  return
+              counts = state.get("executed_by_kind")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              merged[kind] = int(merged.get(kind, 0) or 0) + 1
+              state["executed_by_kind"] = merged
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
+              selection = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
               summary = {
                   "iteration_index": next_index,
@@ -2253,10 +2386,14 @@ workflow:
                   "judge_verdict": "",
                   "finding_id": "",
                   "outcome": "tool_failed",
+                  "selection_outcome": selection,
+                  "skipped_by_kind_cap_delta": skipped_delta,
               }
               state["iterations_run"] = next_index
+              _increment_executed(state, candidate_kind)
               state["last_candidate_kind"] = str(candidate_kind or '')
               state["last_tool_run_status"] = str(tool_result_status or '')
+              state["last_selection_outcome"] = selection
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               state["stopped_reason"] = "tool_failed"
               return {
@@ -2292,6 +2429,12 @@ workflow:
         - value_selector: [extract_tool_run, tool_result_status]
           value_type: string
           variable: tool_result_status
+        - value_selector: [select_ready_candidate, selection_outcome]
+          value_type: string
+          variable: selection_outcome
+        - value_selector: [select_ready_candidate, skipped_by_kind_cap_delta_json]
+          value_type: string
+          variable: skipped_by_kind_cap_delta_json
       height: 52
       id: stop_tool_failed
       parentId: main_loop_v1
@@ -2470,11 +2613,50 @@ workflow:
         code: |
           import json
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str) -> dict:
+          def _load_map(raw: str) -> dict:
+              try:
+                  value = json.loads(str(raw or '{}'))
+              except Exception:
+                  value = {}
+              return value if isinstance(value, dict) else {}
+
+          def _merge_counts(state: dict, delta_json: str) -> dict:
+              delta = _load_map(delta_json)
+              counts = state.get("skipped_by_kind_cap_count")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              for kind, value in delta.items():
+                  kind_name = str(kind or '').strip()
+                  if not kind_name:
+                      continue
+                  try:
+                      add = int(value)
+                  except Exception:
+                      add = 0
+                  if add > 0:
+                      merged[kind_name] = int(merged.get(kind_name, 0) or 0) + add
+              state["skipped_by_kind_cap_count"] = merged
+              return delta
+
+          def _increment_executed(state: dict, candidate_kind: str) -> None:
+              kind = str(candidate_kind or '').strip()
+              if not kind:
+                  return
+              counts = state.get("executed_by_kind")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              merged[kind] = int(merged.get(kind, 0) or 0) + 1
+              state["executed_by_kind"] = merged
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
+              selection = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
               summary = {
                   "iteration_index": next_index,
@@ -2488,12 +2670,16 @@ workflow:
                   "judge_verdict": "",
                   "finding_id": "",
                   "outcome": "no_observations",
+                  "selection_outcome": selection,
+                  "skipped_by_kind_cap_delta": skipped_delta,
               }
               state["iterations_run"] = next_index
+              _increment_executed(state, candidate_kind)
               state["last_candidate_kind"] = str(candidate_kind or '')
               state["last_tool_run_status"] = str(tool_result_status or '')
               state["last_observation_type"] = ""
               state["last_verification_plan_id"] = ""
+              state["last_selection_outcome"] = selection
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
@@ -2531,6 +2717,12 @@ workflow:
         - value_selector: [summarize_observations, observations_count]
           value_type: string
           variable: observations_count
+        - value_selector: [select_ready_candidate, selection_outcome]
+          value_type: string
+          variable: selection_outcome
+        - value_selector: [select_ready_candidate, skipped_by_kind_cap_delta_json]
+          value_type: string
+          variable: skipped_by_kind_cap_delta_json
       height: 52
       id: record_no_observations
       parentId: main_loop_v1
@@ -3396,11 +3588,50 @@ workflow:
         code: |
           import json
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, first_observation_type: str, verification_plan_id: str, evidence_id: str, judge_verdict_json: str, finding_id: str, confirmed_findings_count: str, finding_ids_json: str) -> dict:
+          def _load_map(raw: str) -> dict:
+              try:
+                  value = json.loads(str(raw or '{}'))
+              except Exception:
+                  value = {}
+              return value if isinstance(value, dict) else {}
+
+          def _merge_counts(state: dict, delta_json: str) -> dict:
+              delta = _load_map(delta_json)
+              counts = state.get("skipped_by_kind_cap_count")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              for kind, value in delta.items():
+                  kind_name = str(kind or '').strip()
+                  if not kind_name:
+                      continue
+                  try:
+                      add = int(value)
+                  except Exception:
+                      add = 0
+                  if add > 0:
+                      merged[kind_name] = int(merged.get(kind_name, 0) or 0) + add
+              state["skipped_by_kind_cap_count"] = merged
+              return delta
+
+          def _increment_executed(state: dict, candidate_kind: str) -> None:
+              kind = str(candidate_kind or '').strip()
+              if not kind:
+                  return
+              counts = state.get("executed_by_kind")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              merged[kind] = int(merged.get(kind, 0) or 0) + 1
+              state["executed_by_kind"] = merged
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, first_observation_type: str, verification_plan_id: str, evidence_id: str, judge_verdict_json: str, finding_id: str, confirmed_findings_count: str, finding_ids_json: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
+              selection = str(selection_outcome or '').strip() or "selected_ready"
               try:
                   verdict_payload = json.loads(judge_verdict_json or '{}')
               except Exception:
@@ -3413,11 +3644,11 @@ workflow:
               verdict_name = str(verdict_payload.get("verdict") or '')
               finding_id_value = str(finding_id or '').strip()
               if finding_id_value:
-                  outcome = "finding_created"
+                  iteration_outcome = "finding_created"
               elif verdict_name:
-                  outcome = f"judge_{verdict_name}"
+                  iteration_outcome = f"judge_{verdict_name}"
               else:
-                  outcome = "judged_no_finding"
+                  iteration_outcome = "judged_no_finding"
               summary = {
                   "iteration_index": next_index,
                   "candidate_kind": str(candidate_kind or ''),
@@ -3429,15 +3660,19 @@ workflow:
                   "evidence_id": str(evidence_id or ''),
                   "judge_verdict": verdict_name,
                   "finding_id": finding_id_value,
-                  "outcome": outcome,
+                  "outcome": iteration_outcome,
+                  "selection_outcome": selection,
+                  "skipped_by_kind_cap_delta": skipped_delta,
               }
               state["iterations_run"] = next_index
               state["confirmed_findings_count"] = int(str(confirmed_findings_count or '0') or 0)
               state["finding_ids"] = finding_ids if isinstance(finding_ids, list) else []
+              _increment_executed(state, candidate_kind)
               state["last_candidate_kind"] = str(candidate_kind or '')
               state["last_tool_run_status"] = str(tool_result_status or '')
               state["last_observation_type"] = str(first_observation_type or '')
               state["last_verification_plan_id"] = str(verification_plan_id or '')
+              state["last_selection_outcome"] = selection
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
@@ -3496,6 +3731,12 @@ workflow:
         - value_selector: [extract_findings_summary, finding_ids_json]
           value_type: string
           variable: finding_ids_json
+        - value_selector: [select_ready_candidate, selection_outcome]
+          value_type: string
+          variable: selection_outcome
+        - value_selector: [select_ready_candidate, skipped_by_kind_cap_delta_json]
+          value_type: string
+          variable: skipped_by_kind_cap_delta_json
       height: 52
       id: record_finding_created
       parentId: main_loop_v1
@@ -3514,11 +3755,50 @@ workflow:
         code: |
           import json
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observation_id: str, observation_type: str, verification_plan_id: str) -> dict:
+          def _load_map(raw: str) -> dict:
+              try:
+                  value = json.loads(str(raw or '{}'))
+              except Exception:
+                  value = {}
+              return value if isinstance(value, dict) else {}
+
+          def _merge_counts(state: dict, delta_json: str) -> dict:
+              delta = _load_map(delta_json)
+              counts = state.get("skipped_by_kind_cap_count")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              for kind, value in delta.items():
+                  kind_name = str(kind or '').strip()
+                  if not kind_name:
+                      continue
+                  try:
+                      add = int(value)
+                  except Exception:
+                      add = 0
+                  if add > 0:
+                      merged[kind_name] = int(merged.get(kind_name, 0) or 0) + add
+              state["skipped_by_kind_cap_count"] = merged
+              return delta
+
+          def _increment_executed(state: dict, candidate_kind: str) -> None:
+              kind = str(candidate_kind or '').strip()
+              if not kind:
+                  return
+              counts = state.get("executed_by_kind")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              merged[kind] = int(merged.get(kind, 0) or 0) + 1
+              state["executed_by_kind"] = merged
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observation_id: str, observation_type: str, verification_plan_id: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
+              outcome = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
               summary = {
                   "iteration_index": next_index,
@@ -3532,6 +3812,8 @@ workflow:
                   "judge_verdict": "",
                   "finding_id": "",
                   "outcome": "pending_verification",
+                  "selection_outcome": outcome,
+                  "skipped_by_kind_cap_delta": skipped_delta,
               }
               pending = {
                   "observation_id": str(observation_id or ''),
@@ -3541,10 +3823,12 @@ workflow:
               }
               state["iterations_run"] = next_index
               state["pending_verification_count"] = int(state.get("pending_verification_count") or 0) + 1
+              _increment_executed(state, candidate_kind)
               state["last_candidate_kind"] = str(candidate_kind or '')
               state["last_tool_run_status"] = str(tool_result_status or '')
               state["last_observation_type"] = str(observation_type or '')
               state["last_verification_plan_id"] = str(verification_plan_id or '')
+              state["last_selection_outcome"] = outcome
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               state["pending_summaries"] = (state.get("pending_summaries") or []) + [pending]
               return {
@@ -3589,6 +3873,12 @@ workflow:
         - value_selector: [extract_verification_plan, verification_plan_id]
           value_type: string
           variable: verification_plan_id
+        - value_selector: [select_ready_candidate, selection_outcome]
+          value_type: string
+          variable: selection_outcome
+        - value_selector: [select_ready_candidate, skipped_by_kind_cap_delta_json]
+          value_type: string
+          variable: skipped_by_kind_cap_delta_json
       height: 52
       id: record_pending_verification
       parentId: main_loop_v1
@@ -3749,11 +4039,32 @@ workflow:
       zIndex: 1002
     - data:
         code: |
+          import json
+
+          def _int_value(value, default=0):
+              try:
+                  return int(value)
+              except Exception:
+                  return default
+
           def main(seed_state_json: str, loop_state_json: str = '', current_state_json: str = '') -> dict:
               value = str(loop_state_json or '').strip()
               if not value:
                   value = str(current_state_json or '').strip()
-              return {"state_json": value if value else str(seed_state_json or '')}
+              if not value:
+                  value = str(seed_state_json or '')
+              try:
+                  state = json.loads(value or '{}')
+              except Exception:
+                  state = {}
+              if not isinstance(state, dict):
+                  state = {}
+              stopped_reason = str(state.get("stopped_reason") or "").strip()
+              iterations_run = _int_value(state.get("iterations_run"), 0)
+              max_iterations = _int_value(state.get("max_iterations"), 0)
+              if not stopped_reason and max_iterations > 0 and iterations_run >= max_iterations:
+                  state["stopped_reason"] = "max_iterations_reached"
+              return {"state_json": json.dumps(state, ensure_ascii=False)}
         code_language: python3
         dependencies: []
         desc: Resolve last compact loop state after bounded planner loop completion.
@@ -3804,8 +4115,12 @@ workflow:
                   f"confirmed_findings_count: {state.get('confirmed_findings_count', 0)}\n"
                   f"finding_ids: {json.dumps(state.get('finding_ids') or [], ensure_ascii=False)}\n"
                   f"pending_verification_count: {state.get('pending_verification_count', 0)}\n"
+                  f"kind_caps: {json.dumps(state.get('kind_caps') or {}, ensure_ascii=False)}\n"
+                  f"executed_by_kind: {json.dumps(state.get('executed_by_kind') or {}, ensure_ascii=False)}\n"
+                  f"skipped_by_kind_cap_count: {json.dumps(state.get('skipped_by_kind_cap_count') or {}, ensure_ascii=False)}\n"
                   f"last_candidate_kind: {state.get('last_candidate_kind', '')}\n"
                   f"last_tool_run_status: {state.get('last_tool_run_status', '')}\n"
+                  f"last_selection_outcome: {state.get('last_selection_outcome', '')}\n"
                   f"iteration_summaries: {json.dumps(state.get('iteration_summaries') or [], ensure_ascii=False)}\n"
                   f"pending_summaries: {json.dumps(state.get('pending_summaries') or [], ensure_ascii=False)}\n"
                   "\nScenarioPlan (compact):\n"

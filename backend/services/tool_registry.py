@@ -24,6 +24,7 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "security_header_validator": "security_header_validator",
     "schemathesis_negative_test": "schemathesis_negative",
     "injection_test": "injection_test",
+    "property_mutation_test": "property_mutation_test",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {

@@ -136,21 +136,24 @@ _WORKERS: tuple[WorkerCapability, ...] = (
     WorkerCapability(
         worker_name="mass_assignment_validator",
         tool_name="property_mutation_test",
-        worker_class="contract_fuzzing",
+        worker_class="access_control",
         scenario_types=["mass_assignment"],
-        observation_types=["schema_mismatch", "sensitive_field_seen"],
+        observation_types=[],
         owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
-        status="planned",
-        adapter_available=False,
-        execution_mode="async",
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
         triage_support=False,
         evidence_support=False,
         judge_support=False,
         requires_openapi=True,
-        requires_seed=True,
-        requires_corpus=True,
+        requires_seed=False,
+        requires_corpus=False,
         risk_level="high",
-        notes="Planned property mutation checks against OpenAPI writable fields.",
+        notes=(
+            "Phase 18A-1: diagnostic-only property_mutation_test adapter enabled in sync mode; "
+            "produces mass_assignment_probe_summary artifact only. No observations/triage/evidence/judge path yet."
+        ),
     ),
     WorkerCapability(
         worker_name="data_exposure_validator",

@@ -30,6 +30,7 @@ class PlannerCandidateKind(str, Enum):
     security_header_validator = "security_header_validator"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
+    property_mutation_test = "property_mutation_test"
     scenario_plan_blocked = "scenario_plan_blocked"
 
 

@@ -787,8 +787,8 @@ workflow:
                       parsed = default
               if parsed < 1:
                   return 1
-              if parsed > 10:
-                  return 10
+              if parsed > 50:
+                  return 50
               return parsed
 
           def main(toolbox_url, target_url, openapi_spec_text='', openapi_url='', allowed_hosts_json='', roles_json='', planner_request_json='', task_id='', judge_model='', max_iterations='') -> dict:
@@ -1085,8 +1085,8 @@ workflow:
                   max_iters = 3
               if max_iters < 1:
                   max_iters = 1
-              if max_iters > 10:
-                  max_iters = 10
+              if max_iters > 50:
+                  max_iters = 50
               state = {
                   "campaign_id": str(campaign_id or ''),
                   "iterations_run": 0,
@@ -1142,7 +1142,7 @@ workflow:
         error_handle_mode: terminated
         height: 680
         logical_operator: and
-        loop_count: 10
+        loop_count: 50
         loop_variables:
         - id: 4f0c2b3a-34c3-4d64-8704-fc4cf76f9b41
           label: _current_loop_state

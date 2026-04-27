@@ -74,6 +74,17 @@ def test_filter_by_scenario_type_returns_injection_worker() -> None:
     assert any(w.tool_name == "injection_test" for w in rows)
 
 
+def test_mass_assignment_worker_now_partial_diagnostic_adapter() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("property_mutation_test")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.triage_support is False
+    assert w.evidence_support is False
+    assert w.judge_support is False
+
+
 def test_get_by_tool_name() -> None:
     assert WorkerCapabilityCatalog().get_by_tool_name("nuclei") is not None
     assert WorkerCapabilityCatalog().get_by_tool_name("no_such_tool_xyz") is None

@@ -574,7 +574,8 @@ class PlannerService:
             PlannerCandidateKind.security_header_validator: 1,
             PlannerCandidateKind.schemathesis_negative_test: 2,
             PlannerCandidateKind.injection_test: 3,
-            PlannerCandidateKind.zap_discovery_passive: 4,
+            PlannerCandidateKind.property_mutation_test: 4,
+            PlannerCandidateKind.zap_discovery_passive: 5,
             PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(

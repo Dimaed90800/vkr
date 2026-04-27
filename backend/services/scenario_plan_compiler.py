@@ -128,6 +128,11 @@ def _injection_task_id(operation_id: str) -> str:
     return f"task_injection_probe_{base or 'op'}"
 
 
+def _property_mutation_task_id(operation_id: str) -> str:
+    base = re.sub(r"[^a-zA-Z0-9_]+", "_", operation_id).strip("_")[:80]
+    return f"task_property_mutation_probe_{base or 'op'}"
+
+
 @dataclass
 class ScenarioCompilerResult:
     extra_candidates: list[PlannerCandidate]
@@ -179,6 +184,9 @@ class ScenarioPlanCompiler:
         injection_ops_ordered: list[str] = []
         injection_ops_seen: set[str] = set()
         injection_scenarios_by_op: dict[str, list[str]] = {}
+        mass_assignment_ops_ordered: list[str] = []
+        mass_assignment_ops_seen: set[str] = set()
+        mass_assignment_scenarios_by_op: dict[str, list[str]] = {}
 
         for item in scenarios:
             if item.status == ScenarioStatus.rejected:
@@ -346,6 +354,44 @@ class ScenarioPlanCompiler:
                     injection_ops_seen.add(op)
                     injection_ops_ordered.append(op)
                     injection_scenarios_by_op[op] = [item.scenario_id]
+            elif stype == "mass_assignment":
+                if graph_operations_total <= 0:
+                    extra.append(self._audit_candidate(
+                        campaign_id=campaign.campaign_id,
+                        scenario_id=item.scenario_id,
+                        reason="Graph empty; mass_assignment cannot run.",
+                        missing=["graph_empty"],
+                        summary={"scenario_type": stype, "audit_code": "graph_empty"},
+                    ))
+                    continue
+                if not str(campaign.target_url or "").strip():
+                    extra.append(self._audit_candidate(
+                        campaign_id=campaign.campaign_id,
+                        scenario_id=item.scenario_id,
+                        reason="Campaign has no target_url; cannot build property_mutation_test command.",
+                        missing=["campaign_target_url_missing"],
+                        summary={"scenario_type": stype, "audit_code": "campaign_target_url_missing"},
+                    ))
+                    continue
+                for oid in item.operation_ids or []:
+                    op = str(oid).strip()
+                    if not op:
+                        continue
+                    if op not in valid_operation_ids:
+                        extra.append(self._audit_candidate(
+                            campaign_id=campaign.campaign_id,
+                            scenario_id=item.scenario_id,
+                            reason=f"operation_id not in graph: {op}",
+                            missing=[f"unknown_operation_id:{op}"],
+                            summary={"scenario_type": stype, "operation_id": op},
+                        ))
+                        continue
+                    if op in mass_assignment_ops_seen:
+                        mass_assignment_scenarios_by_op.setdefault(op, []).append(item.scenario_id)
+                        continue
+                    mass_assignment_ops_seen.add(op)
+                    mass_assignment_ops_ordered.append(op)
+                    mass_assignment_scenarios_by_op[op] = [item.scenario_id]
 
             else:
                 extra.append(self._audit_candidate(
@@ -371,6 +417,12 @@ class ScenarioPlanCompiler:
             if len(scn_ids) > 1:
                 warnings.append(
                     f"scenario_duplicate_injection_op_merged:{op}:"
+                    f"{','.join(scn_ids)}",
+                )
+        for op, scn_ids in mass_assignment_scenarios_by_op.items():
+            if len(scn_ids) > 1:
+                warnings.append(
+                    f"scenario_duplicate_mass_assignment_op_merged:{op}:"
                     f"{','.join(scn_ids)}",
                 )
 
@@ -574,7 +626,138 @@ class ScenarioPlanCompiler:
                     ),
                 )
 
+        for op in mass_assignment_ops_ordered:
+            dedup_key = f"{campaign.campaign_id}|property_mutation_test|{op}"
+            existing = self._existing_property_mutation_run(campaign.campaign_id, op)
+            if existing is not None:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("property_mutation_test", dedup_key),
+                        kind=PlannerCandidateKind.property_mutation_test,
+                        status=PlannerCandidateStatus.skipped_existing,
+                        priority=33.0,
+                        reason="Existing property_mutation_test ToolRun for this operation_id.",
+                        dedup_key=dedup_key,
+                        command=None,
+                        summary={
+                            "operation_id": op,
+                            "existing_tool_run_id": str(existing.get("tool_run_id") or ""),
+                            "source_scenario_ids": mass_assignment_scenarios_by_op.get(op, []),
+                        },
+                    ),
+                )
+                continue
+
+            operation = operations_by_id.get(op)
+            if operation is None:
+                extra.append(self._audit_candidate(
+                    campaign_id=campaign.campaign_id,
+                    scenario_id=(mass_assignment_scenarios_by_op.get(op) or ["scn_mass_assignment"])[0],
+                    reason=f"operation_id not found in graph store: {op}",
+                    missing=[f"missing_operation:{op}"],
+                    summary={"scenario_type": "mass_assignment", "operation_id": op},
+                ))
+                continue
+
+            sensitive_fields = [
+                str(f).strip()
+                for f in (operation.body_fields or [])
+                if str(f).strip()
+            ][:20]
+
+            command = WorkerCommand(
+                campaign_id=campaign.campaign_id,
+                task_id=_property_mutation_task_id(op),
+                worker_class="access_control",
+                strategy="property_mutation_probe",
+                tool_name="property_mutation_test",
+                operation_id=op,
+                seed_request_id="",
+                inputs={
+                    "target_url": campaign.target_url,
+                    "operation_id": op,
+                    "mutation_policy": "diagnostic_only",
+                    "diagnostic_only": True,
+                    "sensitive_fields": sensitive_fields,
+                    "max_mutations": 1,
+                },
+                budget=CommandBudget(max_requests=0, timeout_sec=30),
+                success_criteria=["property_mutation_probe_completed"],
+            )
+            validation = self._validator.validate(command)
+            summary_base: dict[str, Any] = {
+                "operation_id": op,
+                "source_scenario_ids": mass_assignment_scenarios_by_op.get(op, []),
+                "sensitive_fields_hint": sensitive_fields,
+            }
+            if validation.valid:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("property_mutation_test", dedup_key),
+                        kind=PlannerCandidateKind.property_mutation_test,
+                        status=PlannerCandidateStatus.ready,
+                        priority=33.0,
+                        reason="ScenarioPlan mass_assignment mapped to property_mutation_test (diagnostic-only).",
+                        dedup_key=dedup_key,
+                        command=command,
+                        summary={
+                            **summary_base,
+                            "validation_warnings": list(validation.warnings),
+                            "scenario_compiler": "phase_18a_3_lite",
+                        },
+                    ),
+                )
+            else:
+                extra.append(
+                    PlannerCandidate(
+                        candidate_id=_candidate_id("property_mutation_test", dedup_key),
+                        kind=PlannerCandidateKind.property_mutation_test,
+                        status=PlannerCandidateStatus.blocked,
+                        priority=33.0,
+                        reason="Property_mutation_test candidate failed CommandValidator.",
+                        missing_inputs=[e.code for e in validation.errors],
+                        dedup_key=dedup_key,
+                        command=None,
+                        summary={
+                            **summary_base,
+                            "validation_errors": [e.model_dump(mode="json") for e in validation.errors],
+                            "validation_warnings": list(validation.warnings),
+                        },
+                    ),
+                )
+
         return ScenarioCompilerResult(extra, priority_add, warnings)
+
+    def _existing_property_mutation_run(
+        self,
+        campaign_id: str,
+        operation_id: str,
+    ) -> dict[str, Any] | None:
+        active_or_done = {
+            "accepted",
+            "queued",
+            "running",
+            "finished",
+            "partial",
+            "failed",
+            "timeout",
+            "cancelled",
+            "skipped",
+        }
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "property_mutation_test":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            cmd_id = str(run.get("command_id") or "").strip()
+            if cmd_id:
+                cmd = memory_store.get_command(cmd_id) or {}
+                inputs = cmd.get("inputs") if isinstance(cmd, dict) else None
+                if isinstance(inputs, dict) and str(inputs.get("operation_id") or "").strip() == operation_id:
+                    return run
+                if str(cmd.get("operation_id") or "").strip() == operation_id:
+                    return run
+        return None
 
     def _existing_injection_run(self, campaign_id: str, operation_id: str) -> dict[str, Any] | None:
         active_or_done = {

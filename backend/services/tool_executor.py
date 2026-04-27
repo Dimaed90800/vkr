@@ -34,6 +34,9 @@ try:
     )
     from backend.services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from backend.services.adapters.injection_test_adapter import InjectionTestAdapter
+    from backend.services.adapters.property_mutation_test_adapter import (
+        PropertyMutationTestAdapter,
+    )
     from backend.services.artifact_store import ArtifactStore
     from backend.services.campaign_service import CampaignService
     from backend.services.command_validator import CommandValidator
@@ -60,6 +63,9 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from services.adapters.injection_test_adapter import InjectionTestAdapter
+    from services.adapters.property_mutation_test_adapter import (
+        PropertyMutationTestAdapter,
+    )
     from services.artifact_store import ArtifactStore
     from services.campaign_service import CampaignService
     from services.command_validator import CommandValidator
@@ -98,6 +104,7 @@ class ToolExecutor:
         http_client: SafeHttpClient | None = None,
         zap_passive_client: object | None = None,
         injection_adapter: InjectionTestAdapter | None = None,
+        property_mutation_adapter: PropertyMutationTestAdapter | None = None,
     ) -> None:
         self._registry = ToolRegistry()
         self._validator = CommandValidator()
@@ -110,6 +117,7 @@ class ToolExecutor:
         self._security_header_validator = SecurityHeaderValidatorAdapter(http_client=http_client)
         self._schemathesis_negative = SchemathesisNegativeTestAdapter()
         self._injection_test = injection_adapter or InjectionTestAdapter(http_client=http_client)
+        self._property_mutation_test = property_mutation_adapter or PropertyMutationTestAdapter()
 
     def execute_sync(self, command: WorkerCommand) -> ToolResult:
         validation = self._validator.validate(command)
@@ -167,6 +175,8 @@ class ToolExecutor:
             return self._schemathesis_negative.execute(command, campaign, tool_run_id)
         if command.tool_name == "injection_test":
             return self._injection_test.execute(command, campaign, tool_run_id)
+        if command.tool_name == "property_mutation_test":
+            return self._property_mutation_test.execute(command, campaign, tool_run_id)
         return self._noop.execute(command, campaign, tool_run_id)
 
     def start_async(self, command: WorkerCommand) -> ToolRun:

@@ -441,6 +441,71 @@ def test_security_header_validator_allowed_only_for_misconfiguration():
     assert any(err.error_type == "validation_failed" for err in result.errors)
 
 
+def test_registry_property_mutation_test_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("property_mutation_test") is True
+    assert reg.get_execution_mode("property_mutation_test") == "sync"
+
+
+def test_tool_executor_dispatches_property_mutation_test() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="access_control",
+        strategy="property_mutation_probe",
+        tool_name="property_mutation_test",
+        operation_id="op_PATCH_/users/{id}",
+        inputs={
+            "target_url": "http://testapp.local",
+            "operation_id": "op_PATCH_/users/{id}",
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "max_mutations": 1,
+            "sensitive_fields": ["isAdmin"],
+            "seed_request_id": "req_seed_1",
+        },
+        budget=CommandBudget(max_requests=0, timeout_sec=30),
+    )
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "property_mutation_test"
+    assert result.observations == []
+    assert result.artifacts and result.artifacts[0].artifact_type == "mass_assignment_probe_summary"
+
+
+def test_tools_runs_start_sync_property_mutation_test_returns_result() -> None:
+    _reset_store()
+    _create_campaign()
+    client = _get_test_client()
+    payload = {
+        "execution_mode": "sync",
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "access_control",
+            "strategy": "property_mutation_probe",
+            "tool_name": "property_mutation_test",
+            "operation_id": "op_PATCH_/users/{id}",
+            "inputs": {
+                "target_url": "http://testapp.local",
+                "operation_id": "op_PATCH_/users/{id}",
+                "mutation_policy": "diagnostic_only",
+                "diagnostic_only": True,
+                "max_mutations": 1,
+                "sensitive_fields": ["owner_id"],
+            },
+            "budget": {"max_requests": 0, "timeout_sec": 30},
+            "success_criteria": ["property_mutation_probe_completed"],
+        },
+    }
+    resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["execution_mode"] == "sync"
+    assert body["result"]["tool_name"] == "property_mutation_test"
+    assert body["result"]["status"] == "finished"
+    assert body["result"]["observations"] == []
+
+
 # ─── Route-level tests ────────────────────────────────────────────
 
 

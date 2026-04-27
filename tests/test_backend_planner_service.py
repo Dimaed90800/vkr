@@ -139,6 +139,30 @@ def _injection_scenario_payload(
     }
 
 
+def _mass_assignment_scenario_payload(
+    *,
+    scenario_id: str = "scn_mass",
+    operation_ids: list[str] | None = None,
+    rationale: str = "mass assignment diagnostic probe",
+    status: str = "accepted",
+) -> dict:
+    return {
+        "scenario_id": scenario_id,
+        "status": status,
+        "scenario_type": "mass_assignment",
+        "vulnerability_classes": ["BOPLA"],
+        "operation_ids": operation_ids or ["op_PATCH_/api/v1/users/{userId}"],
+        "resource_type": "user",
+        "required_preconditions": ["openapi_schema", "parameter_context"],
+        "candidate_workers": ["property_mutation_test"],
+        "confidence": 0.45,
+        "rationale": rationale,
+        "blocking_codes": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+
 def _store_graph_search_get(campaign_id: str = "cmp_plan") -> None:
     graph = ApiGraph(
         campaign_id=campaign_id,
@@ -148,6 +172,22 @@ def _store_graph_search_get(campaign_id: str = "cmp_plan") -> None:
                 method="GET",
                 path_template="/api/v1/search",
                 query_params=["q", "limit"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_mass_assignment_patch(campaign_id: str = "cmp_plan") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_PATCH_/api/v1/users/{userId}",
+                method="PATCH",
+                path_template="/api/v1/users/{userId}",
+                body_fields=["displayName", "isAdmin", "owner_id", "description"],
                 sources=["openapi"],
             ),
         ],
@@ -1926,6 +1966,80 @@ def test_planner_injection_testing_does_not_create_toolrun_evidence_finding() ->
     assert len(memory_store.confirmed_findings) == fin_before
 
 
+def test_planner_mass_assignment_creates_diagnostic_property_mutation_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_mass_assignment_patch()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "max_candidates": 20,
+        "scenario_plan": {"source": "t", "scenarios": [_mass_assignment_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    rows = [c for c in resp.candidates if c.kind.value == "property_mutation_test" and c.status == "ready"]
+    assert len(rows) == 1
+    cmd = rows[0].command
+    assert cmd is not None
+    assert cmd.worker_class == "access_control"
+    assert cmd.strategy == "property_mutation_probe"
+    assert cmd.tool_name == "property_mutation_test"
+    assert cmd.operation_id == "op_PATCH_/api/v1/users/{userId}"
+    assert cmd.inputs.get("mutation_policy") == "diagnostic_only"
+    assert cmd.inputs.get("diagnostic_only") is True
+    assert cmd.inputs.get("max_mutations") == 1
+    assert cmd.inputs.get("target_url") == "http://target.local"
+    assert cmd.inputs.get("operation_id") == "op_PATCH_/api/v1/users/{userId}"
+    assert "isAdmin" in (cmd.inputs.get("sensitive_fields") or [])
+    assert "owner_id" in (cmd.inputs.get("sensitive_fields") or [])
+    assert cmd.budget.max_requests == 0
+    assert cmd.budget.timeout_sec == 30
+    assert cmd.success_criteria == ["property_mutation_probe_completed"]
+    assert CommandValidator().validate(cmd).valid
+
+
+def test_planner_mass_assignment_dedup_existing_run_skips_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_mass_assignment_patch()
+    memory_store.store_command(
+        "cmd_mass_existing",
+        "cmp_plan",
+        {
+            "command_id": "cmd_mass_existing",
+            "campaign_id": "cmp_plan",
+            "worker_class": "access_control",
+            "strategy": "property_mutation_probe",
+            "tool_name": "property_mutation_test",
+            "operation_id": "op_PATCH_/api/v1/users/{userId}",
+            "inputs": {"operation_id": "op_PATCH_/api/v1/users/{userId}"},
+        },
+    )
+    memory_store.store_tool_run(
+        "toolrun_mass_existing",
+        "cmp_plan",
+        {
+            "schema_version": "tool-run/v1",
+            "tool_run_id": "toolrun_mass_existing",
+            "campaign_id": "cmp_plan",
+            "tool_name": "property_mutation_test",
+            "status": "finished",
+            "command_id": "cmd_mass_existing",
+            "result_ready": True,
+        },
+    )
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_mass_assignment_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    rows = [c for c in resp.candidates if c.kind.value == "property_mutation_test"]
+    assert len(rows) == 1
+    assert rows[0].status == "skipped_existing"
+    assert rows[0].command is None
+
+
 def test_planner_ordering_injection_test_after_schemathesis_before_zap() -> None:
     _reset_store()
     _campaign(openapi_url="http://target.local/openapi.json")
@@ -1969,3 +2083,55 @@ def test_planner_ordering_injection_test_after_schemathesis_before_zap() -> None
     assert ready_kinds.index("schemathesis_negative_test") < ready_kinds.index("injection_test")
     if "zap_discovery_passive" in ready_kinds:
         assert ready_kinds.index("injection_test") < ready_kinds.index("zap_discovery_passive")
+
+
+def test_planner_ordering_property_mutation_after_injection_before_zap() -> None:
+    _reset_store()
+    _campaign(openapi_url="http://target.local/openapi.json")
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+                method="GET",
+                path_template="/api/v1/vehicles/{vehicleId}",
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_GET_/api/v1/search",
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["q"],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_PATCH_/api/v1/users/{userId}",
+                method="PATCH",
+                path_template="/api/v1/users/{userId}",
+                body_fields=["isAdmin"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_zap_alert_observation()
+    body = {
+        "zap": {"enabled": True},
+        "bola": {"enabled": False},
+        "max_candidates": 30,
+        "scenario_plan": {
+            "source": "t",
+            "scenarios": [
+                _schema_scenario_payload(),
+                _injection_scenario_payload(),
+                _mass_assignment_scenario_payload(),
+            ],
+        },
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    ready_kinds = [c.kind.value for c in resp.candidates if c.status == "ready"]
+    assert "injection_test" in ready_kinds
+    assert "property_mutation_test" in ready_kinds
+    assert ready_kinds.index("injection_test") < ready_kinds.index("property_mutation_test")
+    if "zap_discovery_passive" in ready_kinds:
+        assert ready_kinds.index("property_mutation_test") < ready_kinds.index("zap_discovery_passive")

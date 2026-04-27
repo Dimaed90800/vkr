@@ -146,6 +146,8 @@ class CommandValidator:
         self._validate_operation_id(command, warnings)
         if (command.tool_name or "").strip() == "injection_test":
             self._validate_injection_test(command, campaign, errors)
+        if (command.tool_name or "").strip() == "property_mutation_test":
+            self._validate_property_mutation_test(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -436,6 +438,137 @@ class CommandValidator:
         op_ids = {str(o.get("operation_id") or "") for o in operations if isinstance(o, dict)}
         if op_id not in op_ids:
             warnings.append(f"operation_id_not_in_graph:{op_id}")
+
+    def _validate_property_mutation_test(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "access_control":
+            errors.append(ValidationError(
+                code="property_mutation_worker_class_invalid",
+                message="property_mutation_test requires worker_class access_control.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "property_mutation_probe":
+            errors.append(ValidationError(
+                code="property_mutation_strategy_invalid",
+                message="property_mutation_test requires strategy property_mutation_probe.",
+            ))
+        op_id = (command.operation_id or "").strip()
+        if not op_id:
+            errors.append(ValidationError(
+                code="operation_id_required_for_property_mutation_test",
+                message="operation_id is required for property_mutation_test.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "operation_id",
+            "mutation_policy",
+            "diagnostic_only",
+            "sensitive_fields",
+            "max_mutations",
+            "seed_request_id",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="disallowed_property_mutation_input",
+                    message=f"inputs.{key} is not allowed for property_mutation_test.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="property_mutation_target_required",
+                message="inputs.target_url is required for property_mutation_test.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="property_mutation_target_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+
+        inputs_op = str(inputs.get("operation_id") or "").strip()
+        if inputs_op and inputs_op != op_id:
+            errors.append(ValidationError(
+                code="property_mutation_operation_mismatch",
+                message="inputs.operation_id must match command.operation_id when set.",
+            ))
+
+        mutation_policy = str(inputs.get("mutation_policy") or "").strip().lower()
+        if mutation_policy != "diagnostic_only":
+            errors.append(ValidationError(
+                code="invalid_mutation_policy",
+                message="mutation_policy must be diagnostic_only in Phase 18A-1.",
+            ))
+
+        if inputs.get("diagnostic_only") is not True:
+            errors.append(ValidationError(
+                code="mutation_requires_diagnostic_only",
+                message="diagnostic_only must be true in Phase 18A-1.",
+            ))
+
+        max_mutations = inputs.get("max_mutations")
+        try:
+            mm = int(max_mutations)
+        except (TypeError, ValueError):
+            mm = -1
+        if mm < 0 or mm > 3:
+            errors.append(ValidationError(
+                code="max_mutations_exceeded",
+                message="max_mutations must be between 0 and 3.",
+                details={"max_mutations": max_mutations},
+            ))
+
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="property_mutation_budget_requests",
+                message="property_mutation_test max_requests must be 0 or 1 in diagnostic mode.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 30:
+            errors.append(ValidationError(
+                code="property_mutation_budget_timeout",
+                message="property_mutation_test timeout_sec must be <= 30.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+        sensitive_fields = inputs.get("sensitive_fields")
+        if sensitive_fields is None:
+            return
+        if not isinstance(sensitive_fields, list):
+            errors.append(ValidationError(
+                code="property_mutation_sensitive_fields_invalid",
+                message="sensitive_fields must be list[str] when provided.",
+            ))
+            return
+        if len(sensitive_fields) > 20:
+            errors.append(ValidationError(
+                code="property_mutation_sensitive_fields_too_many",
+                message="sensitive_fields must contain at most 20 items.",
+            ))
+        for value in sensitive_fields:
+            if not isinstance(value, str):
+                errors.append(ValidationError(
+                    code="property_mutation_sensitive_fields_invalid",
+                    message="sensitive_fields must contain only strings.",
+                ))
+                continue
+            v = value.strip()
+            if not v or len(v) > 64 or re.search(r"[\s:=]", v):
+                errors.append(ValidationError(
+                    code="property_mutation_sensitive_fields_invalid",
+                    message="sensitive_fields entries must be compact field names (no values/tokens).",
+                    details={"field": value},
+                ))
 
     def _check_fingerprint_duplicate(
         self,
