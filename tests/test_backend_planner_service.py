@@ -157,6 +157,30 @@ def _store_zap_alert_observation(
     memory_store.store_observation(obs.observation_id, campaign_id, "", obs.model_dump(mode="json"))
 
 
+def _store_discovered_endpoint_observation(
+    *,
+    observation_id: str = "obs_discovered",
+    campaign_id: str = "cmp_plan",
+    url: str = "http://target.local/api/discovered?token=abc",
+    path: str = "/api/discovered",
+    operation_id: str = "op_GET_/api/discovered",
+) -> None:
+    obs = Observation(
+        observation_id=observation_id,
+        campaign_id=campaign_id,
+        type=ObservationType.discovered_endpoint,
+        operation_id=operation_id,
+        confidence=0.5,
+        security_relevance=SecurityRelevance.low,
+        details={
+            "url": url,
+            "path": path,
+            "operation_id": operation_id,
+        },
+    )
+    memory_store.store_observation(obs.observation_id, campaign_id, "", obs.model_dump(mode="json"))
+
+
 def _store_raw_observation(
     *,
     observation_id: str,
@@ -409,7 +433,7 @@ def test_planner_does_not_mutate_legacy_scheduler_state():
     assert memory_store.commands == {}
 
 
-def test_planner_orders_zap_before_bola():
+def test_planner_orders_bola_before_zap():
     _reset_store()
     _campaign()
     request = PlannerRequest.model_validate({
@@ -420,8 +444,8 @@ def test_planner_orders_zap_before_bola():
     response = PlannerService().plan("cmp_plan", request)
 
     assert [candidate.kind.value for candidate in response.candidates[:2]] == [
-        "zap_discovery_passive",
         "bola_replay_probe",
+        "zap_discovery_passive",
     ]
 
 
@@ -537,6 +561,109 @@ def test_planner_zap_dedup_skips_same_target_and_seed():
 
     assert response.skipped_existing_count == 1
     assert response.candidates[0].status == "skipped_existing"
+
+
+def test_planner_skips_zap_when_zap_alert_observations_exist():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": True},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    zap_candidate = next(candidate for candidate in response.candidates if candidate.kind == "zap_discovery_passive")
+    assert zap_candidate.status == "skipped_existing"
+    assert zap_candidate.command is None
+    assert "already produced observations" in zap_candidate.reason
+
+
+def test_planner_prefers_security_header_validator_over_zap_after_zap_alerts_exist():
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": True},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    assert [candidate.kind.value for candidate in response.candidates[:2]] == [
+        "security_header_validator",
+        "zap_discovery_passive",
+    ]
+    assert response.candidates[0].status == "ready"
+    assert response.candidates[1].status == "skipped_existing"
+
+
+def test_planner_still_returns_zap_ready_when_no_zap_output_exists():
+    _reset_store()
+    _campaign()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": True},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "zap_discovery_passive"
+    assert candidate.status == "ready"
+    assert candidate.command is not None
+
+
+def test_planner_zap_skip_is_campaign_scoped():
+    _reset_store()
+    _campaign(campaign_id="cmp_plan")
+    _campaign(campaign_id="cmp_other")
+    _store_zap_alert_observation(campaign_id="cmp_other")
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": True},
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "zap_discovery_passive"
+    assert candidate.status == "ready"
+    assert candidate.command is not None
+
+
+def test_planner_zap_skip_does_not_suppress_different_target_if_target_can_be_distinguished():
+    _reset_store()
+    _campaign()
+    _store_discovered_endpoint_observation(
+        url="http://target.local/admin/users?token=abc",
+        path="/admin/users",
+    )
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {
+                "enabled": True,
+                "target_url": "http://target.local/public",
+            },
+            "bola": {"enabled": False},
+        }),
+    )
+
+    candidate = response.candidates[0]
+    assert candidate.kind == "zap_discovery_passive"
+    assert candidate.status == "ready"
+    assert candidate.command is not None
 
 
 def test_planner_bola_dedup_respects_attacker_own_object_id():

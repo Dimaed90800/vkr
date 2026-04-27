@@ -118,12 +118,16 @@ def test_full_workflow_triages_observation() -> None:
     assert "{{#summarize_observations.first_observation_id#}}" in _node_data("triage_observation")["url"]
 
 
-def test_full_workflow_observation_priority_cross_role_zap_discovered() -> None:
+def test_full_workflow_observation_priority_cross_role_validated_header_zap_discovered() -> None:
     code = _node_data("summarize_observations")["code"]
     assert "obs.get('type') == 'cross_role_access_signal'" in code
+    assert "obs.get('type') == 'validated_security_header_issue'" in code
     assert "obs.get('type') == 'zap_alert'" in code
     assert "obs.get('type') == 'discovered_endpoint'" in code
-    assert "selected = cross[0] if cross else (alerts[0] if alerts else (discovered[0] if discovered else {}))" in code
+    assert "selected = cross[0] if cross else (" in code
+    assert "validated_headers[0] if validated_headers else (" in code
+    assert "alerts[0] if alerts else (" in code
+    assert "discovered[0] if discovered else {}" in code
 
 
 def test_full_workflow_has_observation_derived_from_first_observation_id() -> None:
@@ -147,13 +151,22 @@ def test_full_workflow_has_no_observations_branch() -> None:
     assert "no actionable observations were normalized" in _node_data("answer_no_observations")["answer"]
 
 
-def test_full_workflow_has_cross_role_branch_to_evidence() -> None:
+def test_full_workflow_routes_validated_security_header_issue_to_evidence() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "obs_type == 'validated_security_header_issue'" in code
+    assert "is_evidence_capable" in code
+    assert _has_edge("is_cross_role_signal", "build_evidence_pack", "true")
+    assert "/v1/evidence/build-from-plan/{{#extract_verification_plan.verification_plan_id#}}" in _node_data("build_evidence_pack")["url"]
+
+
+def test_full_workflow_evidence_capable_types_include_cross_role_and_validated_header() -> None:
     code = _node_data("route_by_observation_type")["code"]
     assert "obs_type == 'cross_role_access_signal'" in code
+    assert "obs_type == 'validated_security_header_issue'" in code
     assert "verification_plan_id" in code
     assert _node_data("is_cross_role_signal")["type"] == "if-else"
     assert _has_edge("is_cross_role_signal", "build_evidence_pack", "true")
-    assert "/v1/evidence/build-from-plan/{{#extract_verification_plan.verification_plan_id#}}" in _node_data("build_evidence_pack")["url"]
+    assert "verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification'" in code
 
 
 def test_full_workflow_has_llm_judge_node() -> None:
@@ -202,7 +215,7 @@ def test_full_workflow_lists_confirmed_findings() -> None:
     assert "{{#extract_campaign.campaign_id#}}" in _node_data("list_confirmed_findings")["url"]
 
 
-def test_full_workflow_has_pending_verification_branch_for_zap_and_discovered() -> None:
+def test_full_workflow_pending_types_remain_zap_and_discovered() -> None:
     code = _node_data("route_by_observation_type")["code"]
     answer = _node_data("answer_pending_verification")["answer"]
     assert "'zap_alert'" in code
@@ -214,9 +227,21 @@ def test_full_workflow_has_pending_verification_branch_for_zap_and_discovered() 
     assert not _has_edge("answer_pending_verification", "apply_judge_verdict")
 
 
-def test_pending_branch_message_says_non_bola_stops_at_verification() -> None:
+def test_validated_security_header_issue_reaches_judge_tail() -> None:
+    text = _full_text()
+    code = _node_data("route_by_observation_type")["code"]
+    assert "validated_security_header_issue" in code
+    assert _has_edge("is_cross_role_signal", "build_evidence_pack", "true")
+    assert "/v1/evidence/build-from-plan/" in text
+    assert "LLM Judge" in text
+    assert "Parse/Validate Judge Verdict" in text
+    assert "/v1/judge/apply" in text
+    assert "/v1/findings/confirmed/" in text
+
+
+def test_pending_branch_message_says_raw_discovery_stops_at_verification() -> None:
     answer = _node_data("answer_pending_verification")["answer"]
-    assert "Non-BOLA signal stopped at VerificationPlan in Phase 13A." in answer
+    assert "Raw discovery signal stopped at VerificationPlan in Phase 13E." in answer
 
 
 def test_full_workflow_does_not_call_legacy_scheduler_or_wrappers() -> None:

@@ -121,6 +121,30 @@ class PlannerService:
                 summary={**summary, "existing_tool_run_id": existing.get("tool_run_id", "")},
             )
 
+        existing_observation = self._existing_zap_output_observation(
+            campaign_id=campaign.campaign_id,
+            requested_target_url=target_url,
+            seed_urls=request.zap.seed_urls,
+            campaign_target_url=campaign.target_url,
+        )
+        if existing_observation is not None:
+            return self._candidate(
+                kind=PlannerCandidateKind.zap_discovery_passive,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=100.0,
+                reason="ZAP discovery/passive already produced observations for this campaign.",
+                dedup_key=dedup_key,
+                summary={
+                    **summary,
+                    "existing_observation_id": str(
+                        existing_observation.get("observation_id")
+                        or existing_observation.get("id")
+                        or ""
+                    ),
+                    "existing_observation_type": self._raw_observation_type(existing_observation),
+                },
+            )
+
         if not campaign.allowed_hosts:
             return self._candidate(
                 kind=PlannerCandidateKind.zap_discovery_passive,
@@ -514,9 +538,9 @@ class PlannerService:
             PlannerCandidateStatus.skipped_existing: 2,
         }
         kind_order = {
-            PlannerCandidateKind.zap_discovery_passive: 0,
-            PlannerCandidateKind.bola_replay_probe: 1,
-            PlannerCandidateKind.security_header_validator: 2,
+            PlannerCandidateKind.bola_replay_probe: 0,
+            PlannerCandidateKind.security_header_validator: 1,
+            PlannerCandidateKind.zap_discovery_passive: 2,
         }
         return sorted(
             candidates,
@@ -598,6 +622,101 @@ class PlannerService:
                 )
                 if existing_key and existing_key == requested_dedup_key:
                     return run
+        return None
+
+    @staticmethod
+    def _existing_zap_output_observation(
+        campaign_id: str,
+        requested_target_url: str,
+        seed_urls: list[str],
+        campaign_target_url: str,
+    ) -> dict[str, Any] | None:
+        requested_scopes = [
+            url for url in [requested_target_url, *seed_urls]
+            if str(url or "").strip()
+        ]
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) not in {"zap_alert", "discovered_endpoint"}:
+                continue
+            details = raw.get("details")
+            if not isinstance(details, dict):
+                continue
+            if PlannerService._observation_matches_zap_scope(
+                details=details,
+                requested_scopes=requested_scopes,
+                campaign_target_url=campaign_target_url,
+            ):
+                return raw
+        return None
+
+    @staticmethod
+    def _observation_matches_zap_scope(
+        *,
+        details: dict[str, Any],
+        requested_scopes: list[str],
+        campaign_target_url: str,
+    ) -> bool:
+        observation_url = PlannerService._extract_observation_location(
+            details=details,
+            base_url=campaign_target_url,
+        )
+        if not observation_url:
+            return False
+        return any(
+            PlannerService._url_matches_scope(observation_url, scope)
+            for scope in requested_scopes
+        )
+
+    @staticmethod
+    def _extract_observation_location(details: dict[str, Any], base_url: str) -> str:
+        for key in ("request_url", "target_url", "url"):
+            value = str(details.get(key) or "").strip()
+            if value:
+                return value
+        path = str(details.get("path") or "").strip()
+        if not path:
+            return ""
+        if urlparse(path).scheme:
+            return path
+        if not base_url:
+            return path
+        return urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+
+    @staticmethod
+    def _url_matches_scope(candidate_url: str, scope_url: str) -> bool:
+        candidate = urlparse(str(candidate_url or "").strip())
+        scope = urlparse(str(scope_url or "").strip())
+        if not candidate.path and not candidate.netloc:
+            return False
+        if not scope.path and not scope.netloc:
+            return False
+        if candidate.scheme and scope.scheme:
+            candidate_port = candidate.port or PlannerService._default_port(candidate.scheme)
+            scope_port = scope.port or PlannerService._default_port(scope.scheme)
+            if (
+                candidate.scheme.lower() != scope.scheme.lower()
+                or (candidate.hostname or "").lower() != (scope.hostname or "").lower()
+                or candidate_port != scope_port
+            ):
+                return False
+        scope_path = scope.path or "/"
+        candidate_path = candidate.path or "/"
+        if scope_path in {"", "/"}:
+            return True
+        normalized_scope = scope_path.rstrip("/") or "/"
+        normalized_candidate = candidate_path.rstrip("/") or "/"
+        return (
+            normalized_candidate == normalized_scope
+            or normalized_candidate.startswith(normalized_scope + "/")
+        )
+
+    @staticmethod
+    def _default_port(scheme: str) -> int | None:
+        normalized = str(scheme or "").strip().lower()
+        if normalized == "http":
+            return 80
+        if normalized == "https":
+            return 443
         return None
 
     @staticmethod

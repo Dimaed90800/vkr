@@ -1074,9 +1074,16 @@ workflow:
                   payload = {}
               observations = payload.get('observations') or []
               cross = [obs for obs in observations if obs.get('type') == 'cross_role_access_signal']
+              validated_headers = [obs for obs in observations if obs.get('type') == 'validated_security_header_issue']
               alerts = [obs for obs in observations if obs.get('type') == 'zap_alert']
               discovered = [obs for obs in observations if obs.get('type') == 'discovered_endpoint']
-              selected = cross[0] if cross else (alerts[0] if alerts else (discovered[0] if discovered else {}))
+              selected = cross[0] if cross else (
+                  validated_headers[0] if validated_headers else (
+                      alerts[0] if alerts else (
+                          discovered[0] if discovered else {}
+                      )
+                  )
+              )
               first_observation_id = str(selected.get('observation_id') or selected.get('id') or '')
               return {
                   'has_observation': 'true' if first_observation_id else 'false',
@@ -1089,7 +1096,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: Prefer cross_role_access_signal, then zap_alert, then discovered_endpoint.
+        desc: Prefer cross_role_access_signal, then validated_security_header_issue, then zap_alert, then discovered_endpoint.
         outputs:
           cross_role_access_count:
             children: null
@@ -1267,16 +1274,22 @@ workflow:
               obs_type = str(first_observation_type or '')
               has_plan = bool(str(verification_plan_id or '').strip())
               is_cross = obs_type == 'cross_role_access_signal' and has_plan
-              pending = obs_type in {'zap_alert', 'discovered_endpoint'} or not is_cross
+              is_validated_header = obs_type == 'validated_security_header_issue' and has_plan
+              is_evidence_capable = is_cross or is_validated_header
+              pending = obs_type in {'zap_alert', 'discovered_endpoint'} or not is_evidence_capable
               return {
                   'is_cross_role_signal': 'true' if is_cross else 'false',
+                  'is_evidence_capable': 'true' if is_evidence_capable else 'false',
                   'is_pending_verification': 'true' if pending else 'false',
-                  'verification_route': 'bola_evidence' if is_cross else 'pending_verification',
+                  'verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification',
               }
         code_language: python3
         dependencies: []
-        desc: Only cross_role_access_signal with a verification plan enters Evidence/JudgeApply in Phase 13A.
+        desc: cross_role_access_signal and validated_security_header_issue with a verification plan enter Evidence/JudgeApply in Phase 13E.
         outputs:
+          is_evidence_capable:
+            children: null
+            type: string
           is_cross_role_signal:
             children: null
             type: string
@@ -1313,15 +1326,15 @@ workflow:
         - case_id: 'true'
           conditions:
           - comparison_operator: is
-            id: is-cross-role-signal-condition
+            id: is-evidence-capable-condition
             value: 'true'
-            variable_selector: [route_by_observation_type, is_cross_role_signal]
+            variable_selector: [route_by_observation_type, is_evidence_capable]
             varType: string
           id: 'true'
           logical_operator: and
-        desc: Evidence/JudgeApply is only for cross_role_access_signal in Phase 13A.
+        desc: Evidence/JudgeApply is only for evidence-capable observations in Phase 13E.
         selected: false
-        title: Is Cross Role Signal?
+        title: Is Evidence-Capable Observation?
         type: if-else
       height: 126
       id: is_cross_role_signal
@@ -1336,7 +1349,7 @@ workflow:
       type: custom
       width: 242
     - data:
-        answer: "Pending verification.\n\nstatus: pending_verification\nmessage: Non-BOLA signal stopped at VerificationPlan in Phase 13A.\n\ncampaign_id: {{#extract_campaign.campaign_id#}}\ncandidate_kind: {{#select_ready_candidate.candidate_kind#}}\ntool_run_id: {{#extract_tool_run.tool_run_id#}}\ntool_result_status: {{#extract_tool_run.tool_result_status#}}\nfirst_observation_id: {{#summarize_observations.first_observation_id#}}\nfirst_observation_type: {{#summarize_observations.first_observation_type#}}\nverification_plan_id: {{#extract_verification_plan.verification_plan_id#}}\nobservations_count: {{#summarize_observations.observations_count#}}\ncross_role_access_count: {{#summarize_observations.cross_role_access_count#}}\nzap_alerts_count: {{#summarize_observations.zap_alerts_count#}}\ndiscovered_endpoints_count: {{#summarize_observations.discovered_endpoints_count#}}"
+        answer: "Pending verification.\n\nstatus: pending_verification\nmessage: Raw discovery signal stopped at VerificationPlan in Phase 13E.\n\ncampaign_id: {{#extract_campaign.campaign_id#}}\ncandidate_kind: {{#select_ready_candidate.candidate_kind#}}\ntool_run_id: {{#extract_tool_run.tool_run_id#}}\ntool_result_status: {{#extract_tool_run.tool_result_status#}}\nfirst_observation_id: {{#summarize_observations.first_observation_id#}}\nfirst_observation_type: {{#summarize_observations.first_observation_type#}}\nverification_plan_id: {{#extract_verification_plan.verification_plan_id#}}\nobservations_count: {{#summarize_observations.observations_count#}}\ncross_role_access_count: {{#summarize_observations.cross_role_access_count#}}\nzap_alerts_count: {{#summarize_observations.zap_alerts_count#}}\ndiscovered_endpoints_count: {{#summarize_observations.discovered_endpoints_count#}}"
         desc: ''
         selected: false
         title: Answer Pending Verification Result
