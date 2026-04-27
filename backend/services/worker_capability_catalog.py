@@ -120,14 +120,17 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         status="partial",
         adapter_available=True,
         execution_mode="sync",
-        triage_support=False,
-        evidence_support=False,
-        judge_support=False,
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
         requires_openapi=False,
         requires_seed=False,
         requires_corpus=False,
         risk_level="high",
-        notes="Phase 17B-1: bounded injection_test adapter; injection_signal only (no triage/evidence pipeline yet).",
+        notes=(
+            "Phase 17B-1/2: bounded injection_test; injection_signal triage and potential_injection "
+            "evidence path. Phase 17B-3b: automatic ScenarioPlanCompiler → PlannerCandidate pending."
+        ),
     ),
     WorkerCapability(
         worker_name="mass_assignment_validator",

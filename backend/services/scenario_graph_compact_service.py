@@ -27,6 +27,8 @@ def _role_names_from_campaign(campaign: Campaign) -> list[str]:
 
 
 def _compact_operation(op: Operation, *, owasp_max: int = 6, risk_max: int = 6) -> dict[str, Any]:
+    qparams = list(op.query_params or [])
+    pparams = list(op.path_params or [])
     return {
         "operation_id": op.operation_id,
         "method": str(op.method or "").upper(),
@@ -37,6 +39,9 @@ def _compact_operation(op: Operation, *, owasp_max: int = 6, risk_max: int = 6) 
         "risk_hints": list(op.risk_hints or [])[:risk_max],
         "seed_count": len(op.successful_seed_request_ids or []),
         "has_auth_baseline": bool(op.auth_baseline_request_ids),
+        "query_param_count": len(qparams),
+        "query_params_sample": qparams[:5],
+        "path_param_count": len(pparams),
     }
 
 

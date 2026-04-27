@@ -19,6 +19,7 @@ class ScenarioType(str, Enum):
     passive_signal_validation = "passive_signal_validation"
     discovery_expansion = "discovery_expansion"
     security_header_validation = "security_header_validation"
+    injection_testing = "injection_testing"
 
 
 SCENARIO_TYPES: frozenset[str] = frozenset(s.value for s in ScenarioType)
@@ -40,6 +41,8 @@ REQUIRED_PRECONDITIONS: frozenset[str] = frozenset({
     "response_schema",
     "passive_signal_context",
     "openapi_schema",
+    "parameter_context",
+    "safe_payload_allowlist",
     "seed_url",
     "authenticated_session",
     "rate_limit_budget",
@@ -57,6 +60,7 @@ VULNERABILITY_CLASS_ALLOWLIST: frozenset[str] = frozenset({
     "MISCONFIG",
     "RATE_LIMIT",
     "AUTH",
+    "INJECTION",
 })
 
 

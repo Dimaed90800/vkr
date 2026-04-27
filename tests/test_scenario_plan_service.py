@@ -71,6 +71,62 @@ def _store_campaign(
     memory_store.store_campaign(campaign_id, c.model_dump(mode="json"))
 
 
+def _store_graph_get_with_safe_query(
+    campaign_id: str = "cmp_scn",
+    *,
+    op_id: str = "op_GET_/api/v1/search",
+) -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id=op_id,
+                method="GET",
+                path_template="/api/v1/search",
+                query_params=["q", "limit"],
+                path_params=[],
+                owasp_candidates=["API8"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_post_only(campaign_id: str = "cmp_scn") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_POST_/api/v1/items",
+                method="POST",
+                path_template="/api/v1/items",
+                query_params=[],
+                body_fields=["name"],
+                owasp_candidates=["API3"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
+def _store_graph_get_sensitive_query_only(campaign_id: str = "cmp_scn") -> None:
+    graph = ApiGraph(
+        campaign_id=campaign_id,
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/oauth",
+                method="GET",
+                path_template="/api/v1/oauth",
+                query_params=["access_token", "password_hint", "api_key"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
+
+
 def _store_graph_bola_and_schema(
     campaign_id: str = "cmp_scn",
     *,
@@ -643,3 +699,210 @@ def test_scenario_plan_schema_negative_testing_accepted_with_real_tool_registry(
     s = next(x for x in resp.scenarios if x.scenario_type == ScenarioType.schema_negative_testing)
     assert s.status == ScenarioStatus.accepted
     assert "no_executable_adapter" not in (s.blocking_codes or [])
+
+
+def test_compact_graph_includes_query_and_path_param_hints() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+    c = Campaign.model_validate(memory_store.get_campaign("cmp_scn"))
+    compact = ScenarioGraphCompactService().build(c, max_operations=50)
+    ops = compact.get("operations_compact") or []
+    assert len(ops) == 1
+    row = ops[0]
+    assert row.get("query_param_count") == 2
+    assert row.get("query_params_sample") == ["q", "limit"]
+    assert row.get("path_param_count") == 0
+
+
+def test_stub_scenario_plan_emits_injection_testing_for_get_query_operation() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+    svc = ScenarioPlanService(
+        llm_client=StubScenarioLlmClient(),
+    )
+    resp = svc.plan(
+        "cmp_scn",
+        ScenarioPlanRequestBody(
+            llm={"enabled": False, "model": "", "prompt_version": "scenario-planner/v1"},
+        ),
+    )
+    inj = [s for s in resp.scenarios if s.scenario_type == ScenarioType.injection_testing.value]
+    assert inj, "expected injection_testing scenario from stub"
+    s = inj[0]
+    assert s.candidate_workers == ["injection_test"]
+    assert "openapi_schema" in s.required_preconditions
+    assert "parameter_context" in s.required_preconditions
+    assert "safe_payload_allowlist" in s.required_preconditions
+    assert s.status == ScenarioStatus.accepted
+    assert "INJECTION" in s.vulnerability_classes
+    assert s.operation_ids
+
+
+def test_stub_scenario_plan_does_not_emit_injection_for_post_only_graph() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_post_only()
+    svc = ScenarioPlanService(llm_client=StubScenarioLlmClient())
+    resp = svc.plan(
+        "cmp_scn",
+        ScenarioPlanRequestBody(
+            llm={"enabled": False, "model": "", "prompt_version": "scenario-planner/v1"},
+        ),
+    )
+    assert not any(s.scenario_type == ScenarioType.injection_testing.value for s in resp.scenarios)
+
+
+def test_stub_scenario_plan_filters_sensitive_query_params() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_sensitive_query_only()
+    svc = ScenarioPlanService(llm_client=StubScenarioLlmClient())
+    resp = svc.plan(
+        "cmp_scn",
+        ScenarioPlanRequestBody(
+            llm={"enabled": False, "model": "", "prompt_version": "scenario-planner/v1"},
+        ),
+    )
+    assert not any(s.scenario_type == ScenarioType.injection_testing.value for s in resp.scenarios)
+
+
+def test_injection_testing_rejects_unknown_operation_id() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+    raw = {
+        "schema_version": "scenario-plan/v1",
+        "campaign_id": "cmp_scn",
+        "source": "test",
+        "scenarios": [
+            {
+                "scenario_id": "scn_inj_bad_op",
+                "scenario_type": ScenarioType.injection_testing.value,
+                "vulnerability_classes": ["INJECTION"],
+                "operation_ids": ["op_UNKNOWN_not_in_graph"],
+                "resource_type": "",
+                "required_preconditions": [
+                    "openapi_schema",
+                    "parameter_context",
+                    "safe_payload_allowlist",
+                ],
+                "candidate_workers": ["injection_test"],
+                "confidence": 0.4,
+                "rationale": "manual injection scenario",
+            },
+        ],
+    }
+    svc = ScenarioPlanService(llm_client=_FakeLlmClient(raw))
+    resp = svc.plan("cmp_scn", ScenarioPlanRequestBody())
+    assert any(
+        s.scenario_type == ScenarioType.injection_testing.value and s.status == ScenarioStatus.rejected
+        for s in resp.scenarios
+    )
+    assert any("unknown_operation_id" in (e or "") for s in resp.scenarios for e in s.errors)
+
+
+def test_injection_testing_blocks_when_graph_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+
+    def _empty_ops_summary(self: ApiGraphService, campaign_id: str) -> GraphSummary:
+        return GraphSummary(campaign_id=campaign_id, operations_total=0)
+
+    monkeypatch.setattr(ApiGraphService, "summary_for_planner", _empty_ops_summary)
+
+    oid = "op_GET_/api/v1/search"
+    raw = {
+        "schema_version": "scenario-plan/v1",
+        "campaign_id": "cmp_scn",
+        "source": "test",
+        "scenarios": [
+            {
+                "scenario_id": "scn_inj_graph_empty",
+                "scenario_type": ScenarioType.injection_testing.value,
+                "vulnerability_classes": ["INJECTION"],
+                "operation_ids": [oid],
+                "resource_type": "",
+                "required_preconditions": [
+                    "openapi_schema",
+                    "parameter_context",
+                    "safe_payload_allowlist",
+                ],
+                "candidate_workers": ["injection_test"],
+                "confidence": 0.4,
+                "rationale": "injection scenario while graph summary empty",
+            },
+        ],
+    }
+    svc = ScenarioPlanService(llm_client=_FakeLlmClient(raw))
+    resp = svc.plan("cmp_scn", ScenarioPlanRequestBody())
+    inj = [s for s in resp.scenarios if s.scenario_type == ScenarioType.injection_testing.value]
+    assert inj
+    assert inj[0].status == ScenarioStatus.blocked
+    assert "graph_empty" in (inj[0].blocking_codes or [])
+
+
+def test_injection_testing_rejects_raw_url_in_rationale() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+    raw = {
+        "schema_version": "scenario-plan/v1",
+        "campaign_id": "cmp_scn",
+        "source": "test",
+        "scenarios": [
+            {
+                "scenario_id": "scn_inj_url",
+                "scenario_type": ScenarioType.injection_testing.value,
+                "vulnerability_classes": ["INJECTION"],
+                "operation_ids": ["op_GET_/api/v1/search"],
+                "resource_type": "",
+                "required_preconditions": [
+                    "openapi_schema",
+                    "parameter_context",
+                    "safe_payload_allowlist",
+                ],
+                "candidate_workers": ["injection_test"],
+                "confidence": 0.4,
+                "rationale": "context at https://evil.example/inject",
+            },
+        ],
+    }
+    svc = ScenarioPlanService(llm_client=_FakeLlmClient(raw))
+    resp = svc.plan("cmp_scn", ScenarioPlanRequestBody())
+    assert any("raw_url_not_allowed" in e for s in resp.scenarios for e in s.errors)
+
+
+def test_injection_testing_requires_known_adapter_worker() -> None:
+    _reset_store()
+    _store_campaign()
+    _store_graph_get_with_safe_query()
+    raw = {
+        "schema_version": "scenario-plan/v1",
+        "campaign_id": "cmp_scn",
+        "source": "test",
+        "scenarios": [
+            {
+                "scenario_id": "scn_inj_bad_worker",
+                "scenario_type": ScenarioType.injection_testing.value,
+                "vulnerability_classes": ["INJECTION"],
+                "operation_ids": ["op_GET_/api/v1/search"],
+                "resource_type": "",
+                "required_preconditions": [
+                    "openapi_schema",
+                    "parameter_context",
+                    "safe_payload_allowlist",
+                ],
+                "candidate_workers": ["not_a_registered_tool_xyz"],
+                "confidence": 0.4,
+                "rationale": "injection with unknown worker",
+            },
+        ],
+    }
+    svc = ScenarioPlanService(llm_client=_FakeLlmClient(raw))
+    resp = svc.plan("cmp_scn", ScenarioPlanRequestBody())
+    assert any("unknown_tool" in e for s in resp.scenarios for e in s.errors)

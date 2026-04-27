@@ -333,6 +333,11 @@ class ScenarioPlanValidator:
                 status = ScenarioStatus.blocked
                 blocking.append("missing_passive_signal_context")
 
+        if scenario_type == ScenarioType.injection_testing.value:
+            if ctx.graph_empty:
+                status = ScenarioStatus.blocked
+                blocking.append("graph_empty")
+
         blocking = sorted(set(blocking))
         if status == ScenarioStatus.accepted and blocking:
             status = ScenarioStatus.blocked

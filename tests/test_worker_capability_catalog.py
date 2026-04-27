@@ -63,9 +63,10 @@ def test_injection_worker_observation_type_injection_signal() -> None:
     w = WorkerCapabilityCatalog().get_by_tool_name("injection_test")
     assert w is not None
     assert "injection_signal" in w.observation_types
-    assert w.triage_support is False
-    assert w.evidence_support is False
-    assert w.judge_support is False
+    assert "injection_testing" in w.scenario_types
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
 
 
 def test_filter_by_scenario_type_returns_injection_worker() -> None:

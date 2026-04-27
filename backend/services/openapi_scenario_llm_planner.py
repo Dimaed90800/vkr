@@ -106,6 +106,61 @@ def _ops_with_owasp(compact: dict[str, Any], token: str, *, n: int = 2) -> list[
     return out
 
 
+_INJECTION_SENSITIVE_QUERY_SUBSTR: tuple[str, ...] = (
+    "authorization",
+    "token",
+    "cookie",
+    "password",
+    "api_key",
+    "secret",
+    "access_token",
+    "refresh_token",
+)
+
+
+def _injection_query_name_is_sensitive(name: str) -> bool:
+    lower = (name or "").strip().lower()
+    if not lower:
+        return True
+    return any(substr in lower for substr in _INJECTION_SENSITIVE_QUERY_SUBSTR)
+
+
+def _injection_safe_query_names_from_compact(op: dict[str, Any]) -> list[str]:
+    sample = op.get("query_params_sample") or []
+    if not isinstance(sample, list):
+        return []
+    out: list[str] = []
+    for raw in sample:
+        n = str(raw or "").strip()
+        if not n or _injection_query_name_is_sensitive(n):
+            continue
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def _injection_testing_operation_ids(compact_graph: dict[str, Any], *, max_ops: int = 3) -> list[str]:
+    """GET/HEAD operations with at least one non-sensitive query parameter name (stub only)."""
+    out: list[str] = []
+    for op in compact_graph.get("operations_compact") or []:
+        if not isinstance(op, dict):
+            continue
+        method = str(op.get("method") or "").upper()
+        if method not in {"GET", "HEAD"}:
+            continue
+        qcount = int(op.get("query_param_count") or 0)
+        if qcount <= 0:
+            continue
+        if not _injection_safe_query_names_from_compact(op):
+            continue
+        oid = str(op.get("operation_id") or "").strip()
+        if oid and oid not in out:
+            out.append(oid)
+        if len(out) >= max_ops:
+            break
+    return out
+
+
 class StubScenarioLlmClient:
     """Deterministic heuristic planner; never performs HTTP."""
 
@@ -147,6 +202,24 @@ class StubScenarioLlmClient:
             "confidence": 0.45,
             "rationale": "Contract/schema negative testing candidate from graph operations.",
         })
+
+        inj_ops = _injection_testing_operation_ids(compact_graph, max_ops=3)
+        if inj_ops:
+            push({
+                "scenario_id": "scn_heuristic_injection",
+                "scenario_type": ScenarioType.injection_testing.value,
+                "vulnerability_classes": ["INJECTION"],
+                "operation_ids": inj_ops,
+                "resource_type": "",
+                "required_preconditions": [
+                    "openapi_schema",
+                    "parameter_context",
+                    "safe_payload_allowlist",
+                ],
+                "candidate_workers": ["injection_test"],
+                "confidence": 0.4,
+                "rationale": "Bounded injection probe candidates on GET operations with query parameters.",
+            })
 
         bola_ops = [oid for oid in _first_ops(compact_graph, n=12) if oid in set(object_ops)]
         if bola_ops:
