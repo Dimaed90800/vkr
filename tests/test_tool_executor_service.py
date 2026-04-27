@@ -26,7 +26,9 @@ from backend.models.tool_run import (
     ToolRunStartRequest,
 )
 from backend.models.worker_command import CommandBudget, WorkerCommand
+from backend.services.adapters.injection_test_adapter import InjectionTestAdapter
 from backend.services.artifact_store import ArtifactStore
+from backend.services.command_validator import CommandValidator
 from backend.services.tool_executor import ToolExecutor, ToolExecutorStartError
 from backend.services.tool_registry import ToolRegistry
 from backend.services.zap_passive_client import ZapPassiveResult
@@ -410,6 +412,12 @@ def test_tool_registry_returns_execution_mode():
     assert reg.get_execution_mode("schemathesis_negative_test") == "sync"
     assert reg.get_execution_mode("restler_fuzz") == "async"
     assert reg.has_adapter("schemathesis_negative_test") is True
+
+
+def test_registry_injection_test_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("injection_test") is True
+    assert reg.get_execution_mode("injection_test") == "sync"
 
 
 def test_security_header_validator_allowed_only_for_misconfiguration():
@@ -824,6 +832,142 @@ def test_tool_run_rejects_invalid_execution_mode():
         assert False, "Expected validation error for invalid execution mode"
     except Exception:
         pass
+
+
+def _injection_syn_row(
+    *,
+    b_stat: int = 200,
+    a_stat: int = 500,
+) -> dict:
+    return {
+        "baseline_status": b_stat,
+        "attack_status": a_stat,
+        "baseline_size_bucket": "small",
+        "attack_size_bucket": "small",
+        "marker_reflected": False,
+        "error_pattern_class": "none",
+        "response_delta_class": "new_5xx",
+        "_attack_body_text": "",
+    }
+
+
+def test_tool_executor_dispatches_injection_test() -> None:
+    _reset_store()
+    c = Campaign(
+        campaign_id="cmp_test1",
+        target_url="http://testapp.local",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=1000, max_duration_sec=1800),
+    )
+    memory_store.store_campaign("cmp_test1", c.model_dump(mode="json"))
+    syn = [_injection_syn_row()]
+    ad = InjectionTestAdapter(synthetic_outcomes=syn)
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="injection_probe",
+        tool_name="injection_test",
+        operation_id="op_GET_/items",
+        inputs={
+            "target_url": "http://testapp.local",
+            "payload_families": ["sql_like"],
+            "max_payloads_per_param": 1,
+        },
+        budget=CommandBudget(max_requests=5, timeout_sec=20),
+    )
+    result = ToolExecutor(injection_adapter=ad).execute_sync(cmd)
+    assert result.tool_name == "injection_test"
+    assert result.status == "partial"
+    assert result.observations and result.observations[0].observation_type == "injection_signal"
+
+
+def test_tools_runs_start_sync_injection_test_returns_result() -> None:
+    _reset_store()
+    c = Campaign(
+        campaign_id="cmp_test1",
+        target_url="http://testapp.local",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=1000, max_duration_sec=1800),
+    )
+    memory_store.store_campaign("cmp_test1", c.model_dump(mode="json"))
+    import backend.api.routes_tool_runs as tr
+
+    prev = tr._executor
+    tr._executor = ToolExecutor(
+        injection_adapter=InjectionTestAdapter(synthetic_outcomes=[_injection_syn_row()]),
+    )
+    try:
+        client = _get_test_client()
+        payload = {
+            "execution_mode": "sync",
+            "command": {
+                "campaign_id": "cmp_test1",
+                "worker_class": "contract_fuzzing",
+                "strategy": "injection_probe",
+                "tool_name": "injection_test",
+                "operation_id": "op_GET_/items",
+                "inputs": {
+                    "target_url": "http://testapp.local",
+                    "payload_families": ["sql_like"],
+                    "max_payloads_per_param": 1,
+                },
+                "budget": {"max_requests": 5, "timeout_sec": 20},
+            },
+        }
+        resp = client.post("/v1/tools/runs/start", json=payload)
+    finally:
+        tr._executor = prev
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["result"]["tool_name"] == "injection_test"
+    assert body["result"]["observations"][0]["observation_type"] == "injection_signal"
+
+
+def test_injection_test_rejects_target_url_not_campaign() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="injection_probe",
+        tool_name="injection_test",
+        operation_id="op_x",
+        inputs={"target_url": "http://testapp.local/api/v1/other"},
+        budget=CommandBudget(max_requests=5, timeout_sec=20),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    assert any(e.code == "injection_target_url_mismatch" for e in v.errors)
+
+
+def test_injection_test_budget_caps() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="injection_probe",
+        tool_name="injection_test",
+        operation_id="op_x",
+        inputs={"target_url": "http://testapp.local"},
+        budget=CommandBudget(max_requests=50, timeout_sec=20),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    assert any(e.code == "injection_budget_max_requests" for e in v.errors)
+
+    cmd2 = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="injection_probe",
+        tool_name="injection_test",
+        operation_id="op_x",
+        inputs={"target_url": "http://testapp.local"},
+        budget=CommandBudget(max_requests=5, timeout_sec=99),
+    )
+    v2 = CommandValidator().validate(cmd2)
+    assert not v2.valid
+    assert any(e.code == "injection_budget_timeout" for e in v2.errors)
 
 
 def test_existing_wrapper_routes_still_respond():

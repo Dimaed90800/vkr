@@ -144,6 +144,8 @@ class CommandValidator:
         self._validate_seed_request(command, errors)
         self._validate_auth_profiles(command, campaign, errors, warnings)
         self._validate_operation_id(command, warnings)
+        if (command.tool_name or "").strip() == "injection_test":
+            self._validate_injection_test(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -332,6 +334,86 @@ class CommandValidator:
                         "configured_roles": sorted(configured_names),
                     },
                 ))
+
+    def _validate_injection_test(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "contract_fuzzing":
+            errors.append(ValidationError(
+                code="injection_worker_class_invalid",
+                message="injection_test requires worker_class contract_fuzzing.",
+                details={"worker_class": command.worker_class},
+            ))
+        if not (command.operation_id or "").strip():
+            errors.append(ValidationError(
+                code="operation_id_required_for_injection_test",
+                message="operation_id is required for injection_test.",
+            ))
+        if command.budget.max_requests > 10:
+            errors.append(ValidationError(
+                code="injection_budget_max_requests",
+                message="injection_test max_requests must be <= 10.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 30:
+            errors.append(ValidationError(
+                code="injection_budget_timeout",
+                message="injection_test timeout_sec must be <= 30.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "operation_id",
+            "payload_families",
+            "max_payloads_per_param",
+            "parameter_candidates",
+        }
+        for k in inputs:
+            if k not in allowed_keys:
+                errors.append(ValidationError(
+                    code="injection_inputs_unknown_key",
+                    message=f"inputs.{k} is not allowed for injection_test.",
+                    details={"key": k, "allowed": sorted(allowed_keys)},
+                ))
+        target_url = str(inputs.get("target_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="injection_target_url_required",
+                message="inputs.target_url is required for injection_test.",
+            ))
+        else:
+            trusted = (campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted.rstrip("/"):
+                errors.append(ValidationError(
+                    code="injection_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        iop = str(inputs.get("operation_id") or "").strip()
+        if iop and iop != (command.operation_id or "").strip():
+            errors.append(ValidationError(
+                code="injection_operation_id_mismatch",
+                message="inputs.operation_id must match command.operation_id when set.",
+            ))
+        mpp = inputs.get("max_payloads_per_param")
+        if mpp is not None:
+            try:
+                mppi = int(mpp)
+            except (TypeError, ValueError):
+                errors.append(ValidationError(
+                    code="injection_max_payloads_invalid",
+                    message="max_payloads_per_param must be an integer.",
+                ))
+            else:
+                if mppi > 2 or mppi < 1:
+                    errors.append(ValidationError(
+                        code="injection_max_payloads_out_of_range",
+                        message="max_payloads_per_param must be between 1 and 2.",
+                    ))
 
     def _validate_operation_id(
         self,

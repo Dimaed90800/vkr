@@ -50,12 +50,22 @@ def test_bola_capability_is_partial_and_requires_auth_seed() -> None:
     assert w.requires_corpus is True
 
 
-def test_injection_worker_is_planned_high_risk() -> None:
+def test_injection_worker_now_partial_with_adapter() -> None:
     w = WorkerCapabilityCatalog().get_by_tool_name("injection_test")
     assert w is not None
-    assert w.status == "planned"
+    assert w.status == "partial"
     assert w.risk_level == "high"
-    assert w.adapter_available is False
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+
+
+def test_injection_worker_observation_type_injection_signal() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("injection_test")
+    assert w is not None
+    assert "injection_signal" in w.observation_types
+    assert w.triage_support is False
+    assert w.evidence_support is False
+    assert w.judge_support is False
 
 
 def test_filter_by_scenario_type_returns_injection_worker() -> None:

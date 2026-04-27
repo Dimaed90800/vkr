@@ -15,7 +15,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from backend.models.campaign import Campaign, CampaignLimits
-from backend.models.observation import Observation, VerificationPlan
+from backend.models.observation import Observation, ObservationType, SecurityRelevance, VerificationPlan
 from backend.models.tool_run import (
     ToolResult,
     ToolResultError,
@@ -253,6 +253,47 @@ def test_normalize_tool_result_observation_lite_mapped():
     assert obs.confidence == 0.8
     assert obs.details.get("object_id") == "123"
     assert obs.judge_worthy is False
+
+
+def test_normalize_injection_signal_observation():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "injection_test"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="injection_signal",
+            confidence=0.6,
+            details={
+                "operation_id": "op_inj_x",
+                "tool_name": "injection_test",
+                "parameter_name": "q",
+                "parameter_location": "query",
+                "payload_family": "sql_like",
+                "payload_label": "sql_quote_single",
+                "signal_types": ["server_error_on_payload"],
+                "baseline_status": 200,
+                "attack_status": 500,
+                "response_delta_class": "new_5xx",
+                "marker_reflected": False,
+                "error_pattern_class": "none",
+                "recommended_next_action": "validate_injection_impact",
+                "security_relevance": "medium",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == ObservationType.injection_signal
+    assert obs.operation_id == "op_inj_x"
+    assert obs.security_relevance == SecurityRelevance.medium
+    assert obs.recommended_next_action == "validate_injection_impact"
+    assert obs.details.get("payload_label") == "sql_quote_single"
 
 
 def test_normalize_validated_security_header_issue_observation_lite_mapped():

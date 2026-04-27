@@ -13,11 +13,11 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 try:
-    from backend.models.observation import Observation
+    from backend.models.observation import Observation, SecurityRelevance
     from backend.models.tool_run import ToolResult
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
-    from models.observation import Observation
+    from models.observation import Observation, SecurityRelevance
     from models.tool_run import ToolResult
     from storage.memory_store import memory_store
 
@@ -115,6 +115,15 @@ class ObservationNormalizer:
             if not lite.observation_type:
                 continue
             lite_details = lite.details if isinstance(lite.details, dict) else {}
+            sec_rel: SecurityRelevance = SecurityRelevance.unknown
+            rec_act = ""
+            if str(lite.observation_type) == "injection_signal":
+                rec_act = str(lite_details.get("recommended_next_action") or "")
+                sec_raw = str(lite_details.get("security_relevance") or "unknown").lower()
+                try:
+                    sec_rel = SecurityRelevance(sec_raw)
+                except ValueError:
+                    sec_rel = SecurityRelevance.unknown
             observations.append(Observation(
                 observation_id=_make_obs_id(),
                 campaign_id=campaign_id,
@@ -127,9 +136,11 @@ class ObservationNormalizer:
                 request_id=str(lite_details.get("request_id", "") or ""),
                 auth_profile=str(lite_details.get("auth_profile", "") or ""),
                 confidence=lite.confidence,
-                security_relevance="unknown",
+                security_relevance=(
+                    sec_rel if str(lite.observation_type) == "injection_signal" else SecurityRelevance.unknown
+                ),
                 judge_worthy=False,
-                recommended_next_action="",
+                recommended_next_action=rec_act,
                 details=lite_details,
                 created_at=_now_iso(),
             ))

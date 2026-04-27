@@ -23,6 +23,7 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "zap_discovery_passive": "zap_discovery_passive",
     "security_header_validator": "security_header_validator",
     "schemathesis_negative_test": "schemathesis_negative",
+    "injection_test": "injection_test",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
@@ -36,6 +37,7 @@ SYNC_ONLY_TOOLS: set[str] = {
     "replay_http_sequence",
     "property_mutation_test",
     "schemathesis_negative_test",
+    "injection_test",
 }
 
 ASYNC_CAPABLE_TOOLS: set[str] = {

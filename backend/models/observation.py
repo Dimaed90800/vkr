@@ -30,6 +30,7 @@ class ObservationType(str, Enum):
     unsupported_tool_signal = "unsupported_tool_signal"
     timeout_signal = "timeout_signal"
     tool_error = "tool_error"
+    injection_signal = "injection_signal"
 
 
 class SecurityRelevance(str, Enum):
