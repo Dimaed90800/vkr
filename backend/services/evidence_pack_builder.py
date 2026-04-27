@@ -366,6 +366,17 @@ class EvidencePackBuilder:
                 if str(s).startswith("signal:")
             }
             return bool(seen & strong)
+        if code.startswith("operation_id:"):
+            # Legacy VerificationPlan rows mistakenly used operation_id:<op> as a code.
+            expected = code[len("operation_id:") :].strip()
+            if not expected:
+                return False
+            if (pack.operation_id or "").strip() == expected:
+                return True
+            return any(
+                str(s) == f"operation_id:{expected}"
+                for s in (pack.derived_signals or [])
+            )
         if code == "auth_bypass_confirmed":
             return (
                 pack.attack is not None

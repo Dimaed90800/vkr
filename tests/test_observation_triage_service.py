@@ -486,6 +486,29 @@ def test_triage_schema_mismatch_with_5xx_creates_verification_plan():
         assert evidence in plan.required_evidence
 
 
+def test_triage_schema_mismatch_required_evidence_uses_canonical_codes():
+    """Phase 16E-fix: no operation_id:<op> entries in required_evidence."""
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "schema_mismatch",
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "signal_types": ["5xx", "schema_violation"],
+            "operation_id": "op_GET_/api/v1/items/{id}",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is not None
+    assert plan.required_evidence == [
+        "schemathesis_signal",
+        "operation_context",
+        "impact_classification",
+    ]
+    assert not any(str(x).startswith("operation_id:") for x in plan.required_evidence)
+
+
 def test_triage_schema_mismatch_with_unexpected_2xx_creates_verification_plan():
     _reset_store()
     _create_campaign()

@@ -768,6 +768,146 @@ def test_schema_mismatch_schemathesis_strong_signals_ready_for_judge():
     assert pack.replay_steps[0].description.startswith("Schemathesis negative testing")
 
 
+def test_schema_mismatch_required_evidence_canonical_codes_satisfied():
+    """Phase 16E-fix: canonical triage codes merge to ready_for_judge."""
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "operation_id": "op_GET_/api/v1/items/{id}",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=[
+            "schemathesis_signal",
+            "operation_context",
+            "impact_classification",
+        ],
+        plan_id="vplan_schema_canonical_only",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_canonical_only")
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert pack.missing_evidence == []
+
+
+def test_schema_mismatch_legacy_operation_id_required_evidence_is_satisfied_when_matches():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    op = "op_GET_/api/v1/items/{id}"
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id=op,
+        details={
+            "operation_id": op,
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=[
+            "schemathesis_signal",
+            "operation_context",
+            "impact_classification",
+            f"operation_id:{op}",
+        ],
+        plan_id="vplan_schema_legacy_op_ok",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_legacy_op_ok")
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert not any(m.code.startswith("operation_id:") for m in pack.missing_evidence)
+
+
+def test_schema_mismatch_legacy_operation_id_required_evidence_missing_when_mismatch():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="schemathesis_negative_test")
+    obs = _make_obs(
+        ObservationType.schema_mismatch.value,
+        operation_id="op_GET_/api/v1/items/{id}",
+        details={
+            "operation_id": "op_GET_/api/v1/items/{id}",
+            "tool_name": "schemathesis_negative_test",
+            "signal_types": ["5xx"],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_schema_mismatch_impact",
+        required_evidence=[
+            "schemathesis_signal",
+            "operation_context",
+            "impact_classification",
+            "operation_id:op_OTHER_not_matching",
+        ],
+        plan_id="vplan_schema_legacy_op_bad",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_schema_legacy_op_bad")
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "operation_id:op_OTHER_not_matching" in missing_codes
+
+
+def test_phase16e_fix_regression_bola_and_security_header_evidence_unchanged():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    ctx = _setup_complete_bola_corpus()
+    bola_obs = _make_obs(
+        ObservationType.cross_role_access_signal.value,
+        observation_id="obs_bola_fix",
+        operation_id=ctx["op_id"],
+        confidence=0.9,
+        details={
+            "object_id": ctx["object_id"],
+            "owner_role": ctx["owner_role"],
+            "attacker_role": ctx["attacker_role"],
+            "owner_collection_request_id": ctx["owner_collection"].request_id,
+            "attacker_collection_request_id": ctx["attacker_collection"].request_id,
+        },
+    )
+    pack_b, _, _ = EvidencePackBuilder().build_from_observation(bola_obs.observation_id)
+    assert pack_b is not None
+    assert pack_b.status == "ready_for_judge"
+    assert pack_b.judge_ready is True
+
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="security_header_validator")
+    hdr_obs = _make_obs(
+        ObservationType.validated_security_header_issue.value,
+        observation_id="obs_hdr_fix",
+        operation_id="",
+        details={
+            "header_name": "X-Frame-Options",
+            "alert_name": "X-Frame-Options Header Not Set",
+            "actual_state": "missing",
+            "validation_mode": "single_replay_header_check",
+            "source_observation_id": "obs_zap_header_fix",
+            "url": "http://testapp.local/frame",
+        },
+    )
+    pack_h, _, _ = EvidencePackBuilder().build_from_observation(hdr_obs.observation_id)
+    assert pack_h is not None
+    assert pack_h.status == "ready_for_judge"
+    assert pack_h.judge_ready is True
+
+
 def test_schema_mismatch_strong_signals_include_interpretation_and_impact_summary():
     """Phase 16E-A: interpretation lines and impact_summary on strong Schemathesis signals."""
     _reset_store()

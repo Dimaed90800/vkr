@@ -200,7 +200,6 @@ class ObservationTriage:
             existing_plan = self._find_existing_active_plan(obs)
             if existing_plan is not None:
                 return obs, existing_plan, None
-            op_id = str(obs.operation_id or details.get("operation_id") or "")
             plan = VerificationPlan(
                 verification_plan_id=_make_plan_id(),
                 campaign_id=obs.campaign_id,
@@ -218,9 +217,6 @@ class ObservationTriage:
                 status=VerificationPlanStatus.pending,
                 created_at=_now_iso(),
             )
-            if op_id:
-                # Keep plan compact while preserving operation context.
-                plan.required_evidence = list(plan.required_evidence) + [f"operation_id:{op_id}"]
             memory_store.store_verification_plan(
                 plan.verification_plan_id,
                 obs.campaign_id,

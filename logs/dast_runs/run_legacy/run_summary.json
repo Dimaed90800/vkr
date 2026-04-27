@@ -1,16 +1,16 @@
 {
   "run_id": "run_legacy",
   "event_counts": {
-    "evidence_build_start": 26,
-    "evidence_strength_assessed": 26,
-    "evidence_build_finish": 26
+    "evidence_build_start": 27,
+    "evidence_strength_assessed": 27,
+    "evidence_build_finish": 27
   },
   "component_counts": {
-    "wrapper": 78
+    "wrapper": 81
   },
   "status_counts": {
-    "started": 26,
-    "ok": 52
+    "started": 27,
+    "ok": 54
   },
   "top_dead_end_reasons": {},
   "top_failing_preparation_reasons": {},
@@ -26,7 +26,7 @@
   "_baseline_validation_failures": 0,
   "last_event_type": "evidence_build_finish",
   "last_status": "ok",
-  "last_updated_at": "2026-04-27T06:27:38.286238+00:00",
+  "last_updated_at": "2026-04-27T06:42:31.424431+00:00",
   "object_materialization_success_rate": 0.0,
   "baseline_validation_failure_rate": 0.0
 }
