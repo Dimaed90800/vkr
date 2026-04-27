@@ -148,6 +148,8 @@ class CommandValidator:
             self._validate_injection_test(command, campaign, errors)
         if (command.tool_name or "").strip() == "property_mutation_test":
             self._validate_property_mutation_test(command, campaign, errors)
+        if (command.tool_name or "").strip() == "cors_validator":
+            self._validate_cors_validator(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -256,6 +258,13 @@ class CommandValidator:
                 trusted = str(campaign.openapi_url or "").strip()
                 if trusted and url.strip() == trusted:
                     continue
+
+            if (
+                command.tool_name == "cors_validator"
+                and key == "inputs.origin_probe"
+                and url.strip() == "https://evil.example.invalid"
+            ):
+                continue
 
             if host and host not in allowed_hosts and host_port not in allowed_hosts:
                 errors.append(ValidationError(
@@ -569,6 +578,99 @@ class CommandValidator:
                     message="sensitive_fields entries must be compact field names (no values/tokens).",
                     details={"field": value},
                 ))
+
+    def _validate_cors_validator(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "misconfiguration":
+            errors.append(ValidationError(
+                code="cors_worker_class_invalid",
+                message="cors_validator requires worker_class misconfiguration.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "validate_cors_policy":
+            errors.append(ValidationError(
+                code="cors_strategy_invalid",
+                message="cors_validator requires strategy validate_cors_policy.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "request_url",
+            "operation_id",
+            "path_template",
+            "method",
+            "origin_probe",
+            "validation_mode",
+            "max_response_bytes",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="cors_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for cors_validator.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        request_url = str(inputs.get("request_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="cors_target_url_required",
+                message="inputs.target_url is required for cors_validator.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="cors_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        if not request_url:
+            errors.append(ValidationError(
+                code="cors_request_url_required",
+                message="inputs.request_url is required for cors_validator.",
+            ))
+
+        method = str(inputs.get("method") or "GET").strip().upper()
+        if method not in {"GET", "OPTIONS"}:
+            errors.append(ValidationError(
+                code="cors_method_not_allowed",
+                message="cors_validator supports only GET or OPTIONS.",
+                details={"method": method},
+            ))
+
+        origin_probe = str(inputs.get("origin_probe") or "https://evil.example.invalid").strip()
+        if origin_probe != "https://evil.example.invalid":
+            errors.append(ValidationError(
+                code="cors_origin_probe_invalid",
+                message="origin_probe must be https://evil.example.invalid in MVP.",
+            ))
+
+        validation_mode = str(inputs.get("validation_mode") or "single_replay_cors_check").strip()
+        if validation_mode and validation_mode != "single_replay_cors_check":
+            errors.append(ValidationError(
+                code="cors_validation_mode_invalid",
+                message="validation_mode must be single_replay_cors_check in MVP.",
+            ))
+
+        if command.budget.max_requests > 2:
+            errors.append(ValidationError(
+                code="cors_budget_max_requests",
+                message="cors_validator max_requests must be <= 2.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="cors_budget_timeout",
+                message="cors_validator timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
 
     def _check_fingerprint_duplicate(
         self,

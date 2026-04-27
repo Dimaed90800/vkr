@@ -87,6 +87,7 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.zap_alert.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.nuclei_match.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
+    ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
 }
 
 
@@ -243,6 +244,10 @@ class EvidencePackBuilder:
             self._fill_schema_mismatch(pack, obs, plan)
         elif obs_type == ObservationType.injection_signal.value:
             self._fill_injection_signal(pack, obs, plan)
+        elif obs_type == ObservationType.mass_assignment_signal.value:
+            self._fill_mass_assignment_signal(pack, obs, plan)
+        elif obs_type == ObservationType.validated_cors_issue.value:
+            self._fill_validated_cors_issue_cors(pack, obs, plan)
         else:
             self._fill_not_judge_ready(pack, obs, code="unsupported_observation_type")
 
@@ -422,6 +427,24 @@ class EvidencePackBuilder:
                 and pack.baseline is not None
                 and pack.baseline.request_ref is not None
             )
+        if code == "mass_assignment_signal":
+            return "mass_assignment_signal" in (pack.derived_signals or [])
+        if code == "seed_reference":
+            return (
+                pack.attack is not None
+                and pack.attack.request_ref is not None
+                and bool((pack.attack.request_ref.request_id or "").strip())
+            )
+        if code == "field_selection_context":
+            return any(str(s).startswith("fields_selected_count:") for s in (pack.derived_signals or []))
+        if code == "runtime_effect_assessment":
+            return any(str(s).startswith("runtime_effect_proven:") for s in (pack.derived_signals or []))
+        if code == "validated_cors_issue":
+            return "validated_cors_issue" in (pack.derived_signals or [])
+        if code == "cors_policy_state":
+            return any(str(s).startswith("acao_state:") for s in (pack.derived_signals or []))
+        if code == "origin_probe_context":
+            return any(str(s).startswith("origin_probe_label:") for s in (pack.derived_signals or []))
         return False
 
     # ------------------------------------------------------------------
@@ -461,6 +484,8 @@ class EvidencePackBuilder:
             return "security_header_misconfiguration"
         if obs_type == ObservationType.injection_signal.value:
             return "potential_injection"
+        if obs_type == ObservationType.validated_cors_issue.value:
+            return "cors_misconfiguration"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -1222,6 +1247,208 @@ class EvidencePackBuilder:
                     "signal_types must include at least one strong injection signal."
                 ),
                 required_for="potential_injection",
+            ))
+
+    def _fill_mass_assignment_signal(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        tool_name = str(details.get("tool_name") or "").strip()
+        mutation_policy = str(details.get("mutation_policy") or "").strip().lower()
+        diagnostic_only = details.get("diagnostic_only") is True
+        runtime_effect_proven = details.get("runtime_effect_proven") is True
+        seed_request_id = str(details.get("seed_request_id") or "").strip()
+        seed_present = details.get("seed_request_id_present") is True
+
+        fields_selected_raw = details.get("fields_selected")
+        fields_selected = (
+            [str(x).strip() for x in fields_selected_raw if str(x).strip()]
+            if isinstance(fields_selected_raw, list)
+            else []
+        )
+        fields_considered_count = int(details.get("fields_considered_count") or 0)
+        fields_skipped_count = int(details.get("fields_skipped_count") or 0)
+
+        pack.owasp_category = "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+        pack.vulnerability_class = "potential_mass_assignment"
+        if op_id:
+            pack.operation_id = op_id
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
+        if op is not None:
+            if not pack.method:
+                pack.method = (op.method or "").upper()
+            if not pack.endpoint:
+                pack.endpoint = EvidencePackBuilder._strip_path_query(op.path_template or "")
+        pack.hypothesis = (
+            "Diagnostic signal suggests sensitive writable fields may be mass-assignable; "
+            "runtime effect is not proven."
+        )
+        pack.derived_signals = [
+            "mass_assignment_signal",
+            f"tool_name:{tool_name or 'property_mutation_test'}",
+            f"operation_id:{op_id}",
+            f"mutation_policy:{mutation_policy or 'diagnostic_only'}",
+            f"diagnostic_only:{str(bool(diagnostic_only)).lower()}",
+            f"runtime_effect_proven:{str(bool(runtime_effect_proven)).lower()}",
+            f"fields_selected_count:{len(fields_selected)}",
+            f"fields_considered_count:{max(0, fields_considered_count)}",
+            f"fields_skipped_count:{max(0, fields_skipped_count)}",
+            f"proof_scope:{str(details.get('proof_scope') or 'diagnostic_signal_only')}",
+        ]
+        for field_name in fields_selected[:20]:
+            pack.derived_signals.append(f"field_selected:{field_name}")
+
+        if seed_present and seed_request_id:
+            seed_ref = self._resolve_request_ref(obs.campaign_id, seed_request_id)
+            if seed_ref is not None:
+                pack.attack = EvidenceAttack(
+                    role=seed_ref.role,
+                    request_ref=seed_ref,
+                    description="Seed request reference for diagnostic mass-assignment signal.",
+                )
+
+        if not op_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="operation_id is required for mass_assignment_signal evidence.",
+                required_for="potential_mass_assignment",
+            ))
+        if tool_name and tool_name != "property_mutation_test":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description="mass_assignment_signal must come from property_mutation_test.",
+                required_for="potential_mass_assignment",
+            ))
+        if mutation_policy != "diagnostic_only" or not diagnostic_only:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="diagnostic_mode_required",
+                description="mass_assignment_signal evidence in Phase 18C must stay diagnostic_only.",
+                required_for="potential_mass_assignment",
+            ))
+        if not fields_selected:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="field_selection_context_missing",
+                description="fields_selected must contain at least one candidate field name.",
+                required_for="potential_mass_assignment",
+            ))
+        if not (seed_present and seed_request_id):
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="seed_reference_missing",
+                description="seed_request_id context is required for mass_assignment diagnostic evidence.",
+                required_for="potential_mass_assignment",
+            ))
+
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=pack.method or "",
+                path_template=pack.endpoint or "",
+                url="",
+                request_ref=pack.attack.request_ref if pack.attack is not None else None,
+                description="Property mutation diagnostic signal context captured",
+            ),
+        ]
+
+    def _fill_validated_cors_issue_cors(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        tool_name = str(details.get("tool_name") or "").strip()
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        request_url = str(details.get("request_url") or "").strip()
+        path_template = str(details.get("path_template") or "").strip()
+        issue_codes_raw = details.get("issue_codes")
+        issue_codes = (
+            [str(x).strip() for x in issue_codes_raw if str(x).strip()]
+            if isinstance(issue_codes_raw, list)
+            else []
+        )
+        strong_codes = {
+            "cors_wildcard_with_credentials",
+            "cors_origin_reflection_with_credentials",
+        }
+        has_strong = any(code in strong_codes for code in issue_codes)
+        acao_state = str(details.get("acao_state") or "").strip()
+        acac_present = details.get("acac_present") is True
+        vary_origin_present = details.get("vary_origin_present") is True
+        origin_reflection_detected = details.get("origin_reflection_detected") is True
+        origin_probe_label = str(details.get("origin_probe_label") or "").strip()
+
+        pack.owasp_category = "API8_SECURITY_MISCONFIGURATION"
+        pack.vulnerability_class = "cors_misconfiguration"
+        if op_id:
+            pack.operation_id = op_id
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
+        if op is not None:
+            if not pack.method:
+                pack.method = (op.method or "").upper()
+            if not pack.endpoint:
+                pack.endpoint = EvidencePackBuilder._strip_path_query(op.path_template or "")
+        if not pack.endpoint:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(path_template or "")
+        pack.hypothesis = (
+            "Validated CORS policy appears overly permissive for a cross-origin probe."
+        )
+
+        derived = [
+            "validated_cors_issue",
+            f"tool_name:{tool_name or 'cors_validator'}",
+            f"acao_state:{acao_state}",
+            f"acac_present:{str(bool(acac_present)).lower()}",
+            f"origin_reflection_detected:{str(bool(origin_reflection_detected)).lower()}",
+            f"vary_origin_present:{str(bool(vary_origin_present)).lower()}",
+            f"validation_mode:{validation_mode or 'single_replay_cors_check'}",
+            f"origin_probe_label:{origin_probe_label or 'evil_example_invalid'}",
+        ]
+        for code in issue_codes[:10]:
+            derived.append(f"issue_code:{code}")
+        pack.derived_signals = derived
+
+        location = request_url or path_template or pack.endpoint
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=(pack.method or "GET").upper(),
+                path_template=pack.endpoint or "",
+                url=location,
+                request_ref=None,
+                description="Validated CORS policy replay against fixed cross-origin probe",
+            ),
+        ]
+
+        if not has_strong:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="strong_cors_issue_missing",
+                description="validated_cors_issue requires a strong CORS issue code in MVP.",
+                required_for="cors_misconfiguration",
+            ))
+        if not validation_mode:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="validation_mode_missing",
+                description="validated_cors_issue evidence requires validation_mode.",
+                required_for="cors_misconfiguration",
+            ))
+        if not (op_id or request_url or path_template):
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="target_location_missing",
+                description="validated_cors_issue evidence requires operation_id or target location.",
+                required_for="cors_misconfiguration",
+            ))
+        if not acao_state:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="cors_policy_state_missing",
+                description="validated_cors_issue evidence requires acao_state.",
+                required_for="cors_misconfiguration",
+            ))
+        if tool_name and tool_name != "cors_validator":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description="validated_cors_issue must come from cors_validator.",
+                required_for="cors_misconfiguration",
             ))
 
     def _fill_not_judge_ready(

@@ -80,6 +80,13 @@ class PlannerService:
         if request.bola.enabled:
             candidates.extend(self._bola_candidates(campaign, request, graph_summary.model_dump(mode="json")))
         candidates.extend(self._security_header_candidates(campaign, graph_summary.model_dump(mode="json")))
+        candidates.extend(
+            self._cors_candidates(
+                campaign,
+                graph_summary.model_dump(mode="json"),
+                enable_baseline=bool(getattr(request, "enable_cors_baseline", False)),
+            ),
+        )
 
         operations = self._graph.list_operations(campaign_id)
         valid_op_ids = frozenset(op.operation_id for op in operations)
@@ -346,6 +353,230 @@ class PlannerService:
             candidates.append(self._security_header_candidate(campaign, raw, graph_summary))
         return candidates
 
+    def _cors_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+        *,
+        enable_baseline: bool,
+    ) -> list[PlannerCandidate]:
+        candidates: list[PlannerCandidate] = []
+        cors_urls_seen: set[str] = set()
+        passive_context_exists = False
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            obs_type = self._raw_observation_type(raw)
+            if obs_type in {ObservationType.zap_alert.value, ObservationType.discovered_endpoint.value}:
+                passive_context_exists = True
+            if obs_type != ObservationType.zap_alert.value:
+                continue
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if not self._is_cors_alert(str(details.get("alert_name") or "")):
+                continue
+            candidate = self._cors_candidate(campaign, raw, graph_summary)
+            candidates.append(candidate)
+            req_url = ""
+            if candidate.command is not None and isinstance(candidate.command.inputs, dict):
+                req_url = str(candidate.command.inputs.get("request_url") or "").strip()
+            if not req_url and isinstance(candidate.summary, dict):
+                req_url = str(candidate.summary.get("request_url") or "").strip()
+            canonical = sanitize_url_for_storage(req_url) if req_url else ""
+            if canonical:
+                cors_urls_seen.add(canonical)
+
+        if enable_baseline and passive_context_exists and not candidates:
+            baseline_url, baseline_source = self._select_cors_baseline_url(campaign)
+            baseline = self._baseline_cors_candidate(
+                campaign=campaign,
+                graph_summary=graph_summary,
+                request_url=baseline_url,
+                candidate_source=baseline_source,
+                seen_urls=cors_urls_seen,
+            )
+            candidates.append(baseline)
+        return candidates
+
+    def _select_cors_baseline_url(self, campaign: Campaign) -> tuple[str, str]:
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            obs_type = self._raw_observation_type(raw)
+            if obs_type not in {ObservationType.discovered_endpoint.value, ObservationType.zap_alert.value}:
+                continue
+            details = raw.get("details")
+            if not isinstance(details, dict):
+                continue
+            url = self._extract_observation_request_url(campaign, details)
+            if not url:
+                continue
+            if not self._is_allowed_url(campaign, url):
+                continue
+            return url, "passive_context"
+        return campaign.target_url, "campaign_target"
+
+    def _baseline_cors_candidate(
+        self,
+        *,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+        request_url: str,
+        candidate_source: str,
+        seen_urls: set[str],
+    ) -> PlannerCandidate:
+        safe_request_url = sanitize_url_for_storage(request_url) if request_url else ""
+        dedup_key = "|".join([
+            campaign.campaign_id,
+            "cors_validator",
+            "baseline",
+            safe_request_url,
+        ])
+        summary = {
+            "cors_candidate_source": "baseline",
+            "baseline_url_source": candidate_source,
+            "operation_id": "",
+            "path_template": "",
+            "request_url": safe_request_url,
+            "validation_mode": "baseline_cors_check",
+            "origin_probe_label": "evil_example_invalid",
+            "audit_flags": [],
+            "reason_codes": [],
+            "graph_summary": graph_summary,
+        }
+        if safe_request_url and safe_request_url in seen_urls:
+            return self._candidate(
+                kind=PlannerCandidateKind.cors_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=37.0,
+                reason="Baseline CORS candidate skipped: same request_url already covered by CORS alert candidate.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id="task_cors_validator_baseline",
+            worker_class="misconfiguration",
+            strategy="validate_cors_policy",
+            tool_name="cors_validator",
+            operation_id="",
+            seed_request_id="",
+            inputs={
+                "target_url": campaign.target_url,
+                "request_url": request_url,
+                "operation_id": "",
+                "path_template": "",
+                "method": "GET",
+                "origin_probe": "https://evil.example.invalid",
+                "validation_mode": "single_replay_cors_check",
+                "max_response_bytes": 262144,
+            },
+            budget=CommandBudget(max_requests=2, timeout_sec=15),
+            success_criteria=["cors_validation_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.cors_validator,
+            priority=37.0,
+            reason="Baseline CORS validation candidate generated from safe campaign/passive context.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
+    def _cors_candidate(
+        self,
+        campaign: Campaign,
+        raw_observation: dict[str, Any],
+        graph_summary: dict[str, Any],
+    ) -> PlannerCandidate:
+        observation_id = str(
+            raw_observation.get("observation_id")
+            or raw_observation.get("id")
+            or ""
+        ).strip()
+        details = raw_observation.get("details")
+        if not isinstance(details, dict):
+            details = {}
+        alert_name = str(details.get("alert_name") or "").strip()
+        request_url = self._extract_observation_request_url(campaign, details)
+        path_template = str(details.get("path_template") or details.get("path") or "").strip()
+        operation_id = str(details.get("operation_id") or raw_observation.get("operation_id") or "").strip()
+        method = str(details.get("method") or "GET").strip().upper() or "GET"
+        summary = {
+            "source_observation_id": observation_id,
+            "alert_name": alert_name,
+            "operation_id": operation_id,
+            "path_template": path_template,
+            "request_url": sanitize_url_for_storage(request_url) if request_url else "",
+            "validation_mode": "single_replay_cors_check",
+            "origin_probe_label": "evil_example_invalid",
+            "graph_summary": graph_summary,
+        }
+        dedup_key = "|".join([
+            campaign.campaign_id,
+            "cors_validator",
+            observation_id,
+            operation_id,
+            sanitize_url_for_storage(request_url) if request_url else "",
+        ])
+        if not self._is_cors_alert(alert_name):
+            return self._candidate(
+                kind=PlannerCandidateKind.cors_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=38.0,
+                reason="ZAP alert is not a CORS validator context.",
+                missing_inputs=["unsupported_context"],
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+        if not request_url:
+            return self._candidate(
+                kind=PlannerCandidateKind.cors_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=38.0,
+                reason="CORS validation requires request_url from passive signal.",
+                missing_inputs=["missing_request_url"],
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+        if method not in {"GET", "OPTIONS"}:
+            return self._candidate(
+                kind=PlannerCandidateKind.cors_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=38.0,
+                reason="CORS validator supports only GET/OPTIONS contexts.",
+                missing_inputs=["method_not_safe"],
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+
+        suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_cors_validator_{suffix}",
+            worker_class="misconfiguration",
+            strategy="validate_cors_policy",
+            tool_name="cors_validator",
+            operation_id=operation_id,
+            seed_request_id="",
+            inputs={
+                "target_url": campaign.target_url,
+                "request_url": request_url,
+                "operation_id": operation_id,
+                "path_template": path_template,
+                "method": method,
+                "origin_probe": "https://evil.example.invalid",
+                "validation_mode": "single_replay_cors_check",
+                "max_response_bytes": 262144,
+            },
+            budget=CommandBudget(max_requests=2, timeout_sec=15),
+            success_criteria=["cors_validation_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.cors_validator,
+            priority=38.0,
+            reason="Supported ZAP CORS alert is available for validation replay.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
     def _security_header_candidate(
         self,
         campaign: Campaign,
@@ -572,10 +803,11 @@ class PlannerService:
         kind_order = {
             PlannerCandidateKind.bola_replay_probe: 0,
             PlannerCandidateKind.security_header_validator: 1,
-            PlannerCandidateKind.schemathesis_negative_test: 2,
-            PlannerCandidateKind.injection_test: 3,
-            PlannerCandidateKind.property_mutation_test: 4,
-            PlannerCandidateKind.zap_discovery_passive: 5,
+            PlannerCandidateKind.cors_validator: 2,
+            PlannerCandidateKind.schemathesis_negative_test: 3,
+            PlannerCandidateKind.injection_test: 4,
+            PlannerCandidateKind.property_mutation_test: 5,
+            PlannerCandidateKind.zap_discovery_passive: 6,
             PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(
@@ -849,6 +1081,13 @@ class PlannerService:
         return mapping.get(normalized, "")
 
     @staticmethod
+    def _is_cors_alert(alert_name: str) -> bool:
+        normalized = str(alert_name or "").strip().lower()
+        if not normalized:
+            return False
+        return "cross-origin" in normalized or "access-control-allow-origin" in normalized or "cors" in normalized
+
+    @staticmethod
     def _extract_observation_request_url(campaign: Campaign, details: dict[str, Any]) -> str:
         for key in ("request_url", "target_url", "url"):
             value = str(details.get(key) or "").strip()
@@ -870,6 +1109,19 @@ class PlannerService:
         if parsed.scheme:
             return sanitize_url_for_storage(raw)
         return PlannerService._redact_path_query(raw)
+
+    @staticmethod
+    def _is_allowed_url(campaign: Campaign, raw_url: str) -> bool:
+        parsed = urlparse(str(raw_url or "").strip())
+        if not parsed.scheme:
+            return True
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in {"http", "https"}:
+            return False
+        host = (parsed.hostname or "").lower()
+        host_port = f"{host}:{parsed.port}" if parsed.port is not None else host
+        allowed = {str(h or "").lower() for h in (campaign.allowed_hosts or []) if str(h or "").strip()}
+        return bool(allowed) and (host in allowed or host_port in allowed)
 
     @staticmethod
     def _existing_validated_security_header_observation(

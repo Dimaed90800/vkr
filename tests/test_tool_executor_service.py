@@ -447,6 +447,109 @@ def test_registry_property_mutation_test_has_sync_adapter() -> None:
     assert reg.get_execution_mode("property_mutation_test") == "sync"
 
 
+def test_registry_cors_validator_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("cors_validator") is True
+    assert reg.get_execution_mode("cors_validator") == "sync"
+
+
+def test_tool_executor_dispatches_cors_validator() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="misconfiguration",
+        strategy="validate_cors_policy",
+        tool_name="cors_validator",
+        operation_id="op_GET_/api/v1/users",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/v1/users",
+            "operation_id": "op_GET_/api/v1/users",
+            "path_template": "/api/v1/users",
+            "method": "GET",
+            "origin_probe": "https://evil.example.invalid",
+            "validation_mode": "single_replay_cors_check",
+            "max_response_bytes": 262144,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "cors_validator"
+
+
+def test_cors_validator_rejects_unsafe_method() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="misconfiguration",
+        strategy="validate_cors_policy",
+        tool_name="cors_validator",
+        operation_id="op_x",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/v1/x",
+            "method": "POST",
+            "origin_probe": "https://evil.example.invalid",
+            "validation_mode": "single_replay_cors_check",
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    assert any(e.code == "cors_method_not_allowed" for e in v.errors)
+
+
+def test_cors_validator_rejects_budget_and_origin() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="misconfiguration",
+        strategy="validate_cors_policy",
+        tool_name="cors_validator",
+        operation_id="op_x",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/v1/x",
+            "method": "GET",
+            "origin_probe": "https://custom.invalid",
+            "validation_mode": "single_replay_cors_check",
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "cors_origin_probe_invalid" in codes
+    assert "cors_budget_max_requests" in codes
+    assert "cors_budget_timeout" in codes
+
+
+def test_cors_validator_rejects_out_of_scope_request_url() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="misconfiguration",
+        strategy="validate_cors_policy",
+        tool_name="cors_validator",
+        operation_id="op_x",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://evil.local/api/v1/x",
+            "method": "GET",
+            "origin_probe": "https://evil.example.invalid",
+            "validation_mode": "single_replay_cors_check",
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    assert any(e.code == "host_not_allowed" for e in v.errors)
+
+
 def test_tool_executor_dispatches_property_mutation_test() -> None:
     _reset_store()
     _create_campaign()
@@ -469,7 +572,8 @@ def test_tool_executor_dispatches_property_mutation_test() -> None:
     result = ToolExecutor().execute_sync(cmd)
     assert result.status == "finished"
     assert result.tool_name == "property_mutation_test"
-    assert result.observations == []
+    assert len(result.observations) == 1
+    assert result.observations[0].observation_type == "mass_assignment_signal"
     assert result.artifacts and result.artifacts[0].artifact_type == "mass_assignment_probe_summary"
 
 

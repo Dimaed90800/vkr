@@ -10,6 +10,10 @@ from backend.models.campaign import Campaign, CampaignLimits, CampaignStatus
 from backend.models.worker_command import CommandBudget, WorkerCommand
 from backend.services.adapters.property_mutation_test_adapter import PropertyMutationTestAdapter
 from backend.services.command_validator import CommandValidator
+from backend.services.mass_assignment_field_classifier import (
+    is_mass_assignment_sensitive_field,
+    select_mass_assignment_fields,
+)
 from backend.storage.memory_store import memory_store
 
 
@@ -85,7 +89,11 @@ def test_property_mutation_adapter_diagnostic_with_sensitive_fields_and_seed() -
     })
     result = PropertyMutationTestAdapter().execute(cmd, campaign, "toolrun_ma_1")
     assert result.status == "finished"
-    assert result.observations == []
+    assert len(result.observations) == 1
+    obs = result.observations[0]
+    assert obs.observation_type == "mass_assignment_signal"
+    assert obs.confidence == 0.55
+    assert obs.details.get("runtime_effect_proven") is False
     payload = _summary_payload(result)
     assert payload["result"] == "diagnostic_ready"
     assert payload["seed_request_id_present"] is True
@@ -106,6 +114,7 @@ def test_property_mutation_adapter_missing_seed_needs_context() -> None:
         "sensitive_fields": ["admin"],
     })
     result = PropertyMutationTestAdapter().execute(cmd, campaign, "toolrun_ma_2")
+    assert result.observations == []
     payload = _summary_payload(result)
     assert payload["result"] == "needs_verification_context"
     assert "missing_seed_request" in payload["reason_codes"]
@@ -123,9 +132,24 @@ def test_property_mutation_adapter_no_sensitive_fields() -> None:
         "sensitive_fields": ["displayName", "description"],
     })
     result = PropertyMutationTestAdapter().execute(cmd, campaign, "toolrun_ma_3")
+    assert result.observations == []
     payload = _summary_payload(result)
     assert payload["result"] == "no_sensitive_fields"
     assert "no_writable_sensitive_fields" in payload["reason_codes"]
+
+
+def test_mass_assignment_field_classifier_expected_selection() -> None:
+    selection = select_mass_assignment_fields(
+        ["isAdmin", "role", "ownerId", "permissions", "content", "description"],
+    )
+    assert "isAdmin" in selection.selected
+    assert "role" in selection.selected
+    assert "ownerId" in selection.selected
+    assert "permissions" in selection.selected
+    assert "content" in selection.skipped
+    assert "description" in selection.skipped
+    assert is_mass_assignment_sensitive_field("isAdmin") is True
+    assert is_mass_assignment_sensitive_field("content") is False
 
 
 def test_property_mutation_summary_no_raw_body_headers_tokens() -> None:
@@ -141,10 +165,13 @@ def test_property_mutation_summary_no_raw_body_headers_tokens() -> None:
         "sensitive_fields": ["admin", "profile.description"],
     })
     result = PropertyMutationTestAdapter().execute(cmd, campaign, "toolrun_ma_4")
+    assert len(result.observations) == 1
+    obs_blob = str(result.observations[0].details).lower()
     payload = _summary_payload(result)
     blob = str(payload).lower()
     for bad in ("authorization", "cookie", "bearer ", "token=", "response_body", "headers"):
         assert bad not in blob
+        assert bad not in obs_blob
 
 
 def test_property_mutation_requires_diagnostic_only() -> None:

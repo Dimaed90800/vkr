@@ -115,6 +115,11 @@ class JudgeApplyService:
         self, request: JudgeApplyRequest, pack: EvidencePack
     ) -> JudgeApplyResult:
         readiness = self._readiness_issues(pack)
+        if (
+            pack.vulnerability_class == "potential_mass_assignment"
+            and not self._mass_assignment_runtime_effect_proven(pack)
+        ):
+            readiness = list(dict.fromkeys([*readiness, "mass_assignment_runtime_effect_not_proven"]))
         if pack.status == EvidencePackStatus.not_judge_ready:
             return self._apply_terminal(
                 request,
@@ -515,6 +520,13 @@ class JudgeApplyService:
         if cat.startswith("API8_") or cat.startswith("API9_"):
             return "low"
         return "info"
+
+    @staticmethod
+    def _mass_assignment_runtime_effect_proven(pack: EvidencePack) -> bool:
+        for signal in pack.derived_signals or []:
+            if str(signal).strip().lower() == "runtime_effect_proven:true":
+                return True
+        return False
 
     def _default_title(self, pack: EvidencePack) -> str:
         category = pack.owasp_category or pack.vulnerability_class or "security issue"

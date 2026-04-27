@@ -28,6 +28,7 @@ class PlannerCandidateKind(str, Enum):
     zap_discovery_passive = "zap_discovery_passive"
     bola_replay_probe = "bola_replay_probe"
     security_header_validator = "security_header_validator"
+    cors_validator = "cors_validator"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
     property_mutation_test = "property_mutation_test"
@@ -79,6 +80,7 @@ class PlannerRequest(BaseModel):
     bola: BolaPlannerHints = Field(default_factory=BolaPlannerHints)
     scenario_plan: ScenarioPlanInput | None = None
     include_scenario_compiler: bool = True
+    enable_cors_baseline: bool = False
 
 
 class PlannerCandidate(BaseModel):

@@ -25,6 +25,7 @@ try:
         INJECTION_COMPILER_PAYLOAD_FAMILIES,
         safe_query_parameter_candidates_for_operation,
     )
+    from backend.services.mass_assignment_field_classifier import select_mass_assignment_fields
     from backend.services.tool_registry import ToolRegistry
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # pragma: no cover
         INJECTION_COMPILER_PAYLOAD_FAMILIES,
         safe_query_parameter_candidates_for_operation,
     )
+    from services.mass_assignment_field_classifier import select_mass_assignment_fields
     from services.tool_registry import ToolRegistry
     from storage.memory_store import memory_store
 
@@ -131,6 +133,17 @@ def _injection_task_id(operation_id: str) -> str:
 def _property_mutation_task_id(operation_id: str) -> str:
     base = re.sub(r"[^a-zA-Z0-9_]+", "_", operation_id).strip("_")[:80]
     return f"task_property_mutation_probe_{base or 'op'}"
+
+
+def _is_successful_seed_row(row: dict[str, Any]) -> bool:
+    classification = str(row.get("classification") or "").strip().lower()
+    if classification == "successful_seed":
+        return True
+    try:
+        status_code = int(row.get("status_code") or 0)
+    except (TypeError, ValueError):
+        status_code = 0
+    return 200 <= status_code <= 399
 
 
 @dataclass
@@ -659,72 +672,105 @@ class ScenarioPlanCompiler:
                 ))
                 continue
 
-            sensitive_fields = [
-                str(f).strip()
-                for f in (operation.body_fields or [])
-                if str(f).strip()
-            ][:20]
-
-            command = WorkerCommand(
+            field_selection = select_mass_assignment_fields(operation.body_fields or [])
+            sensitive_fields = list(field_selection.selected)
+            seed_request_id = self._find_mass_assignment_seed_request_id(
                 campaign_id=campaign.campaign_id,
-                task_id=_property_mutation_task_id(op),
-                worker_class="access_control",
-                strategy="property_mutation_probe",
-                tool_name="property_mutation_test",
                 operation_id=op,
-                seed_request_id="",
-                inputs={
-                    "target_url": campaign.target_url,
-                    "operation_id": op,
-                    "mutation_policy": "diagnostic_only",
-                    "diagnostic_only": True,
-                    "sensitive_fields": sensitive_fields,
-                    "max_mutations": 1,
-                },
-                budget=CommandBudget(max_requests=0, timeout_sec=30),
-                success_criteria=["property_mutation_probe_completed"],
+                method=str(operation.method or ""),
+                path_template=str(operation.path_template or ""),
             )
-            validation = self._validator.validate(command)
+            audit_flags: list[str] = []
+            reason_codes: list[str] = []
+            if not seed_request_id:
+                audit_flags.append("missing_seed_context")
+                reason_codes.append("missing_seed_context")
+            if not sensitive_fields:
+                audit_flags.append("no_sensitive_fields")
+                reason_codes.append("no_writable_sensitive_fields")
+
+            candidate_result = "ready"
+            candidate_reason = (
+                "ScenarioPlan mass_assignment mapped to property_mutation_test (diagnostic-only)."
+            )
+            candidate_status = PlannerCandidateStatus.ready
+            missing_inputs: list[str] = []
+            command: WorkerCommand | None = None
+            validation_errors: list[dict[str, Any]] = []
+            validation_warnings: list[str] = []
+            if not sensitive_fields:
+                candidate_result = "blocked_no_sensitive_fields"
+                candidate_reason = (
+                    "Property_mutation_test blocked: no mass-assignment sensitive fields selected."
+                )
+                candidate_status = PlannerCandidateStatus.blocked
+                missing_inputs = ["no_writable_sensitive_fields"]
+            elif not seed_request_id:
+                candidate_result = "blocked_missing_seed_context"
+                candidate_reason = (
+                    "Property_mutation_test blocked: missing seed_request_id context."
+                )
+                candidate_status = PlannerCandidateStatus.blocked
+                missing_inputs = ["missing_seed_context"]
+            else:
+                command = WorkerCommand(
+                    campaign_id=campaign.campaign_id,
+                    task_id=_property_mutation_task_id(op),
+                    worker_class="access_control",
+                    strategy="property_mutation_probe",
+                    tool_name="property_mutation_test",
+                    operation_id=op,
+                    seed_request_id=seed_request_id,
+                    inputs={
+                        "target_url": campaign.target_url,
+                        "operation_id": op,
+                        "mutation_policy": "diagnostic_only",
+                        "diagnostic_only": True,
+                        "seed_request_id": seed_request_id,
+                        "sensitive_fields": sensitive_fields,
+                        "max_mutations": 1,
+                    },
+                    budget=CommandBudget(max_requests=0, timeout_sec=30),
+                    success_criteria=["property_mutation_probe_completed"],
+                )
+                validation = self._validator.validate(command)
+                validation_warnings = list(validation.warnings)
+                if not validation.valid:
+                    candidate_result = "blocked_command_validation_failed"
+                    candidate_reason = "Property_mutation_test candidate failed CommandValidator."
+                    candidate_status = PlannerCandidateStatus.blocked
+                    missing_inputs = [e.code for e in validation.errors]
+                    validation_errors = [e.model_dump(mode="json") for e in validation.errors]
+                    command = None
+
             summary_base: dict[str, Any] = {
                 "operation_id": op,
                 "source_scenario_ids": mass_assignment_scenarios_by_op.get(op, []),
                 "sensitive_fields_hint": sensitive_fields,
+                "seed_request_id_present": bool(seed_request_id),
+                "audit_flags": audit_flags,
+                "mass_assignment_candidate_result": candidate_result,
+                "fields_considered_count": len(field_selection.considered),
+                "fields_selected_count": len(field_selection.selected),
+                "reason_codes": reason_codes,
             }
-            if validation.valid:
-                extra.append(
-                    PlannerCandidate(
-                        candidate_id=_candidate_id("property_mutation_test", dedup_key),
-                        kind=PlannerCandidateKind.property_mutation_test,
-                        status=PlannerCandidateStatus.ready,
-                        priority=33.0,
-                        reason="ScenarioPlan mass_assignment mapped to property_mutation_test (diagnostic-only).",
-                        dedup_key=dedup_key,
-                        command=command,
-                        summary={
-                            **summary_base,
-                            "validation_warnings": list(validation.warnings),
-                            "scenario_compiler": "phase_18a_3_lite",
-                        },
-                    ),
-                )
-            else:
-                extra.append(
-                    PlannerCandidate(
-                        candidate_id=_candidate_id("property_mutation_test", dedup_key),
-                        kind=PlannerCandidateKind.property_mutation_test,
-                        status=PlannerCandidateStatus.blocked,
-                        priority=33.0,
-                        reason="Property_mutation_test candidate failed CommandValidator.",
-                        missing_inputs=[e.code for e in validation.errors],
-                        dedup_key=dedup_key,
-                        command=None,
-                        summary={
-                            **summary_base,
-                            "validation_errors": [e.model_dump(mode="json") for e in validation.errors],
-                            "validation_warnings": list(validation.warnings),
-                        },
-                    ),
-                )
+            if validation_errors:
+                summary_base["validation_errors"] = validation_errors
+            summary_base["validation_warnings"] = validation_warnings
+            summary_base["scenario_compiler"] = "phase_18a_3_lite"
+            extra.append(
+                PlannerCandidate(
+                    candidate_id=_candidate_id("property_mutation_test", dedup_key),
+                    kind=PlannerCandidateKind.property_mutation_test,
+                    status=candidate_status,
+                    priority=33.0,
+                    reason=candidate_reason,
+                    missing_inputs=missing_inputs,
+                    dedup_key=dedup_key,
+                    command=command,
+                    summary=summary_base,
+                ),
+            )
 
         return ScenarioCompilerResult(extra, priority_add, warnings)
 
@@ -758,6 +804,48 @@ class ScenarioPlanCompiler:
                 if str(cmd.get("operation_id") or "").strip() == operation_id:
                     return run
         return None
+
+    def _find_mass_assignment_seed_request_id(
+        self,
+        *,
+        campaign_id: str,
+        operation_id: str,
+        method: str,
+        path_template: str,
+    ) -> str:
+        corpus_rows = memory_store.list_corpus_by_campaign(campaign_id)
+        if not corpus_rows:
+            return ""
+
+        for row in corpus_rows:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("operation_id") or "").strip() != operation_id:
+                continue
+            if not _is_successful_seed_row(row):
+                continue
+            request_id = str(row.get("request_id") or "").strip()
+            if request_id:
+                return request_id
+
+        method_u = str(method or "").strip().upper()
+        path_t = str(path_template or "").strip()
+        if method_u and path_t:
+            for row in corpus_rows:
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("operation_id") or "").strip():
+                    continue
+                if str(row.get("method") or "").strip().upper() != method_u:
+                    continue
+                if str(row.get("path_template") or "").strip() != path_t:
+                    continue
+                if not _is_successful_seed_row(row):
+                    continue
+                request_id = str(row.get("request_id") or "").strip()
+                if request_id:
+                    return request_id
+        return ""
 
     def _existing_injection_run(self, campaign_id: str, operation_id: str) -> dict[str, Any] | None:
         active_or_done = {

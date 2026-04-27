@@ -117,9 +117,16 @@ class ObservationNormalizer:
             lite_details = lite.details if isinstance(lite.details, dict) else {}
             sec_rel: SecurityRelevance = SecurityRelevance.unknown
             rec_act = ""
-            if str(lite.observation_type) == "injection_signal":
+            if str(lite.observation_type) in {
+                "injection_signal",
+                "mass_assignment_signal",
+                "validated_cors_issue",
+            }:
                 rec_act = str(lite_details.get("recommended_next_action") or "")
-                sec_raw = str(lite_details.get("security_relevance") or "unknown").lower()
+                sec_raw = str(
+                    lite_details.get("security_relevance")
+                    or ("medium" if str(lite.observation_type) == "validated_cors_issue" else "unknown")
+                ).lower()
                 try:
                     sec_rel = SecurityRelevance(sec_raw)
                 except ValueError:
@@ -137,7 +144,13 @@ class ObservationNormalizer:
                 auth_profile=str(lite_details.get("auth_profile", "") or ""),
                 confidence=lite.confidence,
                 security_relevance=(
-                    sec_rel if str(lite.observation_type) == "injection_signal" else SecurityRelevance.unknown
+                    sec_rel
+                    if str(lite.observation_type) in {
+                        "injection_signal",
+                        "mass_assignment_signal",
+                        "validated_cors_issue",
+                    }
+                    else SecurityRelevance.unknown
                 ),
                 judge_worthy=False,
                 recommended_next_action=rec_act,

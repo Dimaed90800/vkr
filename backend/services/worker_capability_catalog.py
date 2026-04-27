@@ -138,21 +138,22 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         tool_name="property_mutation_test",
         worker_class="access_control",
         scenario_types=["mass_assignment"],
-        observation_types=[],
+        observation_types=["mass_assignment_signal"],
         owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
         status="partial",
         adapter_available=True,
         execution_mode="sync",
-        triage_support=False,
-        evidence_support=False,
-        judge_support=False,
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
         requires_openapi=True,
         requires_seed=False,
         requires_corpus=False,
         risk_level="high",
         notes=(
-            "Phase 18A-1: diagnostic-only property_mutation_test adapter enabled in sync mode; "
-            "produces mass_assignment_probe_summary artifact only. No observations/triage/evidence/judge path yet."
+            "Phase 18C: diagnostic-only property_mutation_test emits mass_assignment_signal and supports "
+            "triage/evidence/judge path; confirmed finding remains blocked unless runtime_effect_proven:true. "
+            "Active mutation behavior is intentionally not implemented."
         ),
     ),
     WorkerCapability(
@@ -197,16 +198,20 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         tool_name="cors_validator",
         worker_class="misconfiguration",
         scenario_types=["passive_signal_validation"],
-        observation_types=["validated_security_header_issue"],
+        observation_types=["validated_cors_issue"],
         owasp_categories=["API8_SECURITY_MISCONFIGURATION"],
-        status="planned",
-        adapter_available=False,
+        status="partial",
+        adapter_available=True,
         execution_mode="sync",
-        triage_support=False,
-        evidence_support=False,
-        judge_support=False,
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
         risk_level="medium",
-        notes="Planned dedicated CORS validation tool; name reserved in catalog.",
+        notes=(
+            "Phase 19A-1: bounded cors_validator replay with fixed origin probe; "
+            "stores sanitized CORS policy metadata only (no raw headers/body/cookies/tokens). "
+            "MVP emits finding-capable signal only for strong CORS issues."
+        ),
     ),
     WorkerCapability(
         worker_name="cookie_flag_validator",

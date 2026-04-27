@@ -756,6 +756,12 @@ workflow:
           required: false
           type: text-input
           variable: max_iterations
+        - label: Profile
+          max_length: 16
+          options: []
+          required: false
+          type: text-input
+          variable: profile
         - label: Include Scenario Compiler
           max_length: 8
           options: []
@@ -812,6 +818,7 @@ workflow:
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
               "max_candidates": 50,
+              "enable_cors_baseline": True,
               "zap": {
                   "enabled": True,
                   "target_url": "",
@@ -827,6 +834,12 @@ workflow:
                   "enabled": True,
                   "object_pairs": [],
               },
+          }
+          DEFAULT_PROFILE = "safe"
+          PROFILE_MAX_ITERATIONS = {
+              "safe": 15,
+              "balanced": 25,
+              "aggressive": 40,
           }
 
           def _json_list(value, default):
@@ -849,25 +862,40 @@ workflow:
                   return dict(default)
               return parsed if isinstance(parsed, dict) else dict(default)
 
+          def _deep_merge(defaults, overrides):
+              merged = dict(defaults)
+              for key, value in (overrides or {}).items():
+                  if isinstance(merged.get(key), dict) and isinstance(value, dict):
+                      merged[key] = _deep_merge(merged[key], value)
+                  else:
+                      merged[key] = value
+              return merged
+
           def _default_allowed_hosts(target_url):
               parsed = urlparse(str(target_url or '').strip())
               host = parsed.netloc or parsed.hostname or ''
               return [host] if host else []
 
-          def _int_value(value, default):
+          def _normalize_profile(value, default=DEFAULT_PROFILE):
+              raw = str(value or '').strip().lower()
+              if raw in PROFILE_MAX_ITERATIONS:
+                  return raw
+              return default
+
+          def _max_iterations(value, profile):
               raw = str(value or '').strip()
-              if not raw:
-                  parsed = default
-              else:
+              if raw:
                   try:
                       parsed = int(raw)
                   except Exception:
-                      parsed = default
-              if parsed < 1:
-                  return 1
-              if parsed > 10:
-                  return 10
-              return parsed
+                      parsed = None
+                  if parsed is not None:
+                      if parsed < 1:
+                          return PROFILE_MAX_ITERATIONS.get(profile, PROFILE_MAX_ITERATIONS[DEFAULT_PROFILE])
+                      if parsed > 50:
+                          return 50
+                      return parsed
+              return PROFILE_MAX_ITERATIONS.get(profile, PROFILE_MAX_ITERATIONS[DEFAULT_PROFILE])
 
           def _scenario_int(value, default, lo, hi):
               raw = str(value or '').strip()
@@ -905,6 +933,7 @@ workflow:
               task_id='',
               judge_model='',
               max_iterations='',
+              profile='',
               include_scenario_compiler='true',
               scenario_max_operations='120',
               scenario_max_scenarios='30',
@@ -917,9 +946,10 @@ workflow:
               openapi_url_str = str(openapi_url or '').strip()
               allowed_hosts = _json_list(allowed_hosts_json, _default_allowed_hosts(target))
               roles = _json_list(roles_json, [])
-              planner_request = _json_object(planner_request_json, DEFAULT_PLANNER_REQUEST)
+              planner_request = _deep_merge(DEFAULT_PLANNER_REQUEST, _json_object(planner_request_json, {}))
               model_name = str(judge_model or 'bridge-full-backend-planner-dast-llm').strip()
-              max_iters = _int_value(max_iterations, 3)
+              profile_name = _normalize_profile(profile, DEFAULT_PROFILE)
+              max_iters = _max_iterations(max_iterations, profile_name)
               scen_ops = _scenario_int(scenario_max_operations, 120, 1, 500)
               scen_max = _scenario_int(scenario_max_scenarios, 30, 1, 100)
               scen_llm = _bool_str(scenario_llm_enabled, 'false')
@@ -940,6 +970,7 @@ workflow:
                   'task_id': str(task_id or 'task_full_backend_planner_dast_loop').strip(),
                   'judge_model': model_name,
                   'max_iterations': str(max_iters),
+                  'profile': profile_name,
                   'include_scenario_compiler': inc_scen,
                   'scenario_max_operations': str(scen_ops),
                   'scenario_max_scenarios': str(scen_max),
@@ -996,6 +1027,9 @@ workflow:
           planner_request_json:
             children: null
             type: string
+          profile:
+            children: null
+            type: string
           roles_json:
             children: null
             type: string
@@ -1042,6 +1076,9 @@ workflow:
         - value_selector: [start, max_iterations]
           value_type: string
           variable: max_iterations
+        - value_selector: [start, profile]
+          value_type: string
+          variable: profile
         - value_selector: [start, include_scenario_compiler]
           value_type: string
           variable: include_scenario_compiler
@@ -1082,7 +1119,7 @@ workflow:
               "target_url": "{{#normalize_inputs.target_url#}}",
               "openapi_url": "{{#normalize_inputs.openapi_url#}}",
               "allowed_hosts": {{#normalize_inputs.allowed_hosts_json#}},
-              "profile": "safe",
+              "profile": "{{#normalize_inputs.profile#}}",
               "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 50, "max_retries_per_task": 2},
               "roles_json": {{#normalize_inputs.roles_json#}}
             }
@@ -1256,20 +1293,22 @@ workflow:
               campaign_id: str,
               max_iterations: str,
               planner_request_json: str = '',
+              profile: str = 'safe',
               include_scenario_compiler: str = 'true',
           ) -> dict:
               try:
                   max_iters = int(str(max_iterations or '').strip() or '3')
               except Exception:
-                  max_iters = 3
+                  max_iters = 15
               if max_iters < 1:
-                  max_iters = 1
-              if max_iters > 10:
-                  max_iters = 10
+                  max_iters = 15
+              if max_iters > 50:
+                  max_iters = 50
               state = {
                   "campaign_id": str(campaign_id or ''),
                   "iterations_run": 0,
                   "max_iterations": max_iters,
+                  "profile": str(profile or 'safe').strip().lower() or 'safe',
                   "confirmed_findings_count": 0,
                   "finding_ids": [],
                   "pending_verification_count": 0,
@@ -1281,17 +1320,28 @@ workflow:
                   "stopped_reason": "",
                   "iteration_summaries": [],
                   "pending_summaries": [],
+                  "tool_failures_count": 0,
+                  "failed_by_kind": {},
+                  "tool_failure_summaries": [],
+                  "last_tool_error_type": "",
+                  "last_tool_error_safe_message": "",
+                  "max_tool_failures_total": 3,
+                  "max_tool_failures_by_kind": 2,
+                  "tool_failed_fatal_mode": False,
                   "kind_caps": {
                       "schemathesis_negative_test": 4,
                       "injection_test": 3,
                       "property_mutation_test": 2,
                       "security_header_validator": 2,
                       "security_header_check": 2,
+                      "cors_validator": 2,
                       "zap_discovery_passive": 1,
                       "bola_replay_probe": 2,
                   },
                   "executed_by_kind": {},
                   "skipped_by_kind_cap_count": {},
+                  "ready_candidates_by_kind_count": {},
+                  "ready_candidates_sample": [],
                   "planner_request_base_json": str(planner_request_json or ''),
                   "include_scenario_compiler": str(include_scenario_compiler or 'true').strip().lower() or 'true',
                   "scenario_plan_source": "",
@@ -1326,6 +1376,9 @@ workflow:
         - value_selector: [normalize_inputs, planner_request_json]
           value_type: string
           variable: planner_request_json
+        - value_selector: [normalize_inputs, profile]
+          value_type: string
+          variable: profile
         - value_selector: [normalize_inputs, include_scenario_compiler]
           value_type: string
           variable: include_scenario_compiler
@@ -1460,6 +1513,7 @@ workflow:
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
               "max_candidates": 50,
+              "enable_cors_baseline": True,
               "zap": {"enabled": True, "target_url": "", "zap_base_url": "http://zap:8080", "seed_urls": [], "use_spider": True, "use_ajax_spider": False, "max_duration_sec": 30, "max_discovered_urls": 100, "max_alerts": 100},
               "bola": {"enabled": True, "object_pairs": []},
           }
@@ -1470,6 +1524,15 @@ workflow:
               except Exception:
                   return default
               return v if isinstance(v, dict) else default
+
+          def _deep_merge(defaults, overrides):
+              merged = copy.deepcopy(defaults)
+              for key, value in (overrides or {}).items():
+                  if isinstance(merged.get(key), dict) and isinstance(value, dict):
+                      merged[key] = _deep_merge(merged[key], value)
+                  else:
+                      merged[key] = value
+              return merged
 
           def _bool_flag(value: str, default: bool) -> bool:
               s = str(value or "").strip().lower()
@@ -1488,9 +1551,9 @@ workflow:
               state = _load_json(init_state_json, {})
               base_raw = str(state.get("planner_request_base_json") or "").strip()
               if base_raw:
-                  base = _load_json(base_raw, copy.deepcopy(DEFAULT_PLANNER_REQUEST))
+                  base = _deep_merge(DEFAULT_PLANNER_REQUEST, _load_json(base_raw, {}))
               else:
-                  base = _load_json(normalize_planner_request_json, copy.deepcopy(DEFAULT_PLANNER_REQUEST))
+                  base = _deep_merge(DEFAULT_PLANNER_REQUEST, _load_json(normalize_planner_request_json, {}))
               want_compiler = _bool_flag(include_scenario_compiler_flag, True)
               warnings_extra = []
               sp_payload = None
@@ -1938,6 +2001,18 @@ workflow:
                   return 0
 
           def main(body: str, state_json: str) -> dict:
+              MAX_BLOCKED_CANDIDATE_SAMPLE = 10
+              MAX_READY_CANDIDATE_SAMPLE = 10
+              KIND_PRIORITY = [
+                  "property_mutation_test",
+                  "cors_validator",
+                  "bola_replay_probe",
+                  "security_header_validator",
+                  "security_header_check",
+                  "zap_discovery_passive",
+                  "injection_test",
+                  "schemathesis_negative_test",
+              ]
               try:
                   payload = json.loads(body or '{}')
               except Exception:
@@ -1950,12 +2025,56 @@ workflow:
               selected = {}
               skipped_by_kind_cap_delta = {}
               ready_seen = False
+              ready_by_kind = {}
+              ready_all = []
+              def _safe_blocked(candidate_obj: dict) -> dict:
+                  summary = candidate_obj.get('summary') if isinstance(candidate_obj.get('summary'), dict) else {}
+                  return {
+                      'kind': str(candidate_obj.get('kind') or ''),
+                      'status': 'blocked',
+                      'operation_id': str(summary.get('operation_id') or ''),
+                      'scenario_type': str(summary.get('scenario_type') or ''),
+                      'reason': str(candidate_obj.get('reason') or ''),
+                      'missing_inputs': candidate_obj.get('missing_inputs') or [],
+                      'audit_flags': summary.get('audit_flags') or [],
+                      'mass_assignment_candidate_result': str(summary.get('mass_assignment_candidate_result') or ''),
+                      'fields_considered_count': int(summary.get('fields_considered_count') or 0),
+                      'fields_selected_count': int(summary.get('fields_selected_count') or 0),
+                      'seed_request_id_present': bool(summary.get('seed_request_id_present')),
+                      'reason_codes': summary.get('reason_codes') or [],
+                  }
+
+              def _safe_ready(candidate_obj: dict) -> dict:
+                  summary = candidate_obj.get('summary') if isinstance(candidate_obj.get('summary'), dict) else {}
+                  command = candidate_obj.get('command') if isinstance(candidate_obj.get('command'), dict) else {}
+                  return {
+                      'kind': str(candidate_obj.get('kind') or ''),
+                      'status': 'ready',
+                      'operation_id': str(summary.get('operation_id') or ''),
+                      'scenario_type': str(summary.get('scenario_type') or ''),
+                      'reason': str(candidate_obj.get('reason') or ''),
+                      'tool_name': str(command.get('tool_name') or ''),
+                      'worker_class': str(command.get('worker_class') or ''),
+                      'strategy': str(command.get('strategy') or ''),
+                      'cors_candidate_source': str(summary.get('cors_candidate_source') or ''),
+                      'validation_mode': str(summary.get('validation_mode') or ''),
+                      'audit_flags': summary.get('audit_flags') or [],
+                      'reason_codes': summary.get('reason_codes') or [],
+                      'fields_selected_count': int(summary.get('fields_selected_count') or 0),
+                      'seed_request_id_present': bool(summary.get('seed_request_id_present')),
+                      'mass_assignment_candidate_result': str(summary.get('mass_assignment_candidate_result') or ''),
+                  }
+
               for candidate in candidates:
                   command = candidate.get('command')
                   if candidate.get('status') != 'ready' or not isinstance(command, dict):
                       continue
                   ready_seen = True
                   kind = str(candidate.get('kind') or '')
+                  ready_by_kind[kind] = int(ready_by_kind.get(kind, 0) or 0) + 1
+                  ready_all.append(_safe_ready(candidate))
+                  if selected:
+                      continue
                   cap = kind_caps.get(kind)
                   executed = _int_value(executed_by_kind.get(kind, 0))
                   if cap is not None and executed >= _int_value(cap):
@@ -1963,16 +2082,93 @@ workflow:
                       continue
                   if isinstance(command, dict):
                       selected = candidate
-                      break
               command = selected.get('command') if selected else {}
               missing = []
+              blocked_by_kind = {}
+              blocked_all = []
               for candidate in candidates:
                   if candidate.get('status') == 'blocked':
+                      kind_name = str(candidate.get('kind') or '') or 'unknown'
+                      blocked_by_kind[kind_name] = int(blocked_by_kind.get(kind_name, 0) or 0) + 1
                       missing.append({
-                          'kind': candidate.get('kind') or '',
+                          'kind': kind_name,
                           'missing_inputs': candidate.get('missing_inputs') or [],
                           'reason': candidate.get('reason') or '',
                       })
+                      blocked_all.append(_safe_blocked(candidate))
+
+              deduped = []
+              seen = set()
+              for row in blocked_all:
+                  key = (
+                      str(row.get('kind') or ''),
+                      str(row.get('operation_id') or ''),
+                      str(row.get('reason') or ''),
+                      str(row.get('mass_assignment_candidate_result') or ''),
+                  )
+                  if key in seen:
+                      continue
+                  seen.add(key)
+                  deduped.append(row)
+
+              blocked_sample = []
+              used_kinds = set()
+              priority_index = {name: idx for idx, name in enumerate(KIND_PRIORITY)}
+              for row in sorted(
+                  deduped,
+                  key=lambda r: (priority_index.get(str(r.get('kind') or ''), 999),),
+              ):
+                  kind_name = str(row.get('kind') or '')
+                  if kind_name in used_kinds:
+                      continue
+                  blocked_sample.append(row)
+                  used_kinds.add(kind_name)
+                  if len(blocked_sample) >= MAX_BLOCKED_CANDIDATE_SAMPLE:
+                      break
+              if len(blocked_sample) < MAX_BLOCKED_CANDIDATE_SAMPLE:
+                  for row in deduped:
+                      if row in blocked_sample:
+                          continue
+                      blocked_sample.append(row)
+                      if len(blocked_sample) >= MAX_BLOCKED_CANDIDATE_SAMPLE:
+                          break
+              ready_deduped = []
+              ready_seen_keys = set()
+              for row in ready_all:
+                  key = (
+                      str(row.get('kind') or ''),
+                      str(row.get('operation_id') or ''),
+                      str(row.get('reason') or ''),
+                      str(row.get('cors_candidate_source') or ''),
+                      str(row.get('validation_mode') or ''),
+                      str(row.get('mass_assignment_candidate_result') or ''),
+                  )
+                  if key in ready_seen_keys:
+                      continue
+                  ready_seen_keys.add(key)
+                  ready_deduped.append(row)
+
+              ready_sample = []
+              used_ready_kinds = set()
+              priority_index = {name: idx for idx, name in enumerate(KIND_PRIORITY)}
+              for row in sorted(
+                  ready_deduped,
+                  key=lambda r: (priority_index.get(str(r.get('kind') or ''), 999),),
+              ):
+                  kind_name = str(row.get('kind') or '')
+                  if kind_name in used_ready_kinds:
+                      continue
+                  ready_sample.append(row)
+                  used_ready_kinds.add(kind_name)
+                  if len(ready_sample) >= MAX_READY_CANDIDATE_SAMPLE:
+                      break
+              if len(ready_sample) < MAX_READY_CANDIDATE_SAMPLE:
+                  for row in ready_deduped:
+                      if row in ready_sample:
+                          continue
+                      ready_sample.append(row)
+                      if len(ready_sample) >= MAX_READY_CANDIDATE_SAMPLE:
+                          break
               if selected:
                   selection_outcome = 'selected_ready'
               elif ready_seen:
@@ -1987,6 +2183,11 @@ workflow:
                   'ready_count': str(payload.get('ready_count') or 0),
                   'blocked_count': str(payload.get('blocked_count') or 0),
                   'skipped_existing_count': str(payload.get('skipped_existing_count') or 0),
+                  'ready_candidates_by_kind_count_json': json.dumps(ready_by_kind, ensure_ascii=False),
+                  'ready_candidates_sample_json': json.dumps(ready_sample, ensure_ascii=False),
+                  'blocked_candidates_count_total': str(len(missing)),
+                  'blocked_candidates_by_kind_count_json': json.dumps(blocked_by_kind, ensure_ascii=False),
+                  'blocked_candidates_sample_json': json.dumps(blocked_sample, ensure_ascii=False),
                   'blocked_missing_inputs_summary': json.dumps(missing[:5], ensure_ascii=False),
                   'selection_outcome': selection_outcome,
                   'skipped_by_kind_cap_delta_json': json.dumps(skipped_by_kind_cap_delta, ensure_ascii=False),
@@ -1999,6 +2200,15 @@ workflow:
         loop_id: main_loop_v1
         outputs:
           blocked_count:
+            children: null
+            type: string
+          blocked_candidates_count_total:
+            children: null
+            type: string
+          blocked_candidates_by_kind_count_json:
+            children: null
+            type: string
+          blocked_candidates_sample_json:
             children: null
             type: string
           blocked_missing_inputs_summary:
@@ -2017,6 +2227,12 @@ workflow:
             children: null
             type: string
           ready_count:
+            children: null
+            type: string
+          ready_candidates_by_kind_count_json:
+            children: null
+            type: string
+          ready_candidates_sample_json:
             children: null
             type: string
           skipped_existing_count:
@@ -2114,11 +2330,25 @@ workflow:
               state["skipped_by_kind_cap_count"] = merged
               return delta
 
-          def main(state_json: str, ready_count: str, blocked_count: str, skipped_existing_count: str, blocked_missing_inputs_summary: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
+          def main(state_json: str, ready_count: str, blocked_count: str, skipped_existing_count: str, blocked_missing_inputs_summary: str, blocked_candidates_sample_json: str, blocked_candidates_count_total: str, blocked_candidates_by_kind_count_json: str, ready_candidates_sample_json: str = '', ready_candidates_by_kind_count_json: str = '', selection_outcome: str = '', skipped_by_kind_cap_delta_json: str = '') -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              try:
+                  blocked_sample = json.loads(blocked_candidates_sample_json or '[]')
+              except Exception:
+                  blocked_sample = []
+              if not isinstance(blocked_sample, list):
+                  blocked_sample = []
+              try:
+                  ready_sample = json.loads(ready_candidates_sample_json or '[]')
+              except Exception:
+                  ready_sample = []
+              if not isinstance(ready_sample, list):
+                  ready_sample = []
+              blocked_by_kind = _load_map(blocked_candidates_by_kind_count_json)
+              ready_by_kind = _load_map(ready_candidates_by_kind_count_json)
               skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
               outcome = str(selection_outcome or '').strip() or "no_ready_candidate"
               summary = {
@@ -2142,6 +2372,11 @@ workflow:
               }
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               state["last_selection_outcome"] = outcome
+              state["ready_candidates_sample"] = ready_sample[:10]
+              state["ready_candidates_by_kind_count"] = ready_by_kind
+              state["blocked_candidates_sample"] = blocked_sample[:10]
+              state["blocked_candidates_count_total"] = int(str(blocked_candidates_count_total or '0') or 0)
+              state["blocked_candidates_by_kind_count"] = blocked_by_kind
               state["stopped_reason"] = "caps_exhausted" if outcome == "caps_exhausted" else "no_ready_candidate"
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
@@ -2179,6 +2414,21 @@ workflow:
         - value_selector: [select_ready_candidate, blocked_missing_inputs_summary]
           value_type: string
           variable: blocked_missing_inputs_summary
+        - value_selector: [select_ready_candidate, blocked_candidates_sample_json]
+          value_type: string
+          variable: blocked_candidates_sample_json
+        - value_selector: [select_ready_candidate, blocked_candidates_count_total]
+          value_type: string
+          variable: blocked_candidates_count_total
+        - value_selector: [select_ready_candidate, blocked_candidates_by_kind_count_json]
+          value_type: string
+          variable: blocked_candidates_by_kind_count_json
+        - value_selector: [select_ready_candidate, ready_candidates_sample_json]
+          value_type: string
+          variable: ready_candidates_sample_json
+        - value_selector: [select_ready_candidate, ready_candidates_by_kind_count_json]
+          value_type: string
+          variable: ready_candidates_by_kind_count_json
         - value_selector: [select_ready_candidate, selection_outcome]
           value_type: string
           variable: selection_outcome
@@ -2249,15 +2499,45 @@ workflow:
         code: |
           import json
 
+          def _clean_message(value) -> str:
+              text = ' '.join(str(value or '').split()).strip()
+              if not text:
+                  return "tool run failed"
+              lowered = text.lower()
+              blocked = [
+                  'author' + 'ization',
+                  'cook' + 'ie',
+                  'set-' + 'cookie',
+                  'request_' + 'body',
+                  'response_' + 'body',
+                  'raw_' + 'body',
+                  'head' + 'ers',
+                  'bear' + 'er',
+                  'tok' + 'en=',
+                  'stack' + 'trace',
+                  'trace' + 'back',
+              ]
+              if any(marker in lowered for marker in blocked):
+                  return "tool run failed"
+              return text[:200]
+
           def main(body: str) -> dict:
               try:
                   payload = json.loads(body or '{}')
               except Exception:
                   payload = {}
               result = payload.get('result') or payload.get('tool_result') or {}
+              errors = result.get('errors') if isinstance(result.get('errors'), list) else []
+              first_error = errors[0] if errors and isinstance(errors[0], dict) else {}
+              error_type = str(first_error.get('error_type') or first_error.get('type') or '').strip() or "tool_failed"
+              error_message = _clean_message(first_error.get('message') or payload.get('message') or result.get('message') or '')
               return {
                   'tool_run_id': str(payload.get('tool_run_id') or result.get('tool_run_id') or ''),
+                  'tool_name': str(payload.get('tool_name') or result.get('tool_name') or ''),
                   'tool_result_status': str(result.get('status') or payload.get('status') or ''),
+                  'tool_error_type': error_type,
+                  'tool_error_safe_message': error_message,
+                  'tool_error_count': str(len(errors)),
               }
         code_language: python3
         dependencies: []
@@ -2266,6 +2546,18 @@ workflow:
         isInLoop: true
         loop_id: main_loop_v1
         outputs:
+          tool_error_count:
+            children: null
+            type: string
+          tool_error_safe_message:
+            children: null
+            type: string
+          tool_error_type:
+            children: null
+            type: string
+          tool_name:
+            children: null
+            type: string
           tool_result_status:
             children: null
             type: string
@@ -2366,14 +2658,88 @@ workflow:
               merged[kind] = int(merged.get(kind, 0) or 0) + 1
               state["executed_by_kind"] = merged
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
+          def _increment_failure_count(state: dict, candidate_kind: str) -> int:
+              kind = str(candidate_kind or '').strip() or 'unknown'
+              counts = state.get("failed_by_kind")
+              if not isinstance(counts, dict):
+                  counts = {}
+              merged = {str(k): int(v) for k, v in counts.items() if str(k)}
+              merged[kind] = int(merged.get(kind, 0) or 0) + 1
+              state["failed_by_kind"] = merged
+              return int(merged.get(kind, 0) or 0)
+
+          def _int_value(value, default=0) -> int:
+              try:
+                  return int(value)
+              except Exception:
+                  return default
+
+          def _bool_value(value, default=False) -> bool:
+              if isinstance(value, bool):
+                  return value
+              text = str(value or '').strip().lower()
+              if not text:
+                  return default
+              if text in {'true', '1', 'yes', 'on'}:
+                  return True
+              if text in {'false', '0', 'no', 'off'}:
+                  return False
+              return default
+
+          def _clean_message(value) -> str:
+              text = ' '.join(str(value or '').split()).strip()
+              if not text:
+                  return "tool run failed"
+              lowered = text.lower()
+              blocked = [
+                  'author' + 'ization',
+                  'cook' + 'ie',
+                  'set-' + 'cookie',
+                  'request_' + 'body',
+                  'response_' + 'body',
+                  'raw_' + 'body',
+                  'head' + 'ers',
+                  'bear' + 'er',
+                  'tok' + 'en=',
+                  'stack' + 'trace',
+                  'trace' + 'back',
+              ]
+              if any(marker in lowered for marker in blocked):
+                  return "tool run failed"
+              return text[:200]
+
+          def _append_failure_sample(state: dict, row: dict, limit: int = 10) -> None:
+              items = state.get("tool_failure_summaries")
+              if not isinstance(items, list):
+                  items = []
+              items = items + [row]
+              state["tool_failure_summaries"] = items[-limit:]
+
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_name: str, tool_result_status: str, tool_error_type: str, tool_error_safe_message: str, blocked_candidates_sample_json: str, blocked_candidates_count_total: str, blocked_candidates_by_kind_count_json: str, ready_candidates_sample_json: str = '', ready_candidates_by_kind_count_json: str = '', selection_outcome: str = '', skipped_by_kind_cap_delta_json: str = '') -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              state["stopped_reason"] = str(state.get("stopped_reason") or '').strip()
+              try:
+                  blocked_sample = json.loads(blocked_candidates_sample_json or '[]')
+              except Exception:
+                  blocked_sample = []
+              if not isinstance(blocked_sample, list):
+                  blocked_sample = []
+              try:
+                  ready_sample = json.loads(ready_candidates_sample_json or '[]')
+              except Exception:
+                  ready_sample = []
+              if not isinstance(ready_sample, list):
+                  ready_sample = []
+              blocked_by_kind = _load_map(blocked_candidates_by_kind_count_json)
+              ready_by_kind = _load_map(ready_candidates_by_kind_count_json)
               skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
               selection = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
+              safe_error_type = str(tool_error_type or '').strip() or "tool_failed"
+              safe_error_message = _clean_message(tool_error_safe_message)
               summary = {
                   "iteration_index": next_index,
                   "candidate_kind": str(candidate_kind or ''),
@@ -2388,21 +2754,54 @@ workflow:
                   "outcome": "tool_failed",
                   "selection_outcome": selection,
                   "skipped_by_kind_cap_delta": skipped_delta,
+                  "tool_error_type": safe_error_type,
+                  "tool_error_safe_message": safe_error_message,
               }
               state["iterations_run"] = next_index
               _increment_executed(state, candidate_kind)
+              state["tool_failures_count"] = _int_value(state.get("tool_failures_count"), 0) + 1
+              kind_failure_count = _increment_failure_count(state, candidate_kind)
               state["last_candidate_kind"] = str(candidate_kind or '')
               state["last_tool_run_status"] = str(tool_result_status or '')
               state["last_selection_outcome"] = selection
+              state["last_tool_error_type"] = safe_error_type
+              state["last_tool_error_safe_message"] = safe_error_message
+              state["ready_candidates_sample"] = ready_sample[:10]
+              state["ready_candidates_by_kind_count"] = ready_by_kind
+              state["blocked_candidates_sample"] = blocked_sample[:10]
+              state["blocked_candidates_count_total"] = int(str(blocked_candidates_count_total or '0') or 0)
+              state["blocked_candidates_by_kind_count"] = blocked_by_kind
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
-              state["stopped_reason"] = "tool_failed"
+              _append_failure_sample(
+                  state,
+                  {
+                      "iteration_index": next_index,
+                      "candidate_kind": str(candidate_kind or ''),
+                      "tool_name": str(tool_name or ''),
+                      "tool_run_id": str(tool_run_id or ''),
+                      "error_type": safe_error_type,
+                      "message": safe_error_message,
+                      "status": str(tool_result_status or ''),
+                  },
+              )
+              failure_total = _int_value(state.get("tool_failures_count"), 0)
+              max_total = max(1, _int_value(state.get("max_tool_failures_total"), 3))
+              max_by_kind = max(1, _int_value(state.get("max_tool_failures_by_kind"), 2))
+              fatal_mode = _bool_value(state.get("tool_failed_fatal_mode"), False)
+              should_exit_loop = False
+              if fatal_mode:
+                  state["stopped_reason"] = "tool_failed"
+                  should_exit_loop = True
+              elif failure_total >= max_total or kind_failure_count >= max_by_kind:
+                  state["stopped_reason"] = "too_many_tool_failures"
+                  should_exit_loop = True
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
-                  "should_exit_loop": True,
+                  "should_exit_loop": should_exit_loop,
               }
         code_language: python3
         dependencies: []
-        desc: Stop bounded loop after failed tool result.
+        desc: Record bounded failed tool result and continue unless failure budgets are exhausted.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
@@ -2426,9 +2825,33 @@ workflow:
         - value_selector: [extract_tool_run, tool_run_id]
           value_type: string
           variable: tool_run_id
+        - value_selector: [extract_tool_run, tool_name]
+          value_type: string
+          variable: tool_name
         - value_selector: [extract_tool_run, tool_result_status]
           value_type: string
           variable: tool_result_status
+        - value_selector: [extract_tool_run, tool_error_type]
+          value_type: string
+          variable: tool_error_type
+        - value_selector: [extract_tool_run, tool_error_safe_message]
+          value_type: string
+          variable: tool_error_safe_message
+        - value_selector: [select_ready_candidate, blocked_candidates_sample_json]
+          value_type: string
+          variable: blocked_candidates_sample_json
+        - value_selector: [select_ready_candidate, blocked_candidates_count_total]
+          value_type: string
+          variable: blocked_candidates_count_total
+        - value_selector: [select_ready_candidate, blocked_candidates_by_kind_count_json]
+          value_type: string
+          variable: blocked_candidates_by_kind_count_json
+        - value_selector: [select_ready_candidate, ready_candidates_sample_json]
+          value_type: string
+          variable: ready_candidates_sample_json
+        - value_selector: [select_ready_candidate, ready_candidates_by_kind_count_json]
+          value_type: string
+          variable: ready_candidates_by_kind_count_json
         - value_selector: [select_ready_candidate, selection_outcome]
           value_type: string
           variable: selection_outcome
@@ -2650,11 +3073,25 @@ workflow:
               merged[kind] = int(merged.get(kind, 0) or 0) + 1
               state["executed_by_kind"] = merged
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, blocked_candidates_sample_json: str, blocked_candidates_count_total: str, blocked_candidates_by_kind_count_json: str, ready_candidates_sample_json: str = '', ready_candidates_by_kind_count_json: str = '', selection_outcome: str = '', skipped_by_kind_cap_delta_json: str = '') -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              try:
+                  blocked_sample = json.loads(blocked_candidates_sample_json or '[]')
+              except Exception:
+                  blocked_sample = []
+              if not isinstance(blocked_sample, list):
+                  blocked_sample = []
+              try:
+                  ready_sample = json.loads(ready_candidates_sample_json or '[]')
+              except Exception:
+                  ready_sample = []
+              if not isinstance(ready_sample, list):
+                  ready_sample = []
+              blocked_by_kind = _load_map(blocked_candidates_by_kind_count_json)
+              ready_by_kind = _load_map(ready_candidates_by_kind_count_json)
               skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
               selection = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
@@ -2680,6 +3117,11 @@ workflow:
               state["last_observation_type"] = ""
               state["last_verification_plan_id"] = ""
               state["last_selection_outcome"] = selection
+              state["ready_candidates_sample"] = ready_sample[:10]
+              state["ready_candidates_by_kind_count"] = ready_by_kind
+              state["blocked_candidates_sample"] = blocked_sample[:10]
+              state["blocked_candidates_count_total"] = int(str(blocked_candidates_count_total or '0') or 0)
+              state["blocked_candidates_by_kind_count"] = blocked_by_kind
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
@@ -2717,6 +3159,21 @@ workflow:
         - value_selector: [summarize_observations, observations_count]
           value_type: string
           variable: observations_count
+        - value_selector: [select_ready_candidate, blocked_candidates_sample_json]
+          value_type: string
+          variable: blocked_candidates_sample_json
+        - value_selector: [select_ready_candidate, blocked_candidates_count_total]
+          value_type: string
+          variable: blocked_candidates_count_total
+        - value_selector: [select_ready_candidate, blocked_candidates_by_kind_count_json]
+          value_type: string
+          variable: blocked_candidates_by_kind_count_json
+        - value_selector: [select_ready_candidate, ready_candidates_sample_json]
+          value_type: string
+          variable: ready_candidates_sample_json
+        - value_selector: [select_ready_candidate, ready_candidates_by_kind_count_json]
+          value_type: string
+          variable: ready_candidates_by_kind_count_json
         - value_selector: [select_ready_candidate, selection_outcome]
           value_type: string
           variable: selection_outcome
@@ -3625,11 +4082,25 @@ workflow:
               merged[kind] = int(merged.get(kind, 0) or 0) + 1
               state["executed_by_kind"] = merged
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, first_observation_type: str, verification_plan_id: str, evidence_id: str, judge_verdict_json: str, finding_id: str, confirmed_findings_count: str, finding_ids_json: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observations_count: str, first_observation_type: str, verification_plan_id: str, evidence_id: str, judge_verdict_json: str, finding_id: str, confirmed_findings_count: str, finding_ids_json: str, blocked_candidates_sample_json: str, blocked_candidates_count_total: str, blocked_candidates_by_kind_count_json: str, ready_candidates_sample_json: str = '', ready_candidates_by_kind_count_json: str = '', selection_outcome: str = '', skipped_by_kind_cap_delta_json: str = '') -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              try:
+                  blocked_sample = json.loads(blocked_candidates_sample_json or '[]')
+              except Exception:
+                  blocked_sample = []
+              if not isinstance(blocked_sample, list):
+                  blocked_sample = []
+              try:
+                  ready_sample = json.loads(ready_candidates_sample_json or '[]')
+              except Exception:
+                  ready_sample = []
+              if not isinstance(ready_sample, list):
+                  ready_sample = []
+              blocked_by_kind = _load_map(blocked_candidates_by_kind_count_json)
+              ready_by_kind = _load_map(ready_candidates_by_kind_count_json)
               skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
               selection = str(selection_outcome or '').strip() or "selected_ready"
               try:
@@ -3673,6 +4144,11 @@ workflow:
               state["last_observation_type"] = str(first_observation_type or '')
               state["last_verification_plan_id"] = str(verification_plan_id or '')
               state["last_selection_outcome"] = selection
+              state["ready_candidates_sample"] = ready_sample[:10]
+              state["ready_candidates_by_kind_count"] = ready_by_kind
+              state["blocked_candidates_sample"] = blocked_sample[:10]
+              state["blocked_candidates_count_total"] = int(str(blocked_candidates_count_total or '0') or 0)
+              state["blocked_candidates_by_kind_count"] = blocked_by_kind
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               return {
                   "state_json": json.dumps(state, ensure_ascii=False),
@@ -3731,6 +4207,21 @@ workflow:
         - value_selector: [extract_findings_summary, finding_ids_json]
           value_type: string
           variable: finding_ids_json
+        - value_selector: [select_ready_candidate, blocked_candidates_sample_json]
+          value_type: string
+          variable: blocked_candidates_sample_json
+        - value_selector: [select_ready_candidate, blocked_candidates_count_total]
+          value_type: string
+          variable: blocked_candidates_count_total
+        - value_selector: [select_ready_candidate, blocked_candidates_by_kind_count_json]
+          value_type: string
+          variable: blocked_candidates_by_kind_count_json
+        - value_selector: [select_ready_candidate, ready_candidates_sample_json]
+          value_type: string
+          variable: ready_candidates_sample_json
+        - value_selector: [select_ready_candidate, ready_candidates_by_kind_count_json]
+          value_type: string
+          variable: ready_candidates_by_kind_count_json
         - value_selector: [select_ready_candidate, selection_outcome]
           value_type: string
           variable: selection_outcome
@@ -3792,11 +4283,25 @@ workflow:
               merged[kind] = int(merged.get(kind, 0) or 0) + 1
               state["executed_by_kind"] = merged
 
-          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observation_id: str, observation_type: str, verification_plan_id: str, selection_outcome: str, skipped_by_kind_cap_delta_json: str) -> dict:
+          def main(state_json: str, candidate_kind: str, tool_run_id: str, tool_result_status: str, observation_id: str, observation_type: str, verification_plan_id: str, blocked_candidates_sample_json: str, blocked_candidates_count_total: str, blocked_candidates_by_kind_count_json: str, ready_candidates_sample_json: str = '', ready_candidates_by_kind_count_json: str = '', selection_outcome: str = '', skipped_by_kind_cap_delta_json: str = '') -> dict:
               try:
                   state = json.loads(state_json or '{}')
               except Exception:
                   state = {}
+              try:
+                  blocked_sample = json.loads(blocked_candidates_sample_json or '[]')
+              except Exception:
+                  blocked_sample = []
+              if not isinstance(blocked_sample, list):
+                  blocked_sample = []
+              try:
+                  ready_sample = json.loads(ready_candidates_sample_json or '[]')
+              except Exception:
+                  ready_sample = []
+              if not isinstance(ready_sample, list):
+                  ready_sample = []
+              blocked_by_kind = _load_map(blocked_candidates_by_kind_count_json)
+              ready_by_kind = _load_map(ready_candidates_by_kind_count_json)
               skipped_delta = _merge_counts(state, skipped_by_kind_cap_delta_json)
               outcome = str(selection_outcome or '').strip() or "selected_ready"
               next_index = int(state.get("iterations_run") or 0) + 1
@@ -3829,6 +4334,11 @@ workflow:
               state["last_observation_type"] = str(observation_type or '')
               state["last_verification_plan_id"] = str(verification_plan_id or '')
               state["last_selection_outcome"] = outcome
+              state["ready_candidates_sample"] = ready_sample[:10]
+              state["ready_candidates_by_kind_count"] = ready_by_kind
+              state["blocked_candidates_sample"] = blocked_sample[:10]
+              state["blocked_candidates_count_total"] = int(str(blocked_candidates_count_total or '0') or 0)
+              state["blocked_candidates_by_kind_count"] = blocked_by_kind
               state["iteration_summaries"] = (state.get("iteration_summaries") or []) + [summary]
               state["pending_summaries"] = (state.get("pending_summaries") or []) + [pending]
               return {
@@ -3873,6 +4383,21 @@ workflow:
         - value_selector: [extract_verification_plan, verification_plan_id]
           value_type: string
           variable: verification_plan_id
+        - value_selector: [select_ready_candidate, blocked_candidates_sample_json]
+          value_type: string
+          variable: blocked_candidates_sample_json
+        - value_selector: [select_ready_candidate, blocked_candidates_count_total]
+          value_type: string
+          variable: blocked_candidates_count_total
+        - value_selector: [select_ready_candidate, blocked_candidates_by_kind_count_json]
+          value_type: string
+          variable: blocked_candidates_by_kind_count_json
+        - value_selector: [select_ready_candidate, ready_candidates_sample_json]
+          value_type: string
+          variable: ready_candidates_sample_json
+        - value_selector: [select_ready_candidate, ready_candidates_by_kind_count_json]
+          value_type: string
+          variable: ready_candidates_by_kind_count_json
         - value_selector: [select_ready_candidate, selection_outcome]
           value_type: string
           variable: selection_outcome
@@ -4118,6 +4643,13 @@ workflow:
                   f"kind_caps: {json.dumps(state.get('kind_caps') or {}, ensure_ascii=False)}\n"
                   f"executed_by_kind: {json.dumps(state.get('executed_by_kind') or {}, ensure_ascii=False)}\n"
                   f"skipped_by_kind_cap_count: {json.dumps(state.get('skipped_by_kind_cap_count') or {}, ensure_ascii=False)}\n"
+                  f"tool_failures_count: {state.get('tool_failures_count', 0)}\n"
+                  f"failed_by_kind: {json.dumps(state.get('failed_by_kind') or {}, ensure_ascii=False)}\n"
+                  f"tool_failure_summaries: {json.dumps(state.get('tool_failure_summaries') or [], ensure_ascii=False)}\n"
+                  f"last_tool_error_type: {state.get('last_tool_error_type', '')}\n"
+                  f"last_tool_error_safe_message: {state.get('last_tool_error_safe_message', '')}\n"
+                  f"max_tool_failures_total: {state.get('max_tool_failures_total', 0)}\n"
+                  f"max_tool_failures_by_kind: {state.get('max_tool_failures_by_kind', 0)}\n"
                   f"last_candidate_kind: {state.get('last_candidate_kind', '')}\n"
                   f"last_tool_run_status: {state.get('last_tool_run_status', '')}\n"
                   f"last_selection_outcome: {state.get('last_selection_outcome', '')}\n"
@@ -4133,6 +4665,11 @@ workflow:
                   f"scenario_types: {json.dumps(state.get('scenario_types') or [], ensure_ascii=False)}\n"
                   f"scenario_plan_warnings_sample: {json.dumps(state.get('scenario_plan_warnings_sample') or [], ensure_ascii=False)}\n"
                   f"scenario_plan_unavailable: {state.get('scenario_plan_unavailable', False)}\n"
+                  f"ready_candidates_by_kind_count: {json.dumps(state.get('ready_candidates_by_kind_count') or {}, ensure_ascii=False)}\n"
+                  f"ready_candidates_sample: {json.dumps(state.get('ready_candidates_sample') or [], ensure_ascii=False)}\n"
+                  f"blocked_candidates_count_total: {state.get('blocked_candidates_count_total', 0)}\n"
+                  f"blocked_candidates_by_kind_count: {json.dumps(state.get('blocked_candidates_by_kind_count') or {}, ensure_ascii=False)}\n"
+                  f"blocked_candidates_sample: {json.dumps(state.get('blocked_candidates_sample') or [], ensure_ascii=False)}\n"
               )
               return {"answer_text": text}
         code_language: python3

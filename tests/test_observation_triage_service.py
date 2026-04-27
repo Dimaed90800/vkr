@@ -1013,6 +1013,150 @@ def test_routes_list_verification_plans_by_campaign():
     assert body[0]["status"] == "pending"
 
 
+def test_normalize_mass_assignment_signal_observation_lite_mapped():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "property_mutation_test"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="mass_assignment_signal",
+            confidence=0.55,
+            details={
+                "tool_name": "property_mutation_test",
+                "operation_id": "op_PATCH_/users/{id}",
+                "signal_types": [
+                    "candidate_sensitive_writable_fields",
+                    "seed_context_present",
+                    "diagnostic_probe_ready",
+                ],
+                "mutation_policy": "diagnostic_only",
+                "diagnostic_only": True,
+                "runtime_effect_proven": False,
+                "fields_selected": ["isAdmin"],
+                "seed_request_id": "req_seed_1",
+                "seed_request_id_present": True,
+                "proof_scope": "diagnostic_signal_only",
+                "recommended_next_action": "validate_mass_assignment_impact",
+                "security_relevance": "medium",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == ObservationType.mass_assignment_signal
+    assert obs.security_relevance == SecurityRelevance.medium
+    assert obs.recommended_next_action == "validate_mass_assignment_impact"
+    assert obs.confidence == 0.55
+    assert obs.judge_worthy is False
+
+
+def test_triage_mass_assignment_signal_strong_creates_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "mass_assignment_signal",
+        observation_id="obs_mass_assignment_triage_ok",
+        operation_id="op_PATCH_/users/{id}",
+        details={
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "fields_selected": ["isAdmin"],
+            "seed_request_id_present": True,
+            "seed_request_id": "req_seed_1",
+            "recommended_next_action": "validate_mass_assignment_impact",
+            "security_relevance": "medium",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "validate_mass_assignment_impact"
+    assert triaged.security_relevance == SecurityRelevance.medium
+    assert plan is not None
+    assert plan.goal == "validate_mass_assignment_impact"
+    assert plan.worker_class == "access_control"
+    assert plan.strategy == "validate_mass_assignment_impact"
+    assert plan.commands == []
+
+
+def test_triage_mass_assignment_signal_weak_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "mass_assignment_signal",
+        observation_id="obs_mass_assignment_triage_weak",
+        details={
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "fields_selected": [],
+            "seed_request_id_present": False,
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None
+
+
+def test_triage_mass_assignment_signal_seed_present_without_seed_id_stays_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "mass_assignment_signal",
+        observation_id="obs_mass_assignment_seed_missing_value",
+        operation_id="op_PATCH_/users/{id}",
+        details={
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "fields_selected": ["isAdmin"],
+            "seed_request_id_present": True,
+            "seed_request_id": "",
+            "recommended_next_action": "validate_mass_assignment_impact",
+            "security_relevance": "medium",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.judge_worthy is False
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None
+
+
+def test_triage_mass_assignment_signal_seed_present_without_seed_id_key_stays_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "mass_assignment_signal",
+        observation_id="obs_mass_assignment_seed_missing_key",
+        operation_id="op_PATCH_/users/{id}",
+        details={
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "fields_selected": ["isAdmin"],
+            "seed_request_id_present": True,
+            "recommended_next_action": "validate_mass_assignment_impact",
+            "security_relevance": "medium",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.judge_worthy is False
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None
+
+
 def test_observation_model_rejects_invalid_type_and_security_relevance():
     _reset_store()
     _create_campaign()
@@ -1025,6 +1169,89 @@ def test_observation_model_rejects_invalid_type_and_security_relevance():
         assert False, "Expected validation error for invalid Observation.type"
     except Exception:
         pass
+
+
+def test_normalize_validated_cors_issue_observation_lite_mapped():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "cors_validator"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="validated_cors_issue",
+            confidence=0.8,
+            details={
+                "tool_name": "cors_validator",
+                "operation_id": "op_GET_/api/v1/users",
+                "path_template": "/api/v1/users",
+                "request_url": "http://testapp.local/api/v1/users",
+                "origin_probe_label": "evil_example_invalid",
+                "acao_state": "wildcard",
+                "acac_present": True,
+                "vary_origin_present": False,
+                "origin_reflection_detected": False,
+                "issue_codes": ["cors_wildcard_with_credentials"],
+                "validation_mode": "single_replay_cors_check",
+                "request_count": 1,
+                "status_code": 200,
+                "security_relevance": "medium",
+                "recommended_next_action": "prove_cors_misconfiguration",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == ObservationType.validated_cors_issue
+    assert obs.security_relevance == SecurityRelevance.medium
+    assert obs.recommended_next_action == "prove_cors_misconfiguration"
+    assert obs.judge_worthy is False
+
+
+def test_triage_validated_cors_issue_strong_creates_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "validated_cors_issue",
+        observation_id="obs_cors_triage_ok",
+        operation_id="op_GET_/api/v1/users",
+        details={
+            "issue_codes": ["cors_wildcard_with_credentials"],
+            "validation_mode": "single_replay_cors_check",
+            "request_url": "http://testapp.local/api/v1/users",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "prove_cors_misconfiguration"
+    assert plan is not None
+    assert plan.goal == "prove_cors_misconfiguration"
+    assert plan.worker_class == "misconfiguration"
+    assert plan.commands == []
+
+
+def test_triage_validated_cors_issue_weak_store_only():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "validated_cors_issue",
+        observation_id="obs_cors_triage_weak",
+        details={
+            "issue_codes": ["cors_missing_vary_origin_when_reflecting"],
+            "validation_mode": "single_replay_cors_check",
+            "request_url": "http://testapp.local/api/v1/users",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None
 
     try:
         Observation(

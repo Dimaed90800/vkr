@@ -31,6 +31,8 @@ class ObservationType(str, Enum):
     timeout_signal = "timeout_signal"
     tool_error = "tool_error"
     injection_signal = "injection_signal"
+    mass_assignment_signal = "mass_assignment_signal"
+    validated_cors_issue = "validated_cors_issue"
 
 
 class SecurityRelevance(str, Enum):

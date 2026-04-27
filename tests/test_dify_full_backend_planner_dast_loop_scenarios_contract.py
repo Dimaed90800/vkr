@@ -156,10 +156,20 @@ def test_init_loop_state_initializes_fair_selection_fields() -> None:
         '"kind_caps"',
         '"executed_by_kind"',
         '"skipped_by_kind_cap_count"',
+        '"ready_candidates_by_kind_count"',
+        '"ready_candidates_sample"',
         '"last_selection_outcome"',
+        '"tool_failures_count"',
+        '"failed_by_kind"',
+        '"tool_failure_summaries"',
+        '"last_tool_error_type"',
+        '"last_tool_error_safe_message"',
+        '"max_tool_failures_total"',
+        '"max_tool_failures_by_kind"',
         '"property_mutation_test": 2',
         '"injection_test": 3',
         '"schemathesis_negative_test": 4',
+        '"cors_validator": 2',
     ):
         assert field in code
 
@@ -174,6 +184,13 @@ def test_select_ready_candidate_uses_fair_selection_state_and_caps_exhausted() -
         "selection_outcome",
         "caps_exhausted",
         "skipped_by_kind_cap_delta",
+        "blocked_candidates_sample_json",
+        "blocked_candidates_count_total",
+        "blocked_candidates_by_kind_count_json",
+        "ready_candidates_sample_json",
+        "ready_candidates_by_kind_count_json",
+        "MAX_BLOCKED_CANDIDATE_SAMPLE",
+        "MAX_READY_CANDIDATE_SAMPLE",
     ):
         assert needle in code
 
@@ -209,6 +226,22 @@ def test_stop_tool_failed_updates_executed_by_kind() -> None:
     code = _node_data("stop_tool_failed")["code"]
     assert "_increment_executed" in code
     assert 'state["executed_by_kind"] = merged' in code
+    assert "tool_failures_count" in code
+    assert "failed_by_kind" in code
+    assert "too_many_tool_failures" in code
+    assert "tool_failure_summaries" in code
+
+
+def test_extract_tool_run_exposes_safe_failure_fields() -> None:
+    code = _node_data("extract_tool_run")["code"]
+    for needle in (
+        "tool_error_type",
+        "tool_error_safe_message",
+        "tool_error_count",
+        "tool_name",
+        "_clean_message",
+    ):
+        assert needle in code
 
 
 def test_loop_scenarios_preserves_evidence_capable_types() -> None:
@@ -361,6 +394,8 @@ def test_final_report_contains_compact_scenario_summary() -> None:
         "rejected_scenarios_count",
         "scenario_types",
         "scenario_plan_warnings_sample",
+        "blocked_candidates_count_total",
+        "blocked_candidates_sample",
     ):
         assert key in code
 
@@ -371,7 +406,16 @@ def test_final_report_includes_fair_selection_observability() -> None:
         "kind_caps",
         "executed_by_kind",
         "skipped_by_kind_cap_count",
+        "tool_failures_count",
+        "failed_by_kind",
+        "tool_failure_summaries",
+        "last_tool_error_type",
+        "last_tool_error_safe_message",
+        "max_tool_failures_total",
+        "max_tool_failures_by_kind",
         "last_selection_outcome",
+        "ready_candidates_by_kind_count",
+        "ready_candidates_sample",
     ):
         assert key in code
 
@@ -410,6 +454,7 @@ def test_include_scenario_compiler_start_input_default_true() -> None:
     start_vars = _node_data("start")["variables"]
     names = [v.get("variable") for v in start_vars]
     assert "include_scenario_compiler" in names
+    assert "profile" in names
     norm = _node_data("normalize_inputs")["code"]
     assert "inc_scen = _bool_str(include_scenario_compiler, 'true')" in norm
 
@@ -438,6 +483,216 @@ def test_loop_seed_and_final_state_use_merged_scenario_state() -> None:
     vars_ = _node_data("final_loop_state")["variables"]
     seed = next(v for v in vars_ if v.get("variable") == "seed_state_json")
     assert seed["value_selector"] == ["merge_scenario_plan_into_planner_request", "state_json"]
+
+
+def test_normalize_inputs_safe_profile_defaults_to_15_iterations() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="safe",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["profile"] == "safe"
+    assert result["max_iterations"] == "15"
+
+
+def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["profile"] == "safe"
+    assert result["max_iterations"] == "15"
+
+
+def test_normalize_inputs_balanced_profile_defaults_to_25_iterations() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="balanced",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["profile"] == "balanced"
+    assert result["max_iterations"] == "25"
+
+
+def test_normalize_inputs_aggressive_profile_defaults_to_40_iterations() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="aggressive",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["profile"] == "aggressive"
+    assert result["max_iterations"] == "40"
+
+
+def test_normalize_inputs_clamps_explicit_max_iterations_to_50() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="999",
+        profile="balanced",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["max_iterations"] == "50"
+
+
+def test_normalize_inputs_invalid_or_missing_max_iterations_use_profile_default() -> None:
+    invalid = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="not-a-number",
+        profile="balanced",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    missing = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="balanced",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert invalid["max_iterations"] == "25"
+    assert missing["max_iterations"] == "25"
+
+
+def test_effective_planner_request_preserves_enable_cors_baseline_true_when_custom_request_omits_it() -> None:
+    normalized = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json=json.dumps({"zap": {"enabled": False}}, ensure_ascii=False),
+        task_id="",
+        judge_model="",
+        max_iterations="",
+        profile="safe",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    init_state = _run_code_node(
+        "init_loop_state",
+        campaign_id="cmp_profile",
+        max_iterations=normalized["max_iterations"],
+        planner_request_json=normalized["planner_request_json"],
+        profile=normalized["profile"],
+        include_scenario_compiler="true",
+    )
+    merged = _run_code_node(
+        "merge_scenario_plan_into_planner_request",
+        init_state_json=init_state["state_json"],
+        scenario_http_body="{}",
+        normalize_planner_request_json=normalized["planner_request_json"],
+        include_scenario_compiler_flag="true",
+    )
+    state = json.loads(merged["state_json"])
+    effective = json.loads(state["planner_request_effective_json"])
+    assert effective["enable_cors_baseline"] is True
 
 
 def test_select_ready_candidate_skips_capped_first_ready_and_picks_next_kind() -> None:
@@ -479,6 +734,244 @@ def test_select_ready_candidate_skips_capped_first_ready_and_picks_next_kind() -
     assert result["candidate_kind"] == "property_mutation_test"
     assert result["selection_outcome"] == "selected_ready"
     assert json.loads(result["skipped_by_kind_cap_delta_json"]) == {"injection_test": 1}
+    assert int(result["blocked_candidates_count_total"]) == 0
+    assert json.loads(result["blocked_candidates_sample_json"]) == []
+
+
+def test_select_ready_candidate_extracts_blocked_candidates_sample_with_allowlist() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_blocked_mass",
+                        "kind": "property_mutation_test",
+                        "status": "blocked",
+                        "reason": "Property_mutation_test blocked: no mass-assignment sensitive fields selected.",
+                        "missing_inputs": ["no_writable_sensitive_fields"],
+                        "summary": {
+                            "operation_id": "op_POST_/community/api/v2/community/posts/{postId}/comment",
+                            "scenario_type": "mass_assignment",
+                            "mass_assignment_candidate_result": "blocked_no_sensitive_fields",
+                            "audit_flags": ["no_sensitive_fields", "missing_seed_context"],
+                            "fields_considered_count": 1,
+                            "fields_selected_count": 0,
+                            "seed_request_id_present": False,
+                            "reason_codes": ["no_writable_sensitive_fields", "missing_seed_context"],
+                        },
+                        "command": {"inputs": {"headers": {"Authorization": "Bearer secret"}}},
+                    },
+                    {
+                        "candidate_id": "cand_ready_inj",
+                        "kind": "injection_test",
+                        "status": "ready",
+                        "command": {"tool_name": "injection_test"},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"injection_test": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "injection_test"
+    assert result["selection_outcome"] == "selected_ready"
+    assert int(result["blocked_candidates_count_total"]) >= 1
+    by_kind = json.loads(result["blocked_candidates_by_kind_count_json"])
+    assert by_kind.get("property_mutation_test") == 1
+    sample = json.loads(result["blocked_candidates_sample_json"])
+    assert isinstance(sample, list) and sample
+    row = sample[0]
+    assert row["kind"] == "property_mutation_test"
+    assert row["status"] == "blocked"
+    assert row["mass_assignment_candidate_result"] == "blocked_no_sensitive_fields"
+    assert row["fields_selected_count"] == 0
+    assert row["seed_request_id_present"] is False
+    assert set(row.keys()) == {
+        "kind",
+        "status",
+        "operation_id",
+        "scenario_type",
+        "reason",
+        "missing_inputs",
+        "audit_flags",
+        "mass_assignment_candidate_result",
+        "fields_considered_count",
+        "fields_selected_count",
+        "seed_request_id_present",
+        "reason_codes",
+    }
+
+
+def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_inj",
+                        "kind": "injection_test",
+                        "status": "ready",
+                        "reason": "Injection replay candidate ready.",
+                        "summary": {
+                            "operation_id": "op_GET_/search",
+                            "scenario_type": "injection",
+                            "reason_codes": ["baseline_available"],
+                            "audit_flags": ["query_param"],
+                        },
+                        "command": {
+                            "tool_name": "injection_test",
+                            "worker_class": "contract_fuzzing",
+                            "strategy": "validate_injection_impact",
+                            "inputs": {"headers": {"Authorization": "Bearer secret"}, "request_body": "boom"},
+                        },
+                    },
+                    {
+                        "candidate_id": "cand_cors",
+                        "kind": "cors_validator",
+                        "status": "ready",
+                        "reason": "Baseline CORS validation candidate generated from safe campaign/passive context.",
+                        "summary": {
+                            "operation_id": "",
+                            "scenario_type": "",
+                            "cors_candidate_source": "baseline",
+                            "validation_mode": "baseline_cors_check",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "cors_validator",
+                            "worker_class": "misconfiguration",
+                            "strategy": "validate_cors_policy",
+                            "inputs": {"cookie": "secret=value", "token": "leak"},
+                        },
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"injection_test": 3, "cors_validator": 2},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "injection_test"
+    ready_by_kind = json.loads(result["ready_candidates_by_kind_count_json"])
+    assert ready_by_kind == {"injection_test": 1, "cors_validator": 1}
+    sample = json.loads(result["ready_candidates_sample_json"])
+    assert len(sample) == 2
+    assert sample[0]["kind"] == "cors_validator"
+    assert sample[0]["tool_name"] == "cors_validator"
+    assert sample[0]["worker_class"] == "misconfiguration"
+    assert sample[0]["strategy"] == "validate_cors_policy"
+    assert sample[0]["cors_candidate_source"] == "baseline"
+    assert sample[0]["validation_mode"] == "baseline_cors_check"
+    assert set(sample[0].keys()) == {
+        "kind",
+        "status",
+        "operation_id",
+        "scenario_type",
+        "reason",
+        "tool_name",
+        "worker_class",
+        "strategy",
+        "cors_candidate_source",
+        "validation_mode",
+        "audit_flags",
+        "reason_codes",
+        "fields_selected_count",
+        "seed_request_id_present",
+        "mass_assignment_candidate_result",
+    }
+    blob = json.dumps(sample, ensure_ascii=False).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:
+    blocked_rows = [
+        {
+            "candidate_id": f"cand_blocked_{idx}",
+            "kind": "property_mutation_test",
+            "status": "blocked",
+            "reason": f"blocked-{idx}",
+            "missing_inputs": ["missing_seed_context"],
+            "summary": {"fields_selected_count": 0, "operation_id": f"op_{idx}"},
+        }
+        for idx in range(15)
+    ]
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps({"candidates": blocked_rows}, ensure_ascii=False),
+        state_json=json.dumps({"kind_caps": {}, "executed_by_kind": {}, "skipped_by_kind_cap_count": {}}, ensure_ascii=False),
+    )
+    sample = json.loads(result["blocked_candidates_sample_json"])
+    assert len(sample) == 10
+    by_kind = json.loads(result["blocked_candidates_by_kind_count_json"])
+    assert by_kind.get("property_mutation_test") == 15
+
+
+def test_select_ready_candidate_representative_sample_includes_property_mutation_with_noisy_security_headers() -> None:
+    noisy = [
+        {
+            "candidate_id": f"cand_sh_{idx}",
+            "kind": "security_header_validator",
+            "status": "blocked",
+            "reason": "ZAP alert does not map to a supported security-header validator rule.",
+            "missing_inputs": ["supported_security_header_mapping"],
+            "summary": {"operation_id": "", "fields_selected_count": 0},
+        }
+        for idx in range(15)
+    ]
+    mass_blocked = {
+        "candidate_id": "cand_mass_blocked",
+        "kind": "property_mutation_test",
+        "status": "blocked",
+        "reason": "Property_mutation_test blocked: no mass-assignment sensitive fields selected.",
+        "missing_inputs": ["no_writable_sensitive_fields"],
+        "summary": {
+            "operation_id": "op_POST_/community/api/v2/community/posts/{postId}/comment",
+            "mass_assignment_candidate_result": "blocked_no_sensitive_fields",
+            "audit_flags": ["no_sensitive_fields", "missing_seed_context"],
+            "fields_considered_count": 1,
+            "fields_selected_count": 0,
+            "seed_request_id_present": False,
+            "reason_codes": ["no_writable_sensitive_fields", "missing_seed_context"],
+        },
+    }
+    ready = {
+        "candidate_id": "cand_ready_inj",
+        "kind": "injection_test",
+        "status": "ready",
+        "command": {"tool_name": "injection_test"},
+    }
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps({"candidates": [*noisy, mass_blocked, ready]}, ensure_ascii=False),
+        state_json=json.dumps({"kind_caps": {"injection_test": 3}, "executed_by_kind": {}, "skipped_by_kind_cap_count": {}}, ensure_ascii=False),
+    )
+    assert result["candidate_kind"] == "injection_test"
+    assert int(result["blocked_candidates_count_total"]) == 16
+    by_kind = json.loads(result["blocked_candidates_by_kind_count_json"])
+    assert by_kind.get("security_header_validator") == 15
+    assert by_kind.get("property_mutation_test") == 1
+    sample = json.loads(result["blocked_candidates_sample_json"])
+    assert len(sample) <= 10
+    assert any(row.get("kind") == "property_mutation_test" for row in sample)
+    sec_rows = [row for row in sample if row.get("kind") == "security_header_validator"]
+    assert len(sec_rows) <= 1
 
 
 def test_select_ready_candidate_returns_caps_exhausted_when_all_ready_are_capped() -> None:
@@ -588,6 +1081,286 @@ def test_select_ready_candidate_treats_unknown_kind_as_uncapped() -> None:
     assert json.loads(result["skipped_by_kind_cap_delta_json"]) == {}
 
 
+def test_extract_tool_run_returns_safe_failure_fields() -> None:
+    result = _run_code_node(
+        "extract_tool_run",
+        body=json.dumps(
+            {
+                "tool_run_id": "toolrun_1",
+                "tool_name": "security_header_validator",
+                "status": "failed",
+                "result": {
+                    "tool_run_id": "toolrun_1",
+                    "tool_name": "security_header_validator",
+                    "status": "failed",
+                    "errors": [
+                        {
+                            "error_type": "response_too_large",
+                            "message": "HTTP response exceeded max_response_bytes.",
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["tool_run_id"] == "toolrun_1"
+    assert result["tool_name"] == "security_header_validator"
+    assert result["tool_result_status"] == "failed"
+    assert result["tool_error_type"] == "response_too_large"
+    assert result["tool_error_safe_message"] == "HTTP response exceeded max_response_bytes."
+    assert result["tool_error_count"] == "1"
+
+
+def test_extract_tool_run_sanitizes_failure_message_with_forbidden_markers() -> None:
+    result = _run_code_node(
+        "extract_tool_run",
+        body=json.dumps(
+            {
+                "tool_run_id": "toolrun_2",
+                "tool_name": "security_header_validator",
+                "status": "failed",
+                "result": {
+                    "tool_run_id": "toolrun_2",
+                    "tool_name": "security_header_validator",
+                    "status": "failed",
+                    "errors": [
+                        {
+                            "error_type": "unsafe_error",
+                            "message": "Authorization header leaked with token=abc",
+                        }
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["tool_error_type"] == "unsafe_error"
+    assert result["tool_error_safe_message"] == "tool run failed"
+
+
+def test_stop_tool_failed_below_threshold_records_failure_and_continues() -> None:
+    input_state = {
+        "iterations_run": 0,
+        "executed_by_kind": {},
+        "failed_by_kind": {},
+        "tool_failures_count": 0,
+        "tool_failure_summaries": [],
+        "last_tool_error_type": "",
+        "last_tool_error_safe_message": "",
+        "max_tool_failures_total": 3,
+        "max_tool_failures_by_kind": 2,
+        "tool_failed_fatal_mode": False,
+        "skipped_by_kind_cap_count": {},
+        "iteration_summaries": [],
+    }
+    result = _run_code_node(
+        "stop_tool_failed",
+        state_json=json.dumps(input_state, ensure_ascii=False),
+        candidate_kind="security_header_validator",
+        tool_run_id="toolrun_failed_1",
+        tool_name="security_header_validator",
+        tool_result_status="failed",
+        tool_error_type="response_too_large",
+        tool_error_safe_message="HTTP response exceeded max_response_bytes.",
+        blocked_candidates_sample_json="[]",
+        blocked_candidates_count_total="0",
+        blocked_candidates_by_kind_count_json="{}",
+        ready_candidates_sample_json='[{"kind":"cors_validator","status":"ready","tool_name":"cors_validator","validation_mode":"baseline_cors_check"}]',
+        ready_candidates_by_kind_count_json='{"cors_validator":1}',
+        selection_outcome="selected_ready",
+        skipped_by_kind_cap_delta_json='{"security_header_validator":1}',
+    )
+    state = json.loads(result["state_json"])
+    assert result["should_exit_loop"] is False
+    assert state["iterations_run"] == 1
+    assert state["tool_failures_count"] == 1
+    assert state["failed_by_kind"] == {"security_header_validator": 1}
+    assert state["executed_by_kind"] == {"security_header_validator": 1}
+    assert state["stopped_reason"] == ""
+    assert state["last_tool_error_type"] == "response_too_large"
+    assert state["last_tool_error_safe_message"] == "HTTP response exceeded max_response_bytes."
+    assert state["skipped_by_kind_cap_count"] == {"security_header_validator": 1}
+    assert state["ready_candidates_by_kind_count"] == {"cors_validator": 1}
+    assert state["iteration_summaries"][-1]["outcome"] == "tool_failed"
+    assert state["iteration_summaries"][-1]["tool_error_type"] == "response_too_large"
+    assert state["tool_failure_summaries"][-1]["candidate_kind"] == "security_header_validator"
+    assert len(state["tool_failure_summaries"]) == 1
+
+
+def test_stop_tool_failed_stops_on_by_kind_threshold() -> None:
+    input_state = {
+        "iterations_run": 1,
+        "executed_by_kind": {"security_header_validator": 1},
+        "failed_by_kind": {"security_header_validator": 1},
+        "tool_failures_count": 1,
+        "tool_failure_summaries": [],
+        "max_tool_failures_total": 3,
+        "max_tool_failures_by_kind": 2,
+        "tool_failed_fatal_mode": False,
+        "skipped_by_kind_cap_count": {},
+        "iteration_summaries": [],
+    }
+    result = _run_code_node(
+        "stop_tool_failed",
+        state_json=json.dumps(input_state, ensure_ascii=False),
+        candidate_kind="security_header_validator",
+        tool_run_id="toolrun_failed_2",
+        tool_name="security_header_validator",
+        tool_result_status="failed",
+        tool_error_type="response_too_large",
+        tool_error_safe_message="HTTP response exceeded max_response_bytes.",
+        blocked_candidates_sample_json="[]",
+        blocked_candidates_count_total="0",
+        blocked_candidates_by_kind_count_json="{}",
+        ready_candidates_sample_json="[]",
+        ready_candidates_by_kind_count_json="{}",
+        selection_outcome="selected_ready",
+        skipped_by_kind_cap_delta_json="{}",
+    )
+    state = json.loads(result["state_json"])
+    assert result["should_exit_loop"] is True
+    assert state["tool_failures_count"] == 2
+    assert state["failed_by_kind"]["security_header_validator"] == 2
+    assert state["stopped_reason"] == "too_many_tool_failures"
+
+
+def test_stop_tool_failed_stops_on_total_threshold() -> None:
+    input_state = {
+        "iterations_run": 2,
+        "executed_by_kind": {"security_header_validator": 1, "injection_test": 1},
+        "failed_by_kind": {"security_header_validator": 1, "injection_test": 1},
+        "tool_failures_count": 2,
+        "tool_failure_summaries": [],
+        "max_tool_failures_total": 3,
+        "max_tool_failures_by_kind": 5,
+        "tool_failed_fatal_mode": False,
+        "skipped_by_kind_cap_count": {},
+        "iteration_summaries": [],
+    }
+    result = _run_code_node(
+        "stop_tool_failed",
+        state_json=json.dumps(input_state, ensure_ascii=False),
+        candidate_kind="cors_validator",
+        tool_run_id="toolrun_failed_3",
+        tool_name="cors_validator",
+        tool_result_status="failed",
+        tool_error_type="tool_failed",
+        tool_error_safe_message="tool run failed",
+        blocked_candidates_sample_json="[]",
+        blocked_candidates_count_total="0",
+        blocked_candidates_by_kind_count_json="{}",
+        ready_candidates_sample_json="[]",
+        ready_candidates_by_kind_count_json="{}",
+        selection_outcome="selected_ready",
+        skipped_by_kind_cap_delta_json="{}",
+    )
+    state = json.loads(result["state_json"])
+    assert result["should_exit_loop"] is True
+    assert state["tool_failures_count"] == 3
+    assert state["failed_by_kind"]["cors_validator"] == 1
+    assert state["stopped_reason"] == "too_many_tool_failures"
+
+
+def test_stop_tool_failed_honors_legacy_fatal_mode_flag() -> None:
+    input_state = {
+        "iterations_run": 0,
+        "executed_by_kind": {},
+        "failed_by_kind": {},
+        "tool_failures_count": 0,
+        "tool_failure_summaries": [],
+        "max_tool_failures_total": 3,
+        "max_tool_failures_by_kind": 2,
+        "tool_failed_fatal_mode": True,
+        "skipped_by_kind_cap_count": {},
+        "iteration_summaries": [],
+    }
+    result = _run_code_node(
+        "stop_tool_failed",
+        state_json=json.dumps(input_state, ensure_ascii=False),
+        candidate_kind="security_header_validator",
+        tool_run_id="toolrun_failed_legacy",
+        tool_name="security_header_validator",
+        tool_result_status="failed",
+        tool_error_type="response_too_large",
+        tool_error_safe_message="HTTP response exceeded max_response_bytes.",
+        blocked_candidates_sample_json="[]",
+        blocked_candidates_count_total="0",
+        blocked_candidates_by_kind_count_json="{}",
+        ready_candidates_sample_json="[]",
+        ready_candidates_by_kind_count_json="{}",
+        selection_outcome="selected_ready",
+        skipped_by_kind_cap_delta_json="{}",
+    )
+    state = json.loads(result["state_json"])
+    assert result["should_exit_loop"] is True
+    assert state["stopped_reason"] == "tool_failed"
+
+
+def test_runtime_style_failed_security_header_allows_next_cors_selection() -> None:
+    failure_result = _run_code_node(
+        "stop_tool_failed",
+        state_json=json.dumps(
+            {
+                "iterations_run": 9,
+                "executed_by_kind": {"security_header_validator": 1},
+                "failed_by_kind": {},
+                "tool_failures_count": 0,
+                "tool_failure_summaries": [],
+                "max_tool_failures_total": 3,
+                "max_tool_failures_by_kind": 2,
+                "tool_failed_fatal_mode": False,
+                "kind_caps": {"security_header_validator": 2, "cors_validator": 2},
+                "skipped_by_kind_cap_count": {},
+                "iteration_summaries": [],
+            },
+            ensure_ascii=False,
+        ),
+        candidate_kind="security_header_validator",
+        tool_run_id="toolrun_failed_runtime",
+        tool_name="security_header_validator",
+        tool_result_status="failed",
+        tool_error_type="response_too_large",
+        tool_error_safe_message="HTTP response exceeded max_response_bytes.",
+        blocked_candidates_sample_json="[]",
+        blocked_candidates_count_total="0",
+        blocked_candidates_by_kind_count_json="{}",
+        ready_candidates_sample_json='[{"kind":"cors_validator","status":"ready","tool_name":"cors_validator","validation_mode":"baseline_cors_check"}]',
+        ready_candidates_by_kind_count_json='{"security_header_validator":1,"cors_validator":1}',
+        selection_outcome="selected_ready",
+        skipped_by_kind_cap_delta_json="{}",
+    )
+    continued_state = json.loads(failure_result["state_json"])
+    assert failure_result["should_exit_loop"] is False
+    assert continued_state["executed_by_kind"]["security_header_validator"] == 2
+    next_pick = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_sec",
+                        "kind": "security_header_validator",
+                        "status": "ready",
+                        "command": {"tool_name": "security_header_validator"},
+                    },
+                    {
+                        "candidate_id": "cand_cors",
+                        "kind": "cors_validator",
+                        "status": "ready",
+                        "command": {"tool_name": "cors_validator"},
+                    },
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(continued_state, ensure_ascii=False),
+    )
+    assert next_pick["candidate_kind"] == "cors_validator"
+    assert next_pick["selection_outcome"] == "selected_ready"
+    assert json.loads(next_pick["skipped_by_kind_cap_delta_json"]) == {"security_header_validator": 1}
+
+
 def test_stop_no_ready_candidate_caps_exhausted_keeps_executed_counts_and_sets_reason() -> None:
     input_state = {
         "iterations_run": 2,
@@ -602,6 +1375,9 @@ def test_stop_no_ready_candidate_caps_exhausted_keeps_executed_counts_and_sets_r
         blocked_count="0",
         skipped_existing_count="0",
         blocked_missing_inputs_summary="[]",
+        blocked_candidates_sample_json='[{"kind":"property_mutation_test","status":"blocked","mass_assignment_candidate_result":"blocked_no_sensitive_fields"}]',
+        blocked_candidates_count_total="1",
+        blocked_candidates_by_kind_count_json='{"property_mutation_test":1}',
         selection_outcome="caps_exhausted",
         skipped_by_kind_cap_delta_json=json.dumps({"injection_test": 2}, ensure_ascii=False),
     )
@@ -611,6 +1387,9 @@ def test_stop_no_ready_candidate_caps_exhausted_keeps_executed_counts_and_sets_r
     assert state["last_selection_outcome"] == "caps_exhausted"
     assert state["executed_by_kind"] == {"injection_test": 3}
     assert state["skipped_by_kind_cap_count"] == {"injection_test": 3}
+    assert state["blocked_candidates_count_total"] == 1
+    assert state["blocked_candidates_by_kind_count"] == {"property_mutation_test": 1}
+    assert state["blocked_candidates_sample"][0]["mass_assignment_candidate_result"] == "blocked_no_sensitive_fields"
 
 
 def test_stop_no_ready_candidate_no_ready_sets_reason_and_keeps_executed_counts() -> None:
@@ -627,6 +1406,9 @@ def test_stop_no_ready_candidate_no_ready_sets_reason_and_keeps_executed_counts(
         blocked_count="2",
         skipped_existing_count="3",
         blocked_missing_inputs_summary="[]",
+        blocked_candidates_sample_json='[{"kind":"property_mutation_test","status":"blocked","fields_selected_count":0,"seed_request_id_present":false}]',
+        blocked_candidates_count_total="2",
+        blocked_candidates_by_kind_count_json='{"security_header_validator":1,"property_mutation_test":1}',
         selection_outcome="no_ready_candidate",
         skipped_by_kind_cap_delta_json=json.dumps({"schemathesis_negative_test": 1}, ensure_ascii=False),
     )
@@ -636,6 +1418,144 @@ def test_stop_no_ready_candidate_no_ready_sets_reason_and_keeps_executed_counts(
     assert state["last_selection_outcome"] == "no_ready_candidate"
     assert state["executed_by_kind"] == {"schemathesis_negative_test": 1}
     assert state["skipped_by_kind_cap_count"] == {"schemathesis_negative_test": 1}
+    assert state["blocked_candidates_count_total"] == 2
+    assert state["blocked_candidates_by_kind_count"] == {"security_header_validator": 1, "property_mutation_test": 1}
+    assert state["blocked_candidates_sample"][0]["fields_selected_count"] == 0
+
+
+def test_blocked_candidate_observability_code_and_final_report_are_safe() -> None:
+    select_code = _node_data("select_ready_candidate")["code"]
+    report_code = _node_data("build_final_report")["code"]
+    for bad in (
+        "request_body",
+        "response_body",
+        "raw_body",
+        "Authorization",
+        "Cookie",
+        "Set-Cookie",
+        "headers",
+        "bearer",
+        "token=",
+    ):
+        assert bad not in select_code
+        assert bad not in report_code
+
+
+def test_tool_failure_extraction_and_report_code_are_safe() -> None:
+    extract_code = _node_data("extract_tool_run")["code"]
+    report_code = _node_data("build_final_report")["code"]
+    for bad in (
+        "Authorization",
+        "Cookie",
+        "Set-Cookie",
+        "request_body",
+        "response_body",
+        "raw_body",
+        "headers",
+        "bearer",
+        "token=",
+    ):
+        assert bad not in extract_code
+        assert bad not in report_code
+
+
+def test_build_final_report_includes_blocked_candidate_observability_fields() -> None:
+    result = _run_code_node(
+        "build_final_report",
+        state_json=json.dumps(
+            {
+                "campaign_id": "cmp_1",
+                "iterations_run": 1,
+                "max_iterations": 10,
+                "stopped_reason": "no_ready_candidate",
+                "confirmed_findings_count": 0,
+                "finding_ids": [],
+                "pending_verification_count": 0,
+                "kind_caps": {},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+                "tool_failures_count": 1,
+                "failed_by_kind": {"security_header_validator": 1},
+                "tool_failure_summaries": [
+                    {
+                        "iteration_index": 1,
+                        "candidate_kind": "security_header_validator",
+                        "tool_name": "security_header_validator",
+                        "tool_run_id": "toolrun_1",
+                        "error_type": "response_too_large",
+                        "message": "HTTP response exceeded max_response_bytes.",
+                        "status": "failed",
+                    }
+                ],
+                "last_tool_error_type": "response_too_large",
+                "last_tool_error_safe_message": "HTTP response exceeded max_response_bytes.",
+                "max_tool_failures_total": 3,
+                "max_tool_failures_by_kind": 2,
+                "last_candidate_kind": "",
+                "last_tool_run_status": "",
+                "last_selection_outcome": "no_ready_candidate",
+                "iteration_summaries": [],
+                "pending_summaries": [],
+                "scenario_plan_source": "test",
+                "scenario_plan_graph_empty": False,
+                "scenarios_total": 1,
+                "accepted_scenarios_count": 0,
+                "blocked_scenarios_count": 1,
+                "rejected_scenarios_count": 0,
+                "scenario_types": ["mass_assignment:1"],
+                "scenario_plan_warnings_sample": [],
+                "scenario_plan_unavailable": False,
+                "ready_candidates_by_kind_count": {"cors_validator": 1},
+                "ready_candidates_sample": [
+                    {
+                        "kind": "cors_validator",
+                        "status": "ready",
+                        "tool_name": "cors_validator",
+                        "worker_class": "misconfiguration",
+                        "strategy": "validate_cors_policy",
+                        "cors_candidate_source": "baseline",
+                        "validation_mode": "baseline_cors_check",
+                        "audit_flags": [],
+                        "reason_codes": [],
+                        "fields_selected_count": 0,
+                        "seed_request_id_present": False,
+                        "mass_assignment_candidate_result": "",
+                        "operation_id": "",
+                        "scenario_type": "",
+                        "reason": "Baseline CORS validation candidate generated from safe campaign/passive context.",
+                    }
+                ],
+                "blocked_candidates_count_total": 1,
+                "blocked_candidates_by_kind_count": {"property_mutation_test": 1},
+                "blocked_candidates_sample": [
+                    {
+                        "kind": "property_mutation_test",
+                        "status": "blocked",
+                        "mass_assignment_candidate_result": "blocked_no_sensitive_fields",
+                        "fields_selected_count": 0,
+                        "seed_request_id_present": False,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+    )
+    text = result["answer_text"]
+    assert "ready_candidates_by_kind_count:" in text
+    assert "ready_candidates_sample:" in text
+    assert "cors_validator" in text
+    assert "baseline_cors_check" in text
+    assert "tool_failures_count: 1" in text
+    assert "failed_by_kind:" in text
+    assert "tool_failure_summaries:" in text
+    assert "last_tool_error_type: response_too_large" in text
+    assert "last_tool_error_safe_message: HTTP response exceeded max_response_bytes." in text
+    assert "blocked_candidates_count_total: 1" in text
+    assert "blocked_candidates_sample:" in text
+    assert "blocked_candidates_by_kind_count:" in text
+    assert "mass_assignment_candidate_result" in text
+    assert "fields_selected_count" in text
+    assert "seed_request_id_present" in text
 
 
 def test_final_loop_state_sets_max_iterations_reached_when_reason_missing() -> None:

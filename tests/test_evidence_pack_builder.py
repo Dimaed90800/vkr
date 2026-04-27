@@ -6,7 +6,9 @@ isolation guarantees, and a regression guard for the legacy
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -2223,12 +2225,230 @@ def test_get_evidence_pack_route_returns_pack():
     assert body["evidence_id"] == pack.evidence_id
 
 
+def test_build_mass_assignment_signal_pack_with_diagnostic_context_ready_for_judge():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="property_mutation_test")
+    op_id = "op_PATCH_/users/{id}"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="PATCH",
+        path_template="/users/{id}",
+        owasp_candidates=[],
+    )
+    seed = _add_corpus(
+        method="PATCH",
+        url="http://testapp.local/users/123",
+        path_template="/users/{id}",
+        role="user_a",
+        status_code=200,
+        operation_id=op_id,
+    )
+    obs = _make_obs(
+        ObservationType.mass_assignment_signal.value,
+        observation_id="obs_mass_assignment_ready",
+        operation_id=op_id,
+        details={
+            "tool_name": "property_mutation_test",
+            "operation_id": op_id,
+            "signal_types": [
+                "candidate_sensitive_writable_fields",
+                "seed_context_present",
+                "diagnostic_probe_ready",
+            ],
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "runtime_effect_proven": False,
+            "fields_selected": ["isAdmin"],
+            "fields_considered_count": 3,
+            "fields_skipped_count": 1,
+            "seed_request_id": seed.request_id,
+            "seed_request_id_present": True,
+            "proof_scope": "diagnostic_signal_only",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_mass_assignment_impact",
+        required_evidence=[
+            "mass_assignment_signal",
+            "seed_reference",
+            "field_selection_context",
+            "runtime_effect_assessment",
+        ],
+        plan_id="vplan_mass_assignment_ready",
+        worker_class="access_control",
+        strategy="validate_mass_assignment_impact",
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan(
+        "vplan_mass_assignment_ready"
+    )
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.vulnerability_class == "potential_mass_assignment"
+    assert pack.owasp_category == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+    assert "runtime_effect_proven:false" in pack.derived_signals
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("request_body", "response_body", "raw_body", "headers", "bearer ", "token=", "set-cookie"):
+        assert bad not in blob
+    assert re.search(r"[\"']authorization[\"']\\s*:", blob) is None
+    assert re.search(r"[\"']cookie[\"']\\s*:", blob) is None
+
+
+def test_build_mass_assignment_signal_pack_missing_seed_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="property_mutation_test")
+    op_id = "op_PATCH_/users/{id}"
+    obs = _make_obs(
+        ObservationType.mass_assignment_signal.value,
+        observation_id="obs_mass_assignment_missing_seed",
+        operation_id=op_id,
+        details={
+            "tool_name": "property_mutation_test",
+            "operation_id": op_id,
+            "mutation_policy": "diagnostic_only",
+            "diagnostic_only": True,
+            "runtime_effect_proven": False,
+            "fields_selected": ["isAdmin"],
+            "seed_request_id_present": False,
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_mass_assignment_impact",
+        required_evidence=[
+            "mass_assignment_signal",
+            "seed_reference",
+            "field_selection_context",
+            "runtime_effect_assessment",
+        ],
+        plan_id="vplan_mass_assignment_missing_seed",
+        worker_class="access_control",
+        strategy="validate_mass_assignment_impact",
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan(
+        "vplan_mass_assignment_missing_seed"
+    )
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    assert "runtime_effect_proven:false" in pack.derived_signals
+    assert any(m.code == "seed_reference_missing" for m in pack.missing_evidence)
+
+
 def test_get_evidence_pack_route_404_for_missing_pack():
     _reset_store()
     client = _get_test_client()
     resp = client.get("/v1/evidence/packs/evp_missing_xyz")
     assert resp.status_code == 404
     assert resp.json()["error"] == "evidence_pack_not_found"
+
+
+def test_build_validated_cors_issue_pack_strong_case_ready_for_judge():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="cors_validator")
+    op_id = "op_GET_/api/v1/users"
+    _store_api_graph_with_op(
+        operation_id=op_id,
+        method="GET",
+        path_template="/api/v1/users",
+        owasp_candidates=[],
+    )
+    obs = _make_obs(
+        ObservationType.validated_cors_issue.value,
+        observation_id="obs_cors_ready",
+        operation_id=op_id,
+        details={
+            "tool_name": "cors_validator",
+            "operation_id": op_id,
+            "path_template": "/api/v1/users",
+            "request_url": "http://testapp.local/api/v1/users",
+            "origin_probe_label": "evil_example_invalid",
+            "acao_state": "wildcard",
+            "acac_present": True,
+            "vary_origin_present": False,
+            "origin_reflection_detected": False,
+            "issue_codes": ["cors_wildcard_with_credentials"],
+            "validation_mode": "single_replay_cors_check",
+            "request_count": 1,
+            "status_code": 200,
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_cors_misconfiguration",
+        required_evidence=[
+            "validated_cors_issue",
+            "cors_policy_state",
+            "origin_probe_context",
+        ],
+        plan_id="vplan_cors_ready",
+        worker_class="misconfiguration",
+        strategy="prove_cors_misconfiguration",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_cors_ready")
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.vulnerability_class == "cors_misconfiguration"
+    assert pack.owasp_category == "API8_SECURITY_MISCONFIGURATION"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_build_validated_cors_issue_pack_weak_case_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="cors_validator")
+    obs = _make_obs(
+        ObservationType.validated_cors_issue.value,
+        observation_id="obs_cors_weak",
+        operation_id="op_GET_/api/v1/users",
+        details={
+            "tool_name": "cors_validator",
+            "operation_id": "op_GET_/api/v1/users",
+            "path_template": "/api/v1/users",
+            "request_url": "http://testapp.local/api/v1/users",
+            "origin_probe_label": "evil_example_invalid",
+            "acao_state": "reflective",
+            "acac_present": False,
+            "vary_origin_present": False,
+            "origin_reflection_detected": True,
+            "issue_codes": ["cors_missing_vary_origin_when_reflecting"],
+            "validation_mode": "single_replay_cors_check",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_cors_misconfiguration",
+        required_evidence=[
+            "validated_cors_issue",
+            "cors_policy_state",
+            "origin_probe_context",
+        ],
+        plan_id="vplan_cors_weak",
+        worker_class="misconfiguration",
+        strategy="prove_cors_misconfiguration",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_cors_weak")
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    assert any(m.code == "strong_cors_issue_missing" for m in pack.missing_evidence)
 
 
 def test_list_evidence_packs_by_campaign_route_returns_list():

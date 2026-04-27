@@ -77,6 +77,7 @@ def _pack(
     baseline_role: str = "",
     attack_role: str = "attacker",
     owner_role: str = "",
+    derived_signals: list[str] | None = None,
 ) -> EvidencePack:
     pack = EvidencePack(
         evidence_id=evidence_id,
@@ -122,6 +123,7 @@ def _pack(
             for code in (missing or [])
         ],
         confidence=0.8,
+        derived_signals=derived_signals or [],
         status=status,
         judge_ready=judge_ready,
         created_at="2026-04-25T00:00:00+00:00",
@@ -322,6 +324,37 @@ def test_confirmed_with_missing_evidence_does_not_create_finding():
     result = _apply(_request(JudgeVerdictKind.confirmed))
     assert result.finding is None
     assert memory_store.confirmed_findings == {}
+
+
+def test_confirmed_mass_assignment_without_runtime_effect_downgrades_and_no_finding():
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_mass_assignment",
+        vulnerability_class="potential_mass_assignment",
+        owasp="API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+        derived_signals=["mass_assignment_signal", "runtime_effect_proven:false"],
+    )
+    result = _apply(_request(JudgeVerdictKind.confirmed, evidence_id="evp_mass_assignment"))
+    assert result.finding is None
+    assert result.decision.verdict == JudgeVerdictKind.rework
+    assert result.decision.applied_status == "applied_with_downgrade"
+    assert "mass_assignment_runtime_effect_not_proven" in result.readiness_issues
+    assert memory_store.confirmed_findings == {}
+
+
+def test_confirmed_mass_assignment_with_runtime_effect_true_can_create_finding():
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_mass_assignment_rt",
+        vulnerability_class="potential_mass_assignment",
+        owasp="API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+        derived_signals=["mass_assignment_signal", "runtime_effect_proven:true"],
+    )
+    result = _apply(_request(JudgeVerdictKind.confirmed, evidence_id="evp_mass_assignment_rt"))
+    assert result.finding is not None
+    assert result.decision.verdict == JudgeVerdictKind.confirmed
 
 
 def test_downgrade_records_readiness_issues_in_decision():

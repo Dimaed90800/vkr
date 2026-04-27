@@ -195,6 +195,31 @@ def _store_graph_mass_assignment_patch(campaign_id: str = "cmp_plan") -> None:
     memory_store.store_graph_for_campaign(campaign_id, graph.model_dump(mode="json"))
 
 
+def _store_corpus_seed(
+    *,
+    campaign_id: str = "cmp_plan",
+    request_id: str = "req_seed_1",
+    operation_id: str = "op_PATCH_/api/v1/users/{userId}",
+    method: str = "PATCH",
+    path_template: str = "/api/v1/users/{userId}",
+    status_code: int = 200,
+    classification: str = "successful_seed",
+) -> None:
+    memory_store.store_corpus_item(
+        request_id,
+        campaign_id,
+        {
+            "request_id": request_id,
+            "campaign_id": campaign_id,
+            "operation_id": operation_id,
+            "method": method,
+            "path_template": path_template,
+            "status_code": status_code,
+            "classification": classification,
+        },
+    )
+
+
 def _store_graph_search_sensitive_mixed(campaign_id: str = "cmp_plan") -> None:
     graph = ApiGraph(
         campaign_id=campaign_id,
@@ -1606,6 +1631,120 @@ def test_planner_security_header_scenario_without_passive_context_blocked():
     assert any("passive_signal_context" in c.missing_inputs for c in audit)
 
 
+def test_planner_creates_ready_cors_validator_candidate_from_cors_zap_alert() -> None:
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_zap_cors",
+        alert_name="CORS Header Misconfiguration",
+        url="http://target.local/api/v1/users?token=abc",
+        path="/api/v1/users",
+        operation_id="op_GET_/api/v1/users",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "enable_cors_baseline": True,
+        }),
+    )
+    cors = [c for c in resp.candidates if c.kind.value == "cors_validator"]
+    assert len(cors) == 1
+    cand = cors[0]
+    assert cand.status.value == "ready"
+    assert cand.command is not None
+    assert cand.command.tool_name == "cors_validator"
+    assert cand.summary.get("cors_candidate_source") != "baseline"
+    assert cand.command.inputs.get("origin_probe") == "https://evil.example.invalid"
+    assert cand.command.inputs.get("validation_mode") == "single_replay_cors_check"
+    summary_blob = str(cand.summary).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "token=abc"):
+        assert bad not in summary_blob
+
+
+def test_planner_creates_baseline_cors_candidate_without_cors_zap_alert() -> None:
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_zap_non_cors",
+        alert_name="X-Frame-Options Header Not Set",
+        url="http://target.local/frame",
+        path="/frame",
+        operation_id="op_GET_/frame",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "enable_cors_baseline": True,
+        }),
+    )
+    cors = [c for c in resp.candidates if c.kind.value == "cors_validator"]
+    assert len(cors) == 1
+    cand = cors[0]
+    assert cand.status.value == "ready"
+    assert cand.command is not None
+    assert cand.summary.get("cors_candidate_source") == "baseline"
+    assert cand.command.inputs.get("method") == "GET"
+    assert cand.command.inputs.get("origin_probe") == "https://evil.example.invalid"
+    assert cand.command.budget.max_requests <= 2
+    assert cand.command.budget.timeout_sec <= 15
+
+
+def test_planner_blocks_cors_validator_on_unsafe_method() -> None:
+    _reset_store()
+    _campaign()
+    obs = Observation(
+        observation_id="obs_zap_cors_post",
+        campaign_id="cmp_plan",
+        type=ObservationType.zap_alert,
+        operation_id="op_POST_/api/v1/users",
+        confidence=0.6,
+        security_relevance=SecurityRelevance.medium,
+        details={
+            "alert_name": "CORS Header Misconfiguration",
+            "url": "http://target.local/api/v1/users",
+            "path": "/api/v1/users",
+            "method": "POST",
+            "operation_id": "op_POST_/api/v1/users",
+        },
+    )
+    memory_store.store_observation(obs.observation_id, "cmp_plan", "", obs.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({
+            "zap": {"enabled": False},
+            "bola": {"enabled": False},
+            "enable_cors_baseline": True,
+        }),
+    )
+    cors = [c for c in resp.candidates if c.kind.value == "cors_validator"]
+    assert len(cors) == 1
+    assert cors[0].status.value == "blocked"
+    assert "method_not_safe" in cors[0].missing_inputs
+
+
+def test_planner_cors_zap_alert_path_avoids_duplicate_baseline_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_zap_alert_observation(
+        observation_id="obs_zap_cors_only",
+        alert_name="CORS Header Misconfiguration",
+        url="http://target.local/api/v1/users",
+        path="/api/v1/users",
+        operation_id="op_GET_/api/v1/users",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}}),
+    )
+    cors = [c for c in resp.candidates if c.kind.value == "cors_validator"]
+    assert len(cors) == 1
+    assert cors[0].summary.get("cors_candidate_source") != "baseline"
+
+
 def test_planner_scenario_duplicate_schema_ops_deduped():
     _reset_store()
     _campaign(openapi_url="http://target.local/openapi.json")
@@ -1970,6 +2109,7 @@ def test_planner_mass_assignment_creates_diagnostic_property_mutation_candidate(
     _reset_store()
     _campaign()
     _store_graph_mass_assignment_patch()
+    _store_corpus_seed(request_id="req_seed_mass_1")
     body = {
         "zap": {"enabled": False},
         "bola": {"enabled": False},
@@ -1985,17 +2125,124 @@ def test_planner_mass_assignment_creates_diagnostic_property_mutation_candidate(
     assert cmd.strategy == "property_mutation_probe"
     assert cmd.tool_name == "property_mutation_test"
     assert cmd.operation_id == "op_PATCH_/api/v1/users/{userId}"
+    assert cmd.seed_request_id == "req_seed_mass_1"
     assert cmd.inputs.get("mutation_policy") == "diagnostic_only"
     assert cmd.inputs.get("diagnostic_only") is True
+    assert cmd.inputs.get("seed_request_id") == "req_seed_mass_1"
     assert cmd.inputs.get("max_mutations") == 1
     assert cmd.inputs.get("target_url") == "http://target.local"
     assert cmd.inputs.get("operation_id") == "op_PATCH_/api/v1/users/{userId}"
     assert "isAdmin" in (cmd.inputs.get("sensitive_fields") or [])
     assert "owner_id" in (cmd.inputs.get("sensitive_fields") or [])
+    assert "displayName" not in (cmd.inputs.get("sensitive_fields") or [])
+    assert "description" not in (cmd.inputs.get("sensitive_fields") or [])
     assert cmd.budget.max_requests == 0
     assert cmd.budget.timeout_sec == 30
     assert cmd.success_criteria == ["property_mutation_probe_completed"]
+    summary = rows[0].summary or {}
+    assert summary.get("mass_assignment_candidate_result") == "ready"
+    assert summary.get("seed_request_id_present") is True
+    assert summary.get("fields_selected_count", 0) >= 2
+    for forbidden in (
+        "Authorization",
+        "authorization",
+        "Cookie",
+        "cookie",
+        "headers",
+        "request_body",
+        "response_body",
+        "payload",
+        "token",
+    ):
+        assert forbidden not in cmd.inputs
     assert CommandValidator().validate(cmd).valid
+
+
+def test_planner_mass_assignment_without_seed_stays_safe_and_marks_audit_flag() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_mass_assignment_patch()
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_mass_assignment_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    rows = [c for c in resp.candidates if c.kind.value == "property_mutation_test"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "blocked"
+    assert rows[0].command is None
+    summary = rows[0].summary or {}
+    assert summary.get("mass_assignment_candidate_result") == "blocked_missing_seed_context"
+    assert summary.get("seed_request_id_present") is False
+    assert "missing_seed_context" in summary.get("audit_flags", [])
+    assert "missing_seed_context" in summary.get("reason_codes", [])
+
+
+def test_planner_mass_assignment_with_empty_body_fields_adds_no_sensitive_fields_audit_flag() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_PATCH_/api/v1/users/{userId}",
+                method="PATCH",
+                path_template="/api/v1/users/{userId}",
+                body_fields=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_corpus_seed(request_id="req_seed_mass_2")
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_mass_assignment_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    rows = [c for c in resp.candidates if c.kind.value == "property_mutation_test"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "blocked"
+    assert rows[0].command is None
+    summary = rows[0].summary or {}
+    assert summary.get("mass_assignment_candidate_result") == "blocked_no_sensitive_fields"
+    assert "no_sensitive_fields" in summary.get("audit_flags", [])
+    assert "no_writable_sensitive_fields" in summary.get("reason_codes", [])
+    assert summary.get("fields_selected_count") == 0
+
+
+def test_planner_mass_assignment_content_only_body_fields_blocked() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_PATCH_/api/v1/users/{userId}",
+                method="PATCH",
+                path_template="/api/v1/users/{userId}",
+                body_fields=["content"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_corpus_seed(request_id="req_seed_mass_3")
+    body = {
+        "zap": {"enabled": False},
+        "bola": {"enabled": False},
+        "scenario_plan": {"source": "t", "scenarios": [_mass_assignment_scenario_payload()]},
+    }
+    resp = PlannerService().plan("cmp_plan", PlannerRequest.model_validate(body))
+    rows = [c for c in resp.candidates if c.kind.value == "property_mutation_test"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "blocked"
+    summary = rows[0].summary or {}
+    assert summary.get("mass_assignment_candidate_result") == "blocked_no_sensitive_fields"
+    assert summary.get("fields_considered_count") == 1
+    assert summary.get("fields_selected_count") == 0
 
 
 def test_planner_mass_assignment_dedup_existing_run_skips_candidate() -> None:
@@ -2114,6 +2361,12 @@ def test_planner_ordering_property_mutation_after_injection_before_zap() -> None
         ],
     )
     memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_corpus_seed(
+        request_id="req_seed_mass_order",
+        operation_id="op_PATCH_/api/v1/users/{userId}",
+        method="PATCH",
+        path_template="/api/v1/users/{userId}",
+    )
     _store_zap_alert_observation()
     body = {
         "zap": {"enabled": True},

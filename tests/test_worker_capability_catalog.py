@@ -80,9 +80,23 @@ def test_mass_assignment_worker_now_partial_diagnostic_adapter() -> None:
     assert w.status == "partial"
     assert w.adapter_available is True
     assert w.execution_mode == "sync"
-    assert w.triage_support is False
-    assert w.evidence_support is False
-    assert w.judge_support is False
+    assert "mass_assignment_signal" in w.observation_types
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
+    assert "runtime_effect_proven:true" in w.notes
+
+
+def test_cors_validator_capability_is_partial_and_finding_capable() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("cors_validator")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert "validated_cors_issue" in w.observation_types
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
 
 
 def test_get_by_tool_name() -> None:
