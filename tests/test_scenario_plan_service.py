@@ -12,7 +12,11 @@ from backend.main import app
 from backend.models.api_graph import ApiGraph, GraphSummary, Operation
 from backend.models.campaign import Campaign, CampaignLimits
 from backend.models.observation import Observation, ObservationType, SecurityRelevance
-from backend.models.scenario_plan import ScenarioPlanRequestBody, ScenarioStatus
+from backend.models.scenario_plan import (
+    ScenarioPlanRequestBody,
+    ScenarioStatus,
+    ScenarioType,
+)
 from backend.services.api_graph_service import ApiGraphService
 from backend.services.openapi_scenario_llm_planner import PromptBuilder, StubScenarioLlmClient
 from backend.services.scenario_graph_compact_service import ScenarioGraphCompactService
@@ -605,3 +609,37 @@ def test_scenario_plan_sees_graph_after_build_from_openapi_url() -> None:
     data = r.json()
     assert data["graph_empty"] is False
     assert "api_graph_empty_or_missing" not in data["warnings"]
+
+
+def test_scenario_plan_schema_negative_testing_accepted_with_real_tool_registry() -> None:
+    """Phase 16A: schemathesis_negative_test has Phase 5 adapter → no no_executable_adapter."""
+    _reset_store()
+    _store_campaign()
+    _store_graph_bola_and_schema()
+    raw = {
+        "schema_version": "scenario-plan/v1",
+        "campaign_id": "cmp_scn",
+        "source": "test",
+        "scenarios": [
+            {
+                "scenario_id": "scn_schema",
+                "status": "accepted",
+                "scenario_type": ScenarioType.schema_negative_testing.value,
+                "vulnerability_classes": ["SCHEMA"],
+                "operation_ids": ["op_GET_/api/v1/items/{id}"],
+                "resource_type": "",
+                "required_preconditions": ["openapi_schema"],
+                "candidate_workers": ["schemathesis_negative_test"],
+                "confidence": 0.7,
+                "rationale": "negative schema coverage",
+                "blocking_codes": [],
+                "errors": [],
+                "warnings": [],
+            },
+        ],
+    }
+    svc = ScenarioPlanService(llm_client=_FakeLlmClient(raw))
+    resp = svc.plan("cmp_scn", ScenarioPlanRequestBody())
+    s = next(x for x in resp.scenarios if x.scenario_type == ScenarioType.schema_negative_testing)
+    assert s.status == ScenarioStatus.accepted
+    assert "no_executable_adapter" not in (s.blocking_codes or [])

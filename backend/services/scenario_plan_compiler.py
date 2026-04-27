@@ -392,21 +392,43 @@ class ScenarioPlanCompiler:
         return ScenarioCompilerResult(extra, priority_add, warnings)
 
     def _existing_schemathesis_run(self, campaign_id: str, operation_id: str) -> dict[str, Any] | None:
-        active_or_done = {"accepted", "queued", "running", "finished", "partial"}
+        active_or_done = {
+            "accepted",
+            "queued",
+            "running",
+            "finished",
+            "partial",
+            "failed",
+            "timeout",
+            "cancelled",
+            "skipped",
+        }
         for run in memory_store.list_tool_runs_by_campaign(campaign_id):
             if run.get("tool_name") != "schemathesis_negative_test":
                 continue
             if str(run.get("status") or "").lower() not in active_or_done:
                 continue
             cmd_id = str(run.get("command_id") or "").strip()
-            if not cmd_id:
+            if cmd_id:
+                cmd = memory_store.get_command(cmd_id) or {}
+                inputs = cmd.get("inputs") if isinstance(cmd, dict) else None
+                if isinstance(inputs, dict) and str(inputs.get("operation_id") or "").strip() == operation_id:
+                    return run
+            # Dify loop starts ToolRuns directly from planner command_json and may not
+            # persist WorkerCommand in memory_store.commands; fall back to ToolResult.
+            run_id = str(run.get("tool_run_id") or "").strip()
+            if not run_id:
                 continue
-            cmd = memory_store.get_command(cmd_id) or {}
-            inputs = cmd.get("inputs") if isinstance(cmd, dict) else None
-            if not isinstance(inputs, dict):
+            result = memory_store.get_tool_result(run_id) or {}
+            observations = result.get("observations") if isinstance(result, dict) else None
+            if not isinstance(observations, list):
                 continue
-            if str(inputs.get("operation_id") or "").strip() == operation_id:
-                return run
+            for obs in observations:
+                if not isinstance(obs, dict):
+                    continue
+                details = obs.get("details") if isinstance(obs.get("details"), dict) else {}
+                if str(details.get("operation_id") or "").strip() == operation_id:
+                    return run
         return None
 
     def _safety_audit(

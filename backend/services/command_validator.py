@@ -244,6 +244,15 @@ class CommandValidator:
                     ))
                 continue
 
+            if (
+                command.tool_name == "schemathesis_negative_test"
+                and key == "inputs.openapi_url"
+                and scheme in {"http", "https"}
+            ):
+                trusted = str(campaign.openapi_url or "").strip()
+                if trusted and url.strip() == trusted:
+                    continue
+
             if host and host not in allowed_hosts and host_port not in allowed_hosts:
                 errors.append(ValidationError(
                     code="host_not_allowed",

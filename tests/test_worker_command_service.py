@@ -46,10 +46,12 @@ def _create_campaign(
     max_requests: int = 1000,
     max_duration_sec: int = 1800,
     status: CampaignStatus = CampaignStatus.running,
+    openapi_url: str | None = None,
 ) -> Campaign:
     campaign = Campaign(
         campaign_id=campaign_id,
         target_url="http://testapp.local",
+        openapi_url=openapi_url,
         allowed_hosts=allowed_hosts or ["testapp.local"],
         roles_json=roles_json or [],
         limits=CampaignLimits(max_requests=max_requests, max_duration_sec=max_duration_sec),
@@ -474,3 +476,66 @@ def test_routes_submit_stores_command_but_does_not_execute_tool():
     assert stored["status"] == "accepted"
     assert stored["normalized_worker_class"] == "access_control"
     assert "tool_run_id" not in stored
+
+
+def test_schemathesis_inputs_openapi_url_allowed_when_matches_campaign_openapi_url():
+    spec = "https://raw.githubusercontent.com/OWASP/crAPI/develop/openapi-spec/crapi-openapi-spec.json"
+    _reset_store()
+    _create_campaign(
+        allowed_hosts=["testapp.local"],
+        openapi_url=spec,
+    )
+    cmd = _base_command(
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_GET_/x",
+        inputs={
+            "openapi_url": spec,
+            "target_url": "http://testapp.local",
+            "max_examples": 3,
+        },
+    )
+    result = CommandValidator().validate(cmd)
+    assert result.valid is True
+    assert not any(e.code == "host_not_allowed" for e in result.errors)
+
+
+def test_schemathesis_inputs_openapi_url_rejected_when_differs_from_campaign():
+    _reset_store()
+    _create_campaign(
+        allowed_hosts=["testapp.local"],
+        openapi_url="https://raw.githubusercontent.com/OWASP/crAPI/develop/openapi-spec/crapi-openapi-spec.json",
+    )
+    cmd = _base_command(
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_GET_/x",
+        inputs={
+            "openapi_url": "https://evil.example/other.json",
+            "target_url": "http://testapp.local",
+        },
+    )
+    result = CommandValidator().validate(cmd)
+    assert result.valid is False
+    assert any(e.code == "host_not_allowed" for e in result.errors)
+
+
+def test_schemathesis_target_url_still_requires_allowed_host():
+    spec = "https://raw.githubusercontent.com/OWASP/crAPI/develop/openapi-spec/crapi-openapi-spec.json"
+    _reset_store()
+    _create_campaign(allowed_hosts=["testapp.local"], openapi_url=spec)
+    cmd = _base_command(
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_GET_/x",
+        inputs={
+            "openapi_url": spec,
+            "target_url": "http://evil.example",
+        },
+    )
+    result = CommandValidator().validate(cmd)
+    assert result.valid is False
+    assert any(e.code == "host_not_allowed" for e in result.errors)

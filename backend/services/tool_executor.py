@@ -29,6 +29,9 @@ try:
     from backend.services.adapters.http_replay_adapter import HttpReplayAdapter
     from backend.services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
     from backend.services.adapters.zap_discovery_passive_adapter import ZapDiscoveryPassiveAdapter
+    from backend.services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
     from backend.services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from backend.services.artifact_store import ArtifactStore
     from backend.services.campaign_service import CampaignService
@@ -51,6 +54,9 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.adapters.http_replay_adapter import HttpReplayAdapter
     from services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
     from services.adapters.zap_discovery_passive_adapter import ZapDiscoveryPassiveAdapter
+    from services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
     from services.adapters.security_header_validator_adapter import SecurityHeaderValidatorAdapter
     from services.artifact_store import ArtifactStore
     from services.campaign_service import CampaignService
@@ -99,6 +105,7 @@ class ToolExecutor:
         self._bola_replay = BolaReplayProbeAdapter(http_client=http_client)
         self._zap_discovery_passive = ZapDiscoveryPassiveAdapter(zap_client=zap_passive_client)
         self._security_header_validator = SecurityHeaderValidatorAdapter(http_client=http_client)
+        self._schemathesis_negative = SchemathesisNegativeTestAdapter()
 
     def execute_sync(self, command: WorkerCommand) -> ToolResult:
         validation = self._validator.validate(command)
@@ -152,6 +159,8 @@ class ToolExecutor:
             return self._zap_discovery_passive.execute(command, campaign, tool_run_id)
         if command.tool_name == "security_header_validator":
             return self._security_header_validator.execute(command, campaign, tool_run_id)
+        if command.tool_name == "schemathesis_negative_test":
+            return self._schemathesis_negative.execute(command, campaign, tool_run_id)
         return self._noop.execute(command, campaign, tool_run_id)
 
     def start_async(self, command: WorkerCommand) -> ToolRun:

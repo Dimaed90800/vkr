@@ -146,8 +146,30 @@ def test_loop_scenarios_preserves_evidence_capable_types() -> None:
 
 def test_loop_scenarios_preserves_pending_only_types() -> None:
     code = _node_data("route_by_observation_type")["code"]
+    assert "'schema_mismatch'" in code
     assert "'zap_alert'" in code
     assert "'discovered_endpoint'" in code
+
+
+def test_loop_scenarios_observation_priority_includes_schema_mismatch() -> None:
+    code = _node_data("summarize_observations")["code"]
+    assert "schema = [obs for obs in observations if obs.get('type') == 'schema_mismatch']" in code
+    assert "validated_headers[0] if validated_headers else (" in code
+    assert "schema[0] if schema else (" in code
+
+
+def test_loop_scenarios_schema_mismatch_is_pending_only() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "'schema_mismatch'" in code
+    assert "is_evidence_capable = obs_type in {" in code
+    assert "'validated_security_header_issue'" in code
+    assert "'cross_role_access_signal'" in code
+
+
+def test_loop_scenarios_schema_mismatch_does_not_reach_judge_apply() -> None:
+    code = _node_data("route_by_observation_type")["code"]
+    assert "verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification'" in code
+    assert "'schema_mismatch'" in code
 
 
 def test_final_report_contains_compact_scenario_summary() -> None:

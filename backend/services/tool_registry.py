@@ -22,6 +22,7 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "bola_replay_probe": "bola_replay",
     "zap_discovery_passive": "zap_discovery_passive",
     "security_header_validator": "security_header_validator",
+    "schemathesis_negative_test": "schemathesis_negative",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
@@ -34,10 +35,10 @@ SYNC_ONLY_TOOLS: set[str] = {
     "auth_test_access",
     "replay_http_sequence",
     "property_mutation_test",
+    "schemathesis_negative_test",
 }
 
 ASYNC_CAPABLE_TOOLS: set[str] = {
-    "schemathesis_negative_test",
     "schemathesis_stateful_test",
     "restler_compile",
     "restler_fuzz",

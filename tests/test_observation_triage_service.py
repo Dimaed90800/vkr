@@ -94,6 +94,32 @@ def _store_running_run(
     memory_store.store_tool_run(tool_run_id, campaign_id, run.model_dump(mode="json"))
 
 
+def _store_partial_run(
+    tool_run_id: str = "toolrun_partial",
+    campaign_id: str = "cmp_obs1",
+) -> None:
+    # `partial` is currently produced by ToolExecutor status override, but is not
+    # part of ToolRunStatus enum; store raw run payload to mirror runtime state.
+    memory_store.store_tool_run(
+        tool_run_id,
+        campaign_id,
+        {
+            "schema_version": "tool-run/v1",
+            "tool_run_id": tool_run_id,
+            "campaign_id": campaign_id,
+            "tool_name": "schemathesis_negative_test",
+            "execution_mode": "sync",
+            "status": "partial",
+            "started_at": "",
+            "finished_at": "",
+            "progress": {"requests_sent": 0, "max_requests": 0, "elapsed_sec": 0.0},
+            "result_ready": True,
+            "artifact_refs": [],
+            "error": None,
+        },
+    )
+
+
 def _store_tool_result(tool_run_id: str, result: ToolResult) -> None:
     memory_store.store_tool_result(tool_run_id, result.model_dump(mode="json"))
 
@@ -323,6 +349,50 @@ def test_normalize_409_for_running_tool_run():
     result = ObservationNormalizer().normalize("toolrun_running")
     assert isinstance(result, NormalizeError)
     assert result.code == "tool_run_not_terminal"
+
+
+def test_normalize_partial_tool_run_is_treated_as_terminal():
+    _reset_store()
+    _create_campaign()
+    _store_partial_run()
+    tr = ToolResult(
+        tool_run_id="toolrun_partial",
+        campaign_id="cmp_obs1",
+        tool_name="schemathesis_negative_test",
+        status="partial",
+        observations=[
+            ToolResultObservationLite(
+                observation_type="schema_mismatch",
+                confidence=0.6,
+                details={"operation_id": "op_GET_/api/v1/items/{id}"},
+            ),
+        ],
+    )
+    _store_tool_result("toolrun_partial", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_partial")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    assert result[0].type == "schema_mismatch"
+
+
+def test_normalize_partial_tool_run_with_no_signals_returns_empty_not_error():
+    _reset_store()
+    _create_campaign()
+    _store_partial_run("toolrun_partial_empty")
+    tr = ToolResult(
+        tool_run_id="toolrun_partial_empty",
+        campaign_id="cmp_obs1",
+        tool_name="schemathesis_negative_test",
+        status="partial",
+        observations=[],
+        errors=[],
+    )
+    _store_tool_result("toolrun_partial_empty", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_partial_empty")
+    assert not isinstance(result, NormalizeError)
+    assert result == []
 
 
 def test_normalize_terminal_run_without_tool_result_returns_controlled_error():
@@ -629,6 +699,33 @@ def test_routes_normalize_409_for_running_tool_run():
     resp = client.post("/v1/observations/normalize/toolrun_running")
     assert resp.status_code == 409
     assert resp.json()["error"] == "tool_run_not_terminal"
+
+
+def test_routes_normalize_200_for_partial_tool_run():
+    _reset_store()
+    _create_campaign()
+    _store_partial_run()
+    tr = ToolResult(
+        tool_run_id="toolrun_partial",
+        campaign_id="cmp_obs1",
+        tool_name="schemathesis_negative_test",
+        status="partial",
+        observations=[
+            ToolResultObservationLite(
+                observation_type="schema_mismatch",
+                confidence=0.6,
+                details={"operation_id": "op_GET_/api/v1/items/{id}"},
+            ),
+        ],
+    )
+    _store_tool_result("toolrun_partial", tr)
+
+    client = _get_test_client()
+    resp = client.post("/v1/observations/normalize/toolrun_partial")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["observations_created"] == 1
+    assert body["observations"][0]["type"] == "schema_mismatch"
 
 
 def test_routes_normalize_tool_result_missing_returns_controlled_error():

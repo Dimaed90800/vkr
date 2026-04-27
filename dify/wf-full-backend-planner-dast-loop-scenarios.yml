@@ -2360,12 +2360,15 @@ workflow:
               observations = payload.get('observations') or []
               cross = [obs for obs in observations if obs.get('type') == 'cross_role_access_signal']
               validated_headers = [obs for obs in observations if obs.get('type') == 'validated_security_header_issue']
+              schema = [obs for obs in observations if obs.get('type') == 'schema_mismatch']
               alerts = [obs for obs in observations if obs.get('type') == 'zap_alert']
               discovered = [obs for obs in observations if obs.get('type') == 'discovered_endpoint']
               selected = cross[0] if cross else (
                   validated_headers[0] if validated_headers else (
-                      alerts[0] if alerts else (
-                          discovered[0] if discovered else {}
+                      schema[0] if schema else (
+                          alerts[0] if alerts else (
+                              discovered[0] if discovered else {}
+                          )
                       )
                   )
               )
@@ -2381,7 +2384,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: Prefer cross_role_access_signal, then validated_security_header_issue, then zap_alert, then discovered_endpoint.
+        desc: Prefer cross_role_access_signal, then validated_security_header_issue, then schema_mismatch, then zap_alert, then discovered_endpoint.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
@@ -2643,6 +2646,7 @@ workflow:
                   'validated_security_header_issue',
               } and has_plan
               is_pending_only = obs_type in {
+                  'schema_mismatch',
                   'zap_alert',
                   'discovered_endpoint',
               }
@@ -2653,7 +2657,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: cross_role_access_signal and validated_security_header_issue enter Evidence/JudgeApply. zap_alert and discovered_endpoint stay pending-only.
+        desc: cross_role_access_signal and validated_security_header_issue enter Evidence/JudgeApply. schema_mismatch, zap_alert, and discovered_endpoint stay pending-only.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1

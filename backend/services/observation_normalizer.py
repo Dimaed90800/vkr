@@ -22,7 +22,14 @@ except ModuleNotFoundError:  # pragma: no cover
     from storage.memory_store import memory_store
 
 
-_TERMINAL_STATUSES = {"finished", "failed", "timeout", "cancelled", "skipped"}
+_TERMINAL_STATUSES = {
+    "finished",
+    "failed",
+    "timeout",
+    "cancelled",
+    "skipped",
+    "partial",
+}
 
 
 def _now_iso() -> str:

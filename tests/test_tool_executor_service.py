@@ -10,8 +10,9 @@
 """
 from __future__ import annotations
 
-import sys
 import os
+import sys
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -138,7 +139,12 @@ def test_sync_tool_result_contains_artifact_refs():
 def test_async_start_known_tool_without_adapter_returns_controlled_error():
     _reset_store()
     _create_campaign()
-    cmd = _async_command()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="stateful_flow",
+        strategy="stateful_exploration",
+        tool_name="restler_fuzz",
+    )
     try:
         ToolExecutor().start_async(cmd)
         assert False, "Expected ToolExecutorStartError"
@@ -401,8 +407,9 @@ def test_tool_registry_returns_execution_mode():
     assert reg.get_execution_mode("noop_tool") == "sync"
     assert reg.get_execution_mode("zap_discovery_passive") == "sync"
     assert reg.get_execution_mode("security_header_validator") == "sync"
-    assert reg.get_execution_mode("schemathesis_negative_test") == "async"
+    assert reg.get_execution_mode("schemathesis_negative_test") == "sync"
     assert reg.get_execution_mode("restler_fuzz") == "async"
+    assert reg.has_adapter("schemathesis_negative_test") is True
 
 
 def test_security_header_validator_allowed_only_for_misconfiguration():
@@ -462,15 +469,244 @@ def test_routes_start_rejects_known_async_tool_without_adapter():
     payload = {
         "command": {
             "campaign_id": "cmp_test1",
-            "worker_class": "contract_fuzzing",
-            "strategy": "negative_schema_test",
-            "tool_name": "schemathesis_negative_test",
+            "worker_class": "stateful_flow",
+            "strategy": "stateful_exploration",
+            "tool_name": "restler_fuzz",
         },
     }
     resp = client.post("/v1/tools/runs/start", json=payload)
     assert resp.status_code == 501
     body = resp.json()
     assert body["error"] in {"adapter_not_available", "async_adapter_not_available"}
+
+
+def test_routes_start_schemathesis_sync_returns_201_with_tool_result():
+    _reset_store()
+    from backend.models.campaign import Campaign, CampaignLimits
+
+    spec = "http://testapp.local/openapi.json"
+    c = Campaign(
+        campaign_id="cmp_test1",
+        target_url="http://testapp.local",
+        openapi_url=spec,
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=1000, max_duration_sec=1800),
+    )
+    memory_store.store_campaign("cmp_test1", c.model_dump(mode="json"))
+    client = _get_test_client()
+    payload = {
+        "execution_mode": "sync",
+        "command": {
+            "campaign_id": "cmp_test1",
+            "worker_class": "contract_fuzzing",
+            "strategy": "schema_negative_testing",
+            "tool_name": "schemathesis_negative_test",
+            "operation_id": "op_GET_/api/v1/x",
+            "inputs": {
+                "openapi_url": spec,
+                "target_url": "http://testapp.local",
+                "max_examples": 1,
+            },
+            "budget": {"max_requests": 3, "timeout_sec": 30},
+        },
+    }
+    fake_completed = MagicMock()
+    fake_completed.returncode = 0
+    fake_completed.stdout = "ok"
+    fake_completed.stderr = ""
+    with patch("shutil.which", return_value="/bin/false_schemathesis"), patch(
+        "backend.services.adapters.schemathesis_negative_test_adapter.subprocess.run",
+        return_value=fake_completed,
+    ) as mock_run:
+        resp = client.post("/v1/tools/runs/start", json=payload)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["execution_mode"] == "sync"
+    assert body["result"]["tool_name"] == "schemathesis_negative_test"
+    assert body["result"]["status"] == "finished"
+    mock_run.assert_called_once()
+
+
+def test_schemathesis_adapter_subprocess_nonzero_partial_with_schema_observation():
+    from backend.models.campaign import Campaign, CampaignLimits
+    from backend.services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
+
+    campaign = Campaign(
+        campaign_id="cmp_x",
+        target_url="http://testapp.local",
+        openapi_url="http://testapp.local/openapi.json",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=100, max_duration_sec=600),
+    )
+    cmd = WorkerCommand(
+        campaign_id="cmp_x",
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_GET_/api/v1/x",
+        inputs={
+            "openapi_url": "http://testapp.local/openapi.json",
+            "target_url": "http://testapp.local",
+            "max_examples": 2,
+        },
+        budget=CommandBudget(max_requests=5, timeout_sec=60),
+    )
+    fake = MagicMock()
+    fake.returncode = 1
+    fake.stdout = "response violates schema"
+    fake.stderr = ""
+    with patch("shutil.which", return_value="/bin/st"), patch(
+        "backend.services.adapters.schemathesis_negative_test_adapter.subprocess.run",
+        return_value=fake,
+    ):
+        result = SchemathesisNegativeTestAdapter().execute(cmd, campaign, "toolrun_t1")
+    assert result.status == "partial"
+    assert result.observations
+    assert result.observations[0].observation_type == "schema_mismatch"
+
+
+def test_schemathesis_adapter_missing_cli_failed():
+    from backend.models.campaign import Campaign, CampaignLimits
+    from backend.services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
+
+    campaign = Campaign(
+        campaign_id="cmp_x",
+        target_url="http://testapp.local",
+        openapi_url="http://testapp.local/openapi.json",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=100, max_duration_sec=600),
+    )
+    cmd = WorkerCommand(
+        campaign_id="cmp_x",
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_x",
+        inputs={
+            "openapi_url": "http://testapp.local/openapi.json",
+            "target_url": "http://testapp.local",
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=30),
+    )
+    with patch("shutil.which", return_value=None):
+        result = SchemathesisNegativeTestAdapter().execute(cmd, campaign, "toolrun_t2")
+    assert result.status == "failed"
+    assert any(e.error_type == "tool_runtime_missing" for e in result.errors)
+
+
+def test_schemathesis_adapter_openapi_mismatch_failed():
+    from backend.models.campaign import Campaign, CampaignLimits
+    from backend.services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
+
+    campaign = Campaign(
+        campaign_id="cmp_x",
+        target_url="http://testapp.local",
+        openapi_url="http://testapp.local/spec.json",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=100, max_duration_sec=600),
+    )
+    cmd = WorkerCommand(
+        campaign_id="cmp_x",
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_x",
+        inputs={
+            "openapi_url": "http://testapp.local/other.json",
+            "target_url": "http://testapp.local",
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=30),
+    )
+    result = SchemathesisNegativeTestAdapter().execute(cmd, campaign, "toolrun_t3")
+    assert result.status == "failed"
+    assert any(e.error_type == "invalid_inputs" for e in result.errors)
+
+
+def test_schemathesis_execute_sync_dispatches_adapter():
+    _reset_store()
+    from backend.models.campaign import Campaign, CampaignLimits
+
+    spec = "http://testapp.local/openapi.json"
+    c = Campaign(
+        campaign_id="cmp_test1",
+        target_url="http://testapp.local",
+        openapi_url=spec,
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=1000, max_duration_sec=1800),
+    )
+    memory_store.store_campaign("cmp_test1", c.model_dump(mode="json"))
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_x",
+        inputs={"openapi_url": spec, "target_url": "http://testapp.local"},
+        budget=CommandBudget(max_requests=3, timeout_sec=30),
+    )
+    fake = MagicMock(returncode=0, stdout="", stderr="")
+    with patch("shutil.which", return_value="/bin/st"), patch(
+        "backend.services.adapters.schemathesis_negative_test_adapter.subprocess.run",
+        return_value=fake,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.tool_name == "schemathesis_negative_test"
+    assert result.status == "finished"
+
+
+def test_tool_registry_resolve_mode_schemathesis_requested_async_remains_sync():
+    reg = ToolRegistry()
+    assert reg.resolve_execution_mode("schemathesis_negative_test", "async") == "sync"
+
+
+def test_schemathesis_adapter_truncates_long_output_in_artifact():
+    from backend.models.campaign import Campaign, CampaignLimits
+    from backend.services.adapters.schemathesis_negative_test_adapter import (
+        SchemathesisNegativeTestAdapter,
+    )
+
+    campaign = Campaign(
+        campaign_id="cmp_x",
+        target_url="http://testapp.local",
+        openapi_url="http://testapp.local/openapi.json",
+        allowed_hosts=["testapp.local"],
+        limits=CampaignLimits(max_requests=100, max_duration_sec=600),
+    )
+    cmd = WorkerCommand(
+        campaign_id="cmp_x",
+        worker_class="contract_fuzzing",
+        strategy="schema_negative_testing",
+        tool_name="schemathesis_negative_test",
+        operation_id="op_x",
+        inputs={
+            "openapi_url": "http://testapp.local/openapi.json",
+            "target_url": "http://testapp.local",
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=30),
+    )
+    fake = MagicMock(returncode=0, stdout="x" * 5000 + "Bearer secret-token-123\n", stderr="")
+    with patch("shutil.which", return_value="/bin/st"), patch(
+        "backend.services.adapters.schemathesis_negative_test_adapter.subprocess.run",
+        return_value=fake,
+    ):
+        result = SchemathesisNegativeTestAdapter().execute(cmd, campaign, "toolrun_tail")
+    assert result.status == "finished"
+    assert result.artifacts
+    from backend.services.artifact_store import ArtifactStore
+
+    blob = ArtifactStore().get_artifact(result.artifacts[0].artifact_id)
+    assert blob is not None
+    import json as _json
+
+    content = _json.loads(blob["content"])
+    assert len(content["stdout_tail"]) <= 2100
+    assert "secret-token" not in content["stdout_tail"]
 
 
 def test_routes_start_rejects_invalid_command():
