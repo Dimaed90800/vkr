@@ -61,10 +61,18 @@ class SafeHttpResult:
     response_headers_redacted: dict[str, Any] = field(default_factory=dict)
     cookie_summaries: list[dict[str, Any]] = field(default_factory=list)
     error: SafeHttpError | None = None
+    _raw_response_body: Any = field(default=None, repr=False)
+    _raw_response_cookies: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def ok(self) -> bool:
         return self.error is None and self.status_code > 0
+
+    def get_raw_response_body(self) -> Any:
+        return self._raw_response_body
+
+    def get_raw_response_cookies(self) -> dict[str, Any]:
+        return dict(self._raw_response_cookies)
 
 
 class SafeHttpClient:
@@ -163,6 +171,7 @@ class SafeHttpClient:
             campaign_id=campaign.campaign_id,
             is_https=urlparse(resolved_url).scheme.lower() == "https",
         )
+        base_result._raw_response_cookies = dict(response.cookies.items())
         base_result.response_headers_redacted, _ = redact_sensitive_data(dict(response.headers), None)
 
         location = response.headers.get("location")
@@ -196,6 +205,7 @@ class SafeHttpClient:
             return base_result
 
         parsed_body = self._parse_response_body(content, base_result.response_content_type)
+        base_result._raw_response_body = parsed_body
         _, redacted_response = redact_sensitive_data(None, parsed_body)
         base_result.response_body = redacted_response
         return base_result

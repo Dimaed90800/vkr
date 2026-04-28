@@ -53,6 +53,10 @@ def _reset_store() -> None:
     memory_store.observations_by_tool_run.clear()
     memory_store.verification_plans.clear()
     memory_store.verification_plans_by_campaign.clear()
+    memory_store.auth_profiles.clear()
+    memory_store.auth_profiles_by_campaign.clear()
+    memory_store.runtime_token_secrets.clear()
+    memory_store.runtime_credential_secrets.clear()
 
 
 def _create_campaign(campaign_id: str = "cmp_obs1") -> None:
@@ -1444,3 +1448,164 @@ def test_triage_undocumented_endpoint_signal_404_store_only() -> None:
     assert triaged.recommended_next_action == "store_only"
     assert triaged.security_relevance == SecurityRelevance.informational
     assert plan is None
+
+
+def test_triage_ssrf_candidate_signal_creates_verification_plan() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "ssrf_candidate_signal",
+        observation_id="obs_ssrf_triage_ok",
+        operation_id="op_POST_/api/v1/hooks",
+        details={
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "schema_type": "string",
+            "schema_format": "uri",
+            "validation_mode": "ssrf_candidate_detection",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "validate_ssrf_candidate_safely"
+    assert triaged.security_relevance == SecurityRelevance.medium
+    assert plan is not None
+    assert plan.goal == "validate_ssrf_candidate_safely"
+    assert plan.worker_class == "input_validation"
+    assert plan.commands == []
+
+
+def test_triage_response_field_inventory_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "response_field_inventory",
+        observation_id="obs_rfi_1",
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/x",
+            "path": "/api/x",
+            "field_count": 3,
+            "sensitive_field_count": 0,
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+
+
+def test_triage_auth_flow_signal_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "auth_flow_signal",
+        observation_id="obs_af_triage_1",
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": True,
+            "signup_candidates": [],
+            "login_candidates": [],
+            "token_response_candidates": [],
+            "profile_candidates": [],
+            "missing_prerequisites": [],
+            "reason_codes": [],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_test_account_materialization_result_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "test_account_materialization_result",
+        observation_id="obs_auth_mat_triage_1",
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "signup_success_count": 2,
+            "login_success_count": 2,
+            "auth_profiles_created_count": 2,
+            "auth_type": "bearer",
+            "token_response_detected": True,
+            "reason_codes": ["materialization_succeeded"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_data_exposure_probe_result_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "data_exposure_probe_result",
+        observation_id="obs_dex_probe_1",
+        details={
+            "source": "data_exposure_validator",
+            "operation_id": "op_GET_/api/y",
+            "method": "GET",
+            "path": "/api/y",
+            "status_code": 401,
+            "content_type": "application/json",
+            "result": "non_200_response",
+            "field_count": 0,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["non_200_response"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_data_exposure_signal_creates_verification_plan() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "data_exposure_signal",
+        observation_id="obs_dex_sig_1",
+        operation_id="op_GET_/api/profile",
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/profile",
+            "path": "/api/profile",
+            "method": "GET",
+            "status_code": 200,
+            "sensitive_field_count": 2,
+            "sensitive_categories": ["identity"],
+            "sensitive_fields": [{"field_name": "email", "field_path": "$.email", "category": "identity"}],
+            "security_relevance": "medium",
+            "recommended_next_action": "review_response_schema_and_authorization_context",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert plan is not None
+    assert plan.goal == "prove_sensitive_property_exposure"
+    assert plan.worker_class == "access_control"
+    assert plan.strategy == "validate_response_field_exposure"
+    assert "response_field_inventory" in plan.required_evidence

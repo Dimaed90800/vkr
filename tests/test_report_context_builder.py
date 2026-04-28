@@ -8,6 +8,7 @@ from backend.models.evidence_pack import EvidencePack, EvidencePackStatus
 from backend.models.judge import ConfirmedFinding, JudgeDecisionRecord, JudgeVerdictKind
 from backend.models.observation import Observation, ObservationType, VerificationPlan, VerificationPlanStatus
 from backend.services.report_context_builder import ReportContextBuilder
+from backend.services.auth_profile_store import AuthProfileStore
 from backend.storage.memory_store import memory_store
 
 
@@ -23,6 +24,7 @@ def _reset_store() -> None:
         "evidence_packs_by_verification_plan", "judge_decisions", "judge_decisions_by_campaign",
         "judge_decisions_by_evidence", "confirmed_findings", "confirmed_findings_by_campaign",
         "findings_by_fingerprint", "evidence_pack_apply_meta", "observation_apply_meta",
+        "auth_profiles", "auth_profiles_by_campaign", "runtime_token_secrets", "runtime_credential_secrets",
     ]:
         getattr(memory_store, name).clear()
 
@@ -492,6 +494,44 @@ def test_report_context_api9_counts_include_undocumented_endpoint_signal_and_fin
     assert api9["undocumented_endpoint_findings_count"] == 1
 
 
+def test_report_context_api7_coverage_includes_ssrf_candidate_counts() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_1",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "operation_id": "op_POST_/api/v1/hooks",
+                "method": "POST",
+                "path": "/api/v1/hooks",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "schema_type": "string",
+                "schema_format": "uri",
+                "validation_mode": "ssrf_candidate_detection",
+                "reason_codes": ["url_like_field_name", "schema_format_uri"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    assert api7["ssrf_candidate_signal_count"] == 1
+    assert api7["ssrf_candidate_operations_count"] == 1
+    assert api7["ssrf_candidate_fields_count"] == 1
+    assert api7["confirmed_findings_count"] == 0
+    assert api7["ssrf_candidates"][0]["field_name"] == "callback_url"
+    blob = json.dumps(api7, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
 def test_confirmed_finding_contains_traceability_fields() -> None:
     _reset_store()
     _create_campaign()
@@ -562,6 +602,431 @@ def test_api3_coverage_present_even_when_no_findings() -> None:
     api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
     assert "confirmed_findings_count" in api3
     assert api3["confirmed_findings_count"] == 0
+
+
+def test_report_context_auth_flow_diagnostics_counts_and_safe_sample() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_af_rep",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_af_rep",
+            campaign_id="cmp_report",
+            type=ObservationType.auth_flow_signal,
+            details={
+                "source": "auth_flow_detector",
+                "validation_mode": "auth_flow_detection",
+                "auth_flow_detected": True,
+                "signup_candidates": [
+                    {"operation_id": "op_POST_/signup", "method": "POST", "path": "/signup", "confidence": "high", "reason_codes": ["path_signup_register"]},
+                ],
+                "login_candidates": [],
+                "token_response_candidates": [],
+                "profile_candidates": [],
+                "missing_prerequisites": ["no_runtime_proof"],
+                "reason_codes": [],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    diag = ctx.get("auth_flow_diagnostics") or {}
+    assert diag.get("auth_flow_detected") is True
+    assert diag.get("signup_candidate_count") == 1
+    assert diag.get("login_candidate_count") == 0
+    assert diag.get("token_response_candidate_count") == 0
+    assert diag.get("profile_candidate_count") == 0
+    assert len(diag.get("auth_flow_candidates_sample") or []) >= 1
+    blob = json.dumps(diag, sort_keys=True).lower()
+    for bad in ("password", "bearer ", "authorization", "secret", "token="):
+        assert bad not in blob
+
+
+def test_report_context_auth_flow_diagnostics_include_materialization_metadata_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_report",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="secret-runtime-token",
+        raw_credentials={"email": "vkr_owner@example.test", "password": "StrongPass!9"},
+        created_by="test_account_materializer",
+        metadata={"signup_operation_id": "op_signup", "login_operation_id": "op_login", "token_field_path": "$.token"},
+    )
+    memory_store.store_observation(
+        "obs_authmat_rep",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_authmat_rep",
+            campaign_id="cmp_report",
+            type=ObservationType.test_account_materialization_result,
+            details={
+                "source": "test_account_materializer",
+                "validation_mode": "test_account_materialization",
+                "owner_auth_profile_id": profile.auth_profile_id,
+                "attacker_auth_profile_id": "",
+                "signup_success_count": 2,
+                "login_success_count": 1,
+                "auth_profiles_created_count": 1,
+                "auth_type": "bearer",
+                "token_response_detected": True,
+                "materialization_errors": [{"stage": "login", "user_label": "attacker_user", "error_type": "token_not_found"}],
+                "reason_codes": ["materialization_partial"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    diag = ctx.get("auth_flow_diagnostics") or {}
+    assert diag.get("test_account_materialization_status") == "partial_or_failed"
+    assert diag.get("auth_profiles_created_count") == 1
+    assert diag.get("signup_success_count") == 2
+    assert diag.get("login_success_count") == 1
+    assert diag.get("owner_auth_profile_id") == profile.auth_profile_id
+    assert diag.get("auth_type") == "bearer"
+    assert diag.get("token_response_detected") is True
+    assert len(diag.get("auth_profiles") or []) == 1
+    blob = json.dumps(diag, sort_keys=True).lower()
+    for bad in ("secret-runtime-token", "strongpass!9", "authorization", "cookie", "set-cookie", "bearer ", "response_body", "request_body"):
+        assert bad not in blob
+
+
+def test_report_context_materialization_selected_paths_and_status_codes() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_mat_paths",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_mat_paths",
+            campaign_id="cmp_report",
+            type=ObservationType.test_account_materialization_result,
+            details={
+                "source": "test_account_materializer",
+                "validation_mode": "test_account_materialization",
+                "signup_operation_id": "op_s",
+                "login_operation_id": "op_l",
+                "owner_auth_profile_id": "",
+                "attacker_auth_profile_id": "",
+                "signup_success_count": 2,
+                "login_success_count": 0,
+                "auth_profiles_created_count": 0,
+                "auth_type": "unknown",
+                "token_response_detected": False,
+                "selected_signup_path": "/svc/api/auth/signup",
+                "selected_login_path": "/svc/api/auth/login",
+                "signup_response_status_codes": [201, 201],
+                "login_response_status_codes": [403, 403],
+                "login_payload_field_names": ["email", "password"],
+                "reason_codes": ["materialization_failed", "login_http_403", "possible_invalid_credentials_or_wrong_login_endpoint"],
+                "materialization_errors": [],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    diag = ctx.get("auth_flow_diagnostics") or {}
+    assert diag.get("selected_signup_path") == "/svc/api/auth/signup"
+    assert diag.get("selected_login_path") == "/svc/api/auth/login"
+    assert diag.get("login_response_status_codes") == [403, 403]
+    assert "login_http_403" in (diag.get("materialization_reason_codes") or [])
+    blob = json.dumps(diag, sort_keys=True).lower()
+    for bad in ("bearer ", "authorization", "set-cookie", "response_body", "request_body"):
+        assert bad not in blob
+
+
+def test_report_context_api3_data_exposure_counts_and_safe_samples() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_rfi_rep",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_rfi_rep",
+            campaign_id="cmp_report",
+            type=ObservationType.response_field_inventory,
+            details={
+                "tool_name": "data_exposure_validator",
+                "operation_id": "op_GET_/api/users/{id}",
+                "path": "/api/users/1",
+                "method": "GET",
+                "status_code": 200,
+                "field_count": 5,
+                "sensitive_field_count": 1,
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_dex_sig_rep",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_dex_sig_rep",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_signal,
+            operation_id="op_GET_/api/users/{id}",
+            details={
+                "tool_name": "data_exposure_validator",
+                "operation_id": "op_GET_/api/users/{id}",
+                "path": "/api/users/1",
+                "method": "GET",
+                "status_code": 200,
+                "sensitive_field_count": 2,
+                "sensitive_categories": ["identity", "authorization"],
+                "sensitive_fields": [
+                    {"field_name": "email", "field_path": "$.email", "category": "identity"},
+                    {"field_name": "role", "field_path": "$.role", "category": "authorization"},
+                ],
+            },
+        ).model_dump(mode="json"),
+    )
+    finding = ConfirmedFinding(
+        finding_id="finding_dex_api3",
+        campaign_id="cmp_report",
+        evidence_id="evp_dex_api3",
+        decision_id="jdec_dex_api3",
+        owasp_category="API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+        vulnerability_class="sensitive_property_exposure",
+        endpoint="/api/users/1",
+        method="GET",
+        title="Sensitive property exposure",
+        severity="medium",
+        summary="Response includes sensitive field names.",
+        reproduction_pointer={"evidence_id": "evp_dex_api3", "replay_steps_count": 1},
+    )
+    memory_store.store_confirmed_finding(
+        finding.finding_id,
+        finding.campaign_id,
+        "fp_dex_api3",
+        finding.model_dump(mode="json"),
+    )
+    evidence = EvidencePack(
+        evidence_id="evp_dex_api3",
+        campaign_id="cmp_report",
+        owasp_category="API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+        vulnerability_class="sensitive_property_exposure",
+        hypothesis="Field inventory indicates exposure risk.",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        derived_signals=["sensitive_field_count:2", "sensitive_field_name:email"],
+    )
+    memory_store.store_evidence_pack(
+        "evp_dex_api3",
+        "cmp_report",
+        "obs_dex_sig_rep",
+        "",
+        evidence.model_dump(mode="json"),
+    )
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_dex_api3",
+        campaign_id="cmp_report",
+        evidence_id="evp_dex_api3",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(
+        decision.decision_id,
+        "cmp_report",
+        "evp_dex_api3",
+        decision.model_dump(mode="json"),
+    )
+    for idx, (res, status) in enumerate(
+        (
+            ("non_200_response", 403),
+            ("non_json_response", 200),
+            ("no_fields_found", 200),
+            ("fields_extracted", 200),
+            ("sensitive_fields_found", 200),
+        ),
+        start=1,
+    ):
+        memory_store.store_observation(
+            f"obs_dex_probe_rep_{idx}",
+            "cmp_report",
+            "",
+            Observation(
+                observation_id=f"obs_dex_probe_rep_{idx}",
+                campaign_id="cmp_report",
+                type=ObservationType.data_exposure_probe_result,
+                details={
+                    "source": "data_exposure_validator",
+                    "operation_id": f"op_probe_{idx}",
+                    "method": "GET",
+                    "path": f"/api/probe/{idx}",
+                    "status_code": status,
+                    "content_type": "application/json" if res != "non_json_response" else "text/html",
+                    "result": res,
+                    "field_count": 2 if res in {"fields_extracted", "sensitive_fields_found"} else 0,
+                    "sensitive_field_count": 0,
+                    "sensitive_categories": [],
+                    "reason_codes": [res],
+                },
+            ).model_dump(mode="json"),
+        )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["response_field_inventory_count"] == 1
+    assert api3["data_exposure_signal_count"] == 1
+    assert api3["data_exposure_probe_result_count"] == 5
+    assert api3["data_exposure_non_200_count"] == 1
+    assert api3["data_exposure_non_json_count"] == 1
+    assert api3["data_exposure_no_fields_count"] == 1
+    assert api3["data_exposure_fields_extracted_count"] == 2
+    assert len(api3["data_exposure_probe_results"]) >= 1
+    assert api3["data_exposure_probe_results"][0].get("operation_id")
+    assert api3["data_exposure_probe_results"][0].get("result")
+    assert "sensitive_fields" not in api3["data_exposure_probe_results"][0]
+    assert api3["sensitive_property_exposure_findings_count"] == 1
+    assert "identity" in api3["sensitive_field_categories"]
+    assert "authorization" in api3["sensitive_field_categories"]
+    assert any(s.get("field_name") == "email" for s in api3["sensitive_fields_sample"])
+    assert len(api3["data_exposure_results"]) >= 1
+    assert api3["blocked_no_sensitive_fields_count"] == "not_available"
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("response_body", "raw_body", "set-cookie", "bearer ", "token=", "secretvalue"):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_authenticated_data_exposure_counters_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_rfi_auth",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_rfi_auth",
+            campaign_id="cmp_report",
+            type=ObservationType.response_field_inventory,
+            details={
+                "tool_name": "data_exposure_validator",
+                "operation_id": "op_GET_/api/v1/me",
+                "path": "/api/v1/me",
+                "method": "GET",
+                "status_code": 200,
+                "field_count": 4,
+                "sensitive_field_count": 1,
+                "auth_mode": "authenticated",
+                "auth_profile_id": "authprof_owner_1",
+                "role_hint": "owner",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_sig_auth",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_sig_auth",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_signal,
+            details={
+                "tool_name": "data_exposure_validator",
+                "operation_id": "op_GET_/api/v1/me",
+                "path": "/api/v1/me",
+                "method": "GET",
+                "status_code": 200,
+                "sensitive_field_count": 1,
+                "sensitive_categories": ["identity"],
+                "auth_mode": "authenticated",
+                "auth_profile_id": "authprof_owner_1",
+                "role_hint": "owner",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_probe_auth",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_probe_auth",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_probe_result,
+            details={
+                "source": "data_exposure_validator",
+                "operation_id": "op_GET_/api/v1/me",
+                "method": "GET",
+                "path": "/api/v1/me",
+                "status_code": 200,
+                "content_type": "application/json",
+                "result": "fields_extracted",
+                "field_count": 4,
+                "sensitive_field_count": 1,
+                "sensitive_categories": ["identity"],
+                "reason_codes": ["fields_extracted"],
+                "auth_mode": "authenticated",
+                "auth_profile_id": "authprof_owner_1",
+                "role_hint": "owner",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["authenticated_response_field_inventory_count"] == 1
+    assert api3["authenticated_data_exposure_signal_count"] == 1
+    assert api3["authenticated_data_exposure_probe_result_count"] == 1
+    assert api3["data_exposure_authenticated_fields_extracted_count"] == 1
+    assert api3["auth_profiles_used_count"] == 1
+    assert api3["operations_with_authenticated_inventory"] == 1
+    assert len(api3["authenticated_data_exposure_results"]) == 1
+    sample = api3["authenticated_data_exposure_results"][0]
+    assert sample["auth_mode"] == "authenticated"
+    assert sample["auth_profile_id"] == "authprof_owner_1"
+    assert sample["role_hint"] == "owner"
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("authorization", "bearer ", "token=", "response_body", "cookie", "set-cookie"):
+        assert bad not in blob
+
+
+def test_report_context_api3_authenticated_sensitive_fields_found_counts_as_extracted() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_probe_auth_sensitive_found",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_probe_auth_sensitive_found",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_probe_result,
+            details={
+                "source": "data_exposure_validator",
+                "operation_id": "op_GET_/api/v1/me",
+                "method": "GET",
+                "path": "/api/v1/me",
+                "status_code": 200,
+                "content_type": "application/json",
+                "result": "sensitive_fields_found",
+                "field_count": 13,
+                "sensitive_field_count": 3,
+                "sensitive_categories": ["identity", "authorization"],
+                "reason_codes": ["sensitive_fields_found"],
+                "auth_mode": "authenticated",
+                "auth_profile_id": "authprof_owner_1",
+                "role_hint": "owner",
+                "raw_secret_example": "secretvalue",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["authenticated_data_exposure_probe_result_count"] == 1
+    assert api3["data_exposure_authenticated_fields_extracted_count"] == 1
+    assert api3["auth_profiles_used_count"] == 1
+    assert len(api3["authenticated_data_exposure_results"]) == 1
+    assert api3["authenticated_data_exposure_results"][0]["result"] == "sensitive_fields_found"
+    blob = json.dumps(api3, sort_keys=True).lower()
+    assert "secretvalue" not in blob
 
 
 def test_static_asset_context_and_security_header_grouping_fields() -> None:

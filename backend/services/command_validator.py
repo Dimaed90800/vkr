@@ -152,10 +152,18 @@ class CommandValidator:
             self._validate_cors_validator(command, campaign, errors)
         if (command.tool_name or "").strip() == "cookie_flag_validator":
             self._validate_cookie_flag_validator(command, campaign, errors)
+        if (command.tool_name or "").strip() == "ssrf_candidate_detector":
+            self._validate_ssrf_candidate_detector(command, campaign, errors)
         if (command.tool_name or "").strip() == "js_endpoint_extractor":
             self._validate_js_endpoint_extractor(command, campaign, errors)
         if (command.tool_name or "").strip() == "undocumented_endpoint_validator":
             self._validate_undocumented_endpoint_validator(command, campaign, errors)
+        if (command.tool_name or "").strip() == "data_exposure_validator":
+            self._validate_data_exposure_validator(command, campaign, errors)
+        if (command.tool_name or "").strip() == "auth_flow_detector":
+            self._validate_auth_flow_detector(command, campaign, errors)
+        if (command.tool_name or "").strip() == "test_account_materializer":
+            self._validate_test_account_materializer(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -847,6 +855,376 @@ class CommandValidator:
             errors.append(ValidationError(
                 code="undocumented_budget_timeout",
                 message="undocumented_endpoint_validator timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_ssrf_candidate_detector(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "input_validation":
+            errors.append(ValidationError(
+                code="ssrf_candidate_worker_class_invalid",
+                message="ssrf_candidate_detector requires worker_class input_validation.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "detect_ssrf_candidate_fields":
+            errors.append(ValidationError(
+                code="ssrf_candidate_strategy_invalid",
+                message="ssrf_candidate_detector requires strategy detect_ssrf_candidate_fields.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "operation_id",
+            "path_template",
+            "method",
+            "validation_mode",
+            "candidate_fields",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="ssrf_candidate_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for ssrf_candidate_detector.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="ssrf_candidate_target_url_required",
+                message="inputs.target_url is required for ssrf_candidate_detector.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="ssrf_candidate_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+
+        operation_id = str(command.operation_id or inputs.get("operation_id") or "").strip()
+        if not operation_id:
+            errors.append(ValidationError(
+                code="ssrf_candidate_operation_id_required",
+                message="operation_id is required for ssrf_candidate_detector.",
+            ))
+        path_template = str(inputs.get("path_template") or "").strip()
+        if not path_template:
+            errors.append(ValidationError(
+                code="ssrf_candidate_path_required",
+                message="inputs.path_template is required for ssrf_candidate_detector.",
+            ))
+
+        validation_mode = str(inputs.get("validation_mode") or "ssrf_candidate_detection").strip()
+        if validation_mode != "ssrf_candidate_detection":
+            errors.append(ValidationError(
+                code="ssrf_candidate_validation_mode_invalid",
+                message="validation_mode must be ssrf_candidate_detection.",
+                details={"validation_mode": validation_mode},
+            ))
+        if command.budget.max_requests > 0:
+            errors.append(ValidationError(
+                code="ssrf_candidate_budget_max_requests",
+                message="ssrf_candidate_detector max_requests must be 0.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="ssrf_candidate_budget_timeout",
+                message="ssrf_candidate_detector timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_auth_flow_detector(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "auth_context":
+            errors.append(ValidationError(
+                code="auth_flow_worker_class_invalid",
+                message="auth_flow_detector requires worker_class auth_context.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "detect_auth_flow":
+            errors.append(ValidationError(
+                code="auth_flow_strategy_invalid",
+                message="auth_flow_detector requires strategy detect_auth_flow.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {"validation_mode", "max_operations_scanned"}
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="auth_flow_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for auth_flow_detector.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        mode = str(inputs.get("validation_mode") or "auth_flow_detection").strip()
+        if mode != "auth_flow_detection":
+            errors.append(ValidationError(
+                code="auth_flow_validation_mode_invalid",
+                message="validation_mode must be auth_flow_detection.",
+                details={"validation_mode": mode},
+            ))
+
+        mos = inputs.get("max_operations_scanned")
+        if mos is not None:
+            try:
+                n = int(mos)
+                if n < 1 or n > 500:
+                    raise ValueError
+            except Exception:
+                errors.append(ValidationError(
+                    code="auth_flow_max_operations_invalid",
+                    message="max_operations_scanned must be an integer between 1 and 500.",
+                ))
+
+        if command.budget.max_requests > 0:
+            errors.append(ValidationError(
+                code="auth_flow_budget_max_requests",
+                message="auth_flow_detector max_requests must be 0 (no HTTP execution).",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="auth_flow_budget_timeout",
+                message="auth_flow_detector timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        _ = campaign
+
+    def _validate_test_account_materializer(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "auth_context":
+            errors.append(ValidationError(
+                code="test_account_materializer_worker_class_invalid",
+                message="test_account_materializer requires worker_class auth_context.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "materialize_test_accounts":
+            errors.append(ValidationError(
+                code="test_account_materializer_strategy_invalid",
+                message="test_account_materializer requires strategy materialize_test_accounts.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "signup_operation_id",
+            "login_operation_id",
+            "validation_mode",
+            "max_accounts",
+            "max_response_bytes",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="test_account_materializer_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for test_account_materializer.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="test_account_materializer_target_url_required",
+                message="inputs.target_url is required for test_account_materializer.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="test_account_materializer_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+
+        if not str(inputs.get("signup_operation_id") or "").strip():
+            errors.append(ValidationError(
+                code="test_account_materializer_signup_operation_required",
+                message="signup_operation_id is required for test_account_materializer.",
+            ))
+        if not str(inputs.get("login_operation_id") or "").strip():
+            errors.append(ValidationError(
+                code="test_account_materializer_login_operation_required",
+                message="login_operation_id is required for test_account_materializer.",
+            ))
+
+        validation_mode = str(inputs.get("validation_mode") or "test_account_materialization").strip()
+        if validation_mode != "test_account_materialization":
+            errors.append(ValidationError(
+                code="test_account_materializer_validation_mode_invalid",
+                message="validation_mode must be test_account_materialization.",
+                details={"validation_mode": validation_mode},
+            ))
+        try:
+            max_accounts = int(inputs.get("max_accounts") or 2)
+        except Exception:
+            max_accounts = 999
+        if max_accounts < 1 or max_accounts > 2:
+            errors.append(ValidationError(
+                code="test_account_materializer_max_accounts_invalid",
+                message="max_accounts must be between 1 and 2.",
+                details={"max_accounts": inputs.get("max_accounts")},
+            ))
+        if command.budget.max_requests > 6:
+            errors.append(ValidationError(
+                code="test_account_materializer_budget_max_requests",
+                message="test_account_materializer max_requests must be <= 6.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="test_account_materializer_budget_timeout",
+                message="test_account_materializer timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_data_exposure_validator(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "access_control":
+            errors.append(ValidationError(
+                code="data_exposure_worker_class_invalid",
+                message="data_exposure_validator requires worker_class access_control.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "validate_response_field_exposure":
+            errors.append(ValidationError(
+                code="data_exposure_strategy_invalid",
+                message="data_exposure_validator requires strategy validate_response_field_exposure.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "request_url",
+            "operation_id",
+            "path_template",
+            "method",
+            "validation_mode",
+            "max_response_bytes",
+            "max_depth",
+            "max_fields",
+            "auth_profile_id",
+            "auth_mode",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="data_exposure_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for data_exposure_validator.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "raw_secret"}:
+                errors.append(ValidationError(
+                    code="data_exposure_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for data_exposure_validator.",
+                    details={"key": key},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        request_url = str(inputs.get("request_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="data_exposure_target_url_required",
+                message="inputs.target_url is required for data_exposure_validator.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="data_exposure_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        if not request_url:
+            errors.append(ValidationError(
+                code="data_exposure_request_url_required",
+                message="inputs.request_url is required for data_exposure_validator.",
+            ))
+
+        method = str(inputs.get("method") or "GET").strip().upper() or "GET"
+        if method != "GET":
+            errors.append(ValidationError(
+                code="data_exposure_method_not_allowed",
+                message="data_exposure_validator supports only GET.",
+                details={"method": method},
+            ))
+
+        validation_mode = str(
+            inputs.get("validation_mode") or "response_field_inventory_check"
+        ).strip() or "response_field_inventory_check"
+        if validation_mode != "response_field_inventory_check":
+            errors.append(ValidationError(
+                code="data_exposure_validation_mode_invalid",
+                message="validation_mode must be response_field_inventory_check.",
+                details={"validation_mode": validation_mode},
+            ))
+        auth_mode = str(inputs.get("auth_mode") or "unauthenticated").strip() or "unauthenticated"
+        if auth_mode not in {"unauthenticated", "authenticated"}:
+            errors.append(ValidationError(
+                code="data_exposure_auth_mode_invalid",
+                message="auth_mode must be unauthenticated or authenticated.",
+                details={"auth_mode": auth_mode},
+            ))
+        auth_profile_id = str(inputs.get("auth_profile_id") or "").strip()
+        if auth_mode == "authenticated" and not auth_profile_id:
+            errors.append(ValidationError(
+                code="data_exposure_auth_profile_required",
+                message="auth_profile_id is required when auth_mode=authenticated.",
+            ))
+        max_depth = int(inputs.get("max_depth") or 6)
+        if max_depth > 6 or max_depth < 1:
+            errors.append(ValidationError(
+                code="data_exposure_max_depth_invalid",
+                message="max_depth must be between 1 and 6.",
+                details={"max_depth": max_depth},
+            ))
+        max_fields = int(inputs.get("max_fields") or 200)
+        if max_fields > 200 or max_fields < 1:
+            errors.append(ValidationError(
+                code="data_exposure_max_fields_invalid",
+                message="max_fields must be between 1 and 200.",
+                details={"max_fields": max_fields},
+            ))
+        max_response_bytes = int(inputs.get("max_response_bytes") or 262144)
+        if max_response_bytes > 524288 or max_response_bytes < 1024:
+            errors.append(ValidationError(
+                code="data_exposure_max_response_bytes_invalid",
+                message="max_response_bytes must be between 1024 and 524288.",
+                details={"max_response_bytes": max_response_bytes},
+            ))
+
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="data_exposure_budget_max_requests",
+                message="data_exposure_validator max_requests must be <= 1.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="data_exposure_budget_timeout",
+                message="data_exposure_validator timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
 

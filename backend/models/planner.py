@@ -32,9 +32,13 @@ class PlannerCandidateKind(str, Enum):
     cors_validator = "cors_validator"
     cookie_flag_validator = "cookie_flag_validator"
     undocumented_endpoint_validator = "undocumented_endpoint_validator"
+    ssrf_candidate_detector = "ssrf_candidate_detector"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
     property_mutation_test = "property_mutation_test"
+    data_exposure_validator = "data_exposure_validator"
+    auth_flow_detector = "auth_flow_detector"
+    test_account_materializer = "test_account_materializer"
     scenario_plan_blocked = "scenario_plan_blocked"
 
 
@@ -85,6 +89,7 @@ class PlannerRequest(BaseModel):
     include_scenario_compiler: bool = True
     enable_cors_baseline: bool = False
     enable_cookie_baseline: bool = False
+    enable_llm_candidate_advisor: bool = False
 
 
 class PlannerCandidate(BaseModel):

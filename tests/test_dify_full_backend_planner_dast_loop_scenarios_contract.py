@@ -174,7 +174,11 @@ def test_init_loop_state_initializes_fair_selection_fields() -> None:
         '"cors_validator": 2',
         '"cookie_flag_validator": 2',
         '"js_endpoint_extractor": 1',
+        '"auth_flow_detector": 1',
+        '"test_account_materializer": 1',
+        '"ssrf_candidate_detector": 2',
         '"undocumented_endpoint_validator": 2',
+        '"data_exposure_validator": 3',
     ):
         assert field in code
 
@@ -490,7 +494,7 @@ def test_loop_seed_and_final_state_use_merged_scenario_state() -> None:
     assert seed["value_selector"] == ["merge_scenario_plan_into_planner_request", "state_json"]
 
 
-def test_normalize_inputs_safe_profile_defaults_to_25_iterations() -> None:
+def test_normalize_inputs_safe_profile_defaults_to_30_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -512,7 +516,7 @@ def test_normalize_inputs_safe_profile_defaults_to_25_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "25"
+    assert result["max_iterations"] == "30"
 
 
 def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
@@ -537,10 +541,10 @@ def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "25"
+    assert result["max_iterations"] == "30"
 
 
-def test_normalize_inputs_balanced_profile_defaults_to_35_iterations() -> None:
+def test_normalize_inputs_balanced_profile_defaults_to_45_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -562,7 +566,14 @@ def test_normalize_inputs_balanced_profile_defaults_to_35_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "balanced"
-    assert result["max_iterations"] == "35"
+    assert result["max_iterations"] == "45"
+
+
+def test_normalize_inputs_workflow_encodes_safe_30_balanced_45_profile_iteration_defaults() -> None:
+    code = _node_data("normalize_inputs")["code"]
+    assert '"safe": 30' in code
+    assert '"balanced": 45' in code
+    assert '"aggressive": 50' in code
 
 
 def test_normalize_inputs_aggressive_profile_defaults_to_50_iterations() -> None:
@@ -655,8 +666,8 @@ def test_normalize_inputs_invalid_or_missing_max_iterations_use_profile_default(
         scenario_llm_model="",
         scenario_prompt_version="scenario-planner/v1",
     )
-    assert invalid["max_iterations"] == "35"
-    assert missing["max_iterations"] == "35"
+    assert invalid["max_iterations"] == "45"
+    assert missing["max_iterations"] == "45"
 
 
 def test_normalize_inputs_respects_explicit_valid_max_iterations() -> None:
@@ -681,6 +692,13 @@ def test_normalize_inputs_respects_explicit_valid_max_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["max_iterations"] == "42"
+
+
+def test_default_planner_request_includes_enable_llm_candidate_advisor_false() -> None:
+    norm = _node_data("normalize_inputs")["code"]
+    merge = _node_data("merge_scenario_plan_into_planner_request")["code"]
+    assert '"enable_llm_candidate_advisor": False' in norm
+    assert '"enable_llm_candidate_advisor": False' in merge
 
 
 def test_effective_planner_request_preserves_enable_cors_baseline_true_when_custom_request_omits_it() -> None:
@@ -723,6 +741,7 @@ def test_effective_planner_request_preserves_enable_cors_baseline_true_when_cust
     effective = json.loads(state["planner_request_effective_json"])
     assert effective["enable_cors_baseline"] is True
     assert effective["enable_cookie_baseline"] is True
+    assert effective.get("enable_llm_candidate_advisor") is False
 
 
 def test_select_ready_candidate_skips_capped_first_ready_and_picks_next_kind() -> None:
@@ -839,16 +858,55 @@ def test_select_ready_candidate_extracts_blocked_candidates_sample_with_allowlis
         "reason_codes",
         "undocumented_candidate_source",
         "js_candidate_source",
+        "ssrf_candidate_source",
         "js_url_sanitized",
         "source_observation_id",
         "validation_mode",
+        "candidate_field_count",
+        "candidate_fields_sample",
+        "confidence",
+        "field_name",
+        "field_path",
+        "schema_format",
         "max_endpoints",
         "openapi_match",
         "is_static_asset",
+        "data_exposure_candidate_source",
+        "auth_mode",
+        "auth_profile_id",
+        "role_hint",
+        "prior_unauth_status_code",
+        "prior_unauth_result",
+        "operations_with_authenticated_inventory",
+        "path_template",
+        "field_count",
+        "sensitive_field_count",
+        "sensitive_categories",
+        "llm_candidate_advisor_used",
+        "llm_candidate_priority",
+        "llm_candidate_reason",
+        "llm_requires_seed",
+        "llm_requires_auth",
+        "auth_flow_detected",
+        "signup_candidate_count",
+        "login_candidate_count",
+        "token_response_candidate_count",
+        "profile_candidate_count",
+        "auth_candidate_source",
+        "test_account_materialization_status",
+        "auth_profiles_created_count",
+        "signup_success_count",
+        "login_success_count",
+        "owner_auth_profile_id",
+        "attacker_auth_profile_id",
+        "auth_type",
+        "token_response_detected",
+        "materialization_errors",
+        "auth_profiles",
     }
 
 
-def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist() -> None:
+def test_select_ready_candidate_extracts_ready_candidates_sample_js_first_among_contract_and_surface_ready() -> None:
     result = _run_code_node(
         "select_ready_candidate",
         body=json.dumps(
@@ -948,15 +1006,15 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
             ensure_ascii=False,
         ),
     )
-    assert result["candidate_kind"] == "injection_test"
+    assert result["candidate_kind"] == "js_endpoint_extractor"
     ready_by_kind = json.loads(result["ready_candidates_by_kind_count_json"])
     assert ready_by_kind == {"injection_test": 1, "cors_validator": 1, "undocumented_endpoint_validator": 1, "js_endpoint_extractor": 1}
     sample = json.loads(result["ready_candidates_sample_json"])
     assert len(sample) == 4
-    assert sample[0]["kind"] == "injection_test"
-    assert sample[0]["tool_name"] == "injection_test"
-    assert sample[0]["worker_class"] == "contract_fuzzing"
-    assert sample[0]["strategy"] == "validate_injection_impact"
+    assert sample[0]["kind"] == "js_endpoint_extractor"
+    assert sample[0]["tool_name"] == "js_endpoint_extractor"
+    assert sample[0]["worker_class"] == "discovery_inventory"
+    assert sample[0]["strategy"] == "extract_js_endpoints"
     assert set(sample[0].keys()) == {
         "kind",
         "status",
@@ -970,9 +1028,16 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
         "cookie_candidate_source",
         "undocumented_candidate_source",
         "js_candidate_source",
+        "ssrf_candidate_source",
         "js_url_sanitized",
         "source_observation_id",
         "validation_mode",
+        "candidate_field_count",
+        "candidate_fields_sample",
+        "confidence",
+        "field_name",
+        "field_path",
+        "schema_format",
         "max_endpoints",
         "openapi_match",
         "is_static_asset",
@@ -981,6 +1046,38 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
         "fields_selected_count",
         "seed_request_id_present",
         "mass_assignment_candidate_result",
+        "data_exposure_candidate_source",
+        "auth_mode",
+        "auth_profile_id",
+        "role_hint",
+        "prior_unauth_status_code",
+        "prior_unauth_result",
+        "operations_with_authenticated_inventory",
+        "path_template",
+        "field_count",
+        "sensitive_field_count",
+        "sensitive_categories",
+        "llm_candidate_advisor_used",
+        "llm_candidate_priority",
+        "llm_candidate_reason",
+        "llm_requires_seed",
+        "llm_requires_auth",
+        "auth_flow_detected",
+        "signup_candidate_count",
+        "login_candidate_count",
+        "token_response_candidate_count",
+        "profile_candidate_count",
+        "auth_candidate_source",
+        "test_account_materialization_status",
+        "auth_profiles_created_count",
+        "signup_success_count",
+        "login_success_count",
+        "owner_auth_profile_id",
+        "attacker_auth_profile_id",
+        "auth_type",
+        "token_response_detected",
+        "materialization_errors",
+        "auth_profiles",
     }
     blob = json.dumps(sample, ensure_ascii=False).lower()
     for bad in ("authorization", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
@@ -1124,6 +1221,580 @@ def test_select_ready_candidate_ready_sample_includes_js_extractor_fields() -> N
     assert sample[0]["source_observation_id"] == "obs_js_1"
     assert sample[0]["validation_mode"] == "static_js_endpoint_extraction"
     assert sample[0]["max_endpoints"] == 50
+
+
+def test_init_loop_state_kind_caps_includes_data_exposure_validator() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"data_exposure_validator": 3' in code
+
+
+def test_init_loop_state_kind_caps_includes_ssrf_candidate_detector() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"ssrf_candidate_detector": 2' in code
+
+
+def test_init_loop_state_kind_caps_includes_auth_flow_detector() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"auth_flow_detector": 1' in code
+
+
+def test_init_loop_state_kind_caps_includes_test_account_materializer() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"test_account_materializer": 1' in code
+
+
+def test_select_ready_candidate_kind_priority_orders_data_exposure_before_api8_and_property_mutation() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    kpi = code.find("KIND_PRIORITY = [")
+    assert kpi != -1
+    bracket_end = code.find("]", kpi)
+    prio_block = code[kpi:bracket_end]
+    dex = prio_block.index("data_exposure_validator")
+    assert dex < prio_block.index("injection_test")
+    assert dex < prio_block.index("security_header_validator")
+    assert dex < prio_block.index("cors_validator")
+    assert dex < prio_block.index("cookie_flag_validator")
+    assert dex < prio_block.index("property_mutation_test")
+
+
+def test_select_ready_candidate_kind_priority_places_ssrf_after_js_and_before_data_exposure() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    kpi = code.find("KIND_PRIORITY = [")
+    assert kpi != -1
+    bracket_end = code.find("]", kpi)
+    prio_block = code[kpi:bracket_end]
+    jsi = prio_block.index("js_endpoint_extractor")
+    afi = prio_block.index("auth_flow_detector")
+    tami = prio_block.index("test_account_materializer")
+    ssrfi = prio_block.index("ssrf_candidate_detector")
+    dexi = prio_block.index("data_exposure_validator")
+    assert jsi < afi < tami < ssrfi < dexi
+
+
+def test_select_ready_candidate_safe_samples_include_data_exposure_allowlist_fields() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    for needle in (
+        "'data_exposure_candidate_source'",
+        "'auth_mode'",
+        "'auth_profile_id'",
+        "'role_hint'",
+        "'prior_unauth_status_code'",
+        "'prior_unauth_result'",
+        "'operations_with_authenticated_inventory'",
+        "'path_template'",
+        "'field_count'",
+        "'sensitive_field_count'",
+        "'sensitive_categories'",
+        "'llm_candidate_advisor_used'",
+        "'llm_candidate_priority'",
+        "'llm_candidate_reason'",
+        "'llm_requires_seed'",
+        "'llm_requires_auth'",
+    ):
+        assert needle in code
+    assert "def _safe_ready" in code
+    assert "def _safe_blocked" in code
+
+
+def test_select_ready_candidate_safe_samples_include_ssrf_allowlist_fields() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    for needle in (
+        "'ssrf_candidate_source'",
+        "'candidate_field_count'",
+        "'candidate_fields_sample'",
+        "'confidence'",
+        "'field_name'",
+        "'field_path'",
+        "'schema_format'",
+    ):
+        assert needle in code
+
+
+def test_select_ready_candidate_safe_samples_include_auth_flow_allowlist_fields() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    for needle in (
+        "'auth_flow_detected'",
+        "'signup_candidate_count'",
+        "'login_candidate_count'",
+        "'token_response_candidate_count'",
+        "'profile_candidate_count'",
+        "'auth_candidate_source'",
+    ):
+        assert needle in code
+
+
+def test_select_ready_candidate_safe_samples_include_test_account_materializer_allowlist_fields() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    for needle in (
+        "'test_account_materialization_status'",
+        "'auth_profiles_created_count'",
+        "'signup_success_count'",
+        "'login_success_count'",
+        "'owner_auth_profile_id'",
+        "'attacker_auth_profile_id'",
+        "'auth_type'",
+        "'token_response_detected'",
+        "'materialization_errors'",
+        "'auth_profiles'",
+    ):
+        assert needle in code
+
+
+def test_select_ready_candidate_prefers_auth_flow_detector_before_data_exposure_validator() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {
+                            "operation_id": "op_GET_/api/profile",
+                            "validation_mode": "response_field_inventory_check",
+                            "data_exposure_candidate_source": "openapi_graph",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_af",
+                        "kind": "auth_flow_detector",
+                        "status": "ready",
+                        "reason": "OpenAPI graph available for diagnostic auth-flow candidate detection.",
+                        "summary": {
+                            "validation_mode": "auth_flow_detection",
+                            "operation_id": "",
+                            "path_template": "",
+                            "method": "N/A",
+                            "data_source": "openapi_graph",
+                            "auth_flow_detected": True,
+                            "signup_candidate_count": 1,
+                            "login_candidate_count": 0,
+                            "token_response_candidate_count": 0,
+                            "profile_candidate_count": 1,
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "auth_flow_detector",
+                            "worker_class": "auth_context",
+                            "strategy": "detect_auth_flow",
+                        },
+                    },
+                ],
+                "ready_count": "2",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"auth_flow_detector": 1, "data_exposure_validator": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "auth_flow_detector"
+    sample = json.loads(result["ready_candidates_sample_json"])
+    af_row = next(r for r in sample if r.get("kind") == "auth_flow_detector")
+    assert af_row["tool_name"] == "auth_flow_detector"
+    assert af_row["validation_mode"] == "auth_flow_detection"
+    assert af_row["auth_candidate_source"] == "openapi_graph"
+    assert af_row["signup_candidate_count"] == 1
+    assert af_row["token_response_candidate_count"] == 0
+    assert af_row["audit_flags"] == []
+
+
+def test_select_ready_candidate_prefers_test_account_materializer_before_data_exposure_validator() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {
+                            "operation_id": "op_GET_/api/profile",
+                            "validation_mode": "response_field_inventory_check",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_tam",
+                        "kind": "test_account_materializer",
+                        "status": "ready",
+                        "reason": "materialize",
+                        "summary": {
+                            "validation_mode": "test_account_materialization",
+                            "test_account_materialization_status": "pending",
+                            "auth_profiles_created_count": 0,
+                            "signup_success_count": 0,
+                            "login_success_count": 0,
+                            "owner_auth_profile_id": "",
+                            "attacker_auth_profile_id": "",
+                            "auth_type": "bearer",
+                            "token_response_detected": False,
+                            "materialization_errors": [],
+                            "auth_profiles": [],
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "test_account_materializer",
+                            "worker_class": "auth_context",
+                            "strategy": "materialize_test_accounts",
+                        },
+                    },
+                ],
+                "ready_count": "2",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"test_account_materializer": 1, "data_exposure_validator": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "test_account_materializer"
+    sample = json.loads(result["ready_candidates_sample_json"])
+    tam_row = next(r for r in sample if r.get("kind") == "test_account_materializer")
+    assert tam_row["test_account_materialization_status"] == "pending"
+    assert tam_row["auth_profiles_created_count"] == 0
+    assert tam_row["token_response_detected"] is False
+
+
+def test_select_ready_candidate_prefers_auth_flow_detector_over_materializer_and_data_exposure_when_all_ready() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {"operation_id": "op_GET_/api/profile", "audit_flags": [], "reason_codes": []},
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_tam",
+                        "kind": "test_account_materializer",
+                        "status": "ready",
+                        "reason": "materialize",
+                        "summary": {"audit_flags": [], "reason_codes": []},
+                        "command": {
+                            "tool_name": "test_account_materializer",
+                            "worker_class": "auth_context",
+                            "strategy": "materialize_test_accounts",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_af",
+                        "kind": "auth_flow_detector",
+                        "status": "ready",
+                        "reason": "graph",
+                        "summary": {"audit_flags": [], "reason_codes": []},
+                        "command": {
+                            "tool_name": "auth_flow_detector",
+                            "worker_class": "auth_context",
+                            "strategy": "detect_auth_flow",
+                        },
+                    },
+                ],
+                "ready_count": "3",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {
+                    "auth_flow_detector": 1,
+                    "test_account_materializer": 1,
+                    "data_exposure_validator": 3,
+                },
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "auth_flow_detector"
+
+
+def test_select_ready_candidate_prefers_data_exposure_validator_before_property_mutation_when_both_ready() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_pm",
+                        "kind": "property_mutation_test",
+                        "status": "ready",
+                        "reason": "ready",
+                        "summary": {"operation_id": "op_PATCH_/x"},
+                        "command": {
+                            "tool_name": "property_mutation_test",
+                            "worker_class": "access_control",
+                            "strategy": "validate_mass_assignment_impact",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {
+                            "operation_id": "op_GET_/api/profile",
+                            "data_exposure_candidate_source": "openapi_graph",
+                            "path_template": "/api/profile",
+                            "validation_mode": "response_field_inventory_check",
+                            "field_count": 5,
+                            "sensitive_field_count": 2,
+                            "sensitive_categories": ["identity"],
+                            "reason_codes": [],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                ],
+                "ready_count": "2",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"property_mutation_test": 2, "data_exposure_validator": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "data_exposure_validator"
+    sample = json.loads(result["ready_candidates_sample_json"])
+    dex_row = next(r for r in sample if r.get("kind") == "data_exposure_validator")
+    assert dex_row["data_exposure_candidate_source"] == "openapi_graph"
+    assert dex_row["path_template"] == "/api/profile"
+    assert dex_row["validation_mode"] == "response_field_inventory_check"
+    assert dex_row["field_count"] == 5
+    assert dex_row["sensitive_field_count"] == 2
+    assert dex_row["sensitive_categories"] == ["identity"]
+    blob = json.dumps(sample, ensure_ascii=False).lower()
+    for bad in ("authorization", "set-cookie", "request_body", "response_body", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_select_ready_candidate_ready_sample_includes_ssrf_candidate_fields() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_ssrf",
+                        "kind": "ssrf_candidate_detector",
+                        "status": "ready",
+                        "reason": "OpenAPI operation contains URL-like request fields that are SSRF-relevant candidates.",
+                        "summary": {
+                            "operation_id": "op_POST_/workshop/api/mechanic/receive_report",
+                            "ssrf_candidate_source": "openapi_schema",
+                            "validation_mode": "ssrf_candidate_detection",
+                            "candidate_field_count": 1,
+                            "candidate_fields_sample": [
+                                {
+                                    "field_name": "mechanic_api",
+                                    "field_path": "$.mechanic_api",
+                                    "schema_format": "uri",
+                                    "confidence": "high",
+                                    "reason_codes": ["url_like_field_name", "schema_format_uri"],
+                                }
+                            ],
+                            "reason_codes": ["url_like_field_name", "schema_format_uri"],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "ssrf_candidate_detector",
+                            "worker_class": "input_validation",
+                            "strategy": "detect_ssrf_candidate_fields",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"ssrf_candidate_detector": 2},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "ssrf_candidate_detector"
+    sample = json.loads(result["ready_candidates_sample_json"])
+    row = sample[0]
+    assert row["kind"] == "ssrf_candidate_detector"
+    assert row["tool_name"] == "ssrf_candidate_detector"
+    assert row["worker_class"] == "input_validation"
+    assert row["strategy"] == "detect_ssrf_candidate_fields"
+    assert row["ssrf_candidate_source"] == "openapi_schema"
+    assert row["candidate_field_count"] == 1
+    assert row["candidate_fields_sample"][0]["field_name"] == "mechanic_api"
+    assert row["candidate_fields_sample"][0]["field_path"] == "$.mechanic_api"
+    assert row["candidate_fields_sample"][0]["schema_format"] == "uri"
+    assert row["candidate_fields_sample"][0]["confidence"] == "high"
+
+
+def test_select_ready_candidate_prefers_ssrf_candidate_detector_before_data_exposure_validator() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {"operation_id": "op_GET_/api/profile"},
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_ssrf",
+                        "kind": "ssrf_candidate_detector",
+                        "status": "ready",
+                        "reason": "ssrf-diagnostic",
+                        "summary": {"operation_id": "op_POST_/api/hooks"},
+                        "command": {
+                            "tool_name": "ssrf_candidate_detector",
+                            "worker_class": "input_validation",
+                            "strategy": "detect_ssrf_candidate_fields",
+                        },
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"ssrf_candidate_detector": 2, "data_exposure_validator": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "ssrf_candidate_detector"
+
+
+def test_select_ready_candidate_prefers_data_exposure_validator_before_security_header_validator_when_both_ready() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_sh",
+                        "kind": "security_header_validator",
+                        "status": "ready",
+                        "reason": "baseline",
+                        "summary": {
+                            "operation_id": "op_GET_/api/health",
+                            "validation_mode": "baseline_security_header_check",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "security_header_validator",
+                            "worker_class": "misconfiguration",
+                            "strategy": "validate_security_headers",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_dex",
+                        "kind": "data_exposure_validator",
+                        "status": "ready",
+                        "reason": "openapi_get_inventory",
+                        "summary": {
+                            "operation_id": "op_GET_/workshop/api/shop/orders/{order_id}",
+                            "path_template": "/workshop/api/shop/orders/{order_id}",
+                            "data_exposure_candidate_source": "openapi_graph",
+                            "validation_mode": "response_field_inventory_check",
+                            "field_count": 0,
+                            "sensitive_field_count": 0,
+                            "sensitive_categories": [],
+                            "reason_codes": [],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "data_exposure_validator",
+                            "worker_class": "access_control",
+                            "strategy": "validate_response_field_exposure",
+                        },
+                    },
+                ],
+                "ready_count": "2",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"security_header_validator": 2, "data_exposure_validator": 3},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "data_exposure_validator"
+    assert result["selection_outcome"] == "selected_ready"
 
 
 def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:
@@ -2019,6 +2690,49 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "mass_assignment_signal_count" in sys_prompt
     assert "runtime_effect_proven_count" in sys_prompt
     assert "confirmed_findings_count" in sys_prompt
+    assert "response_field_inventory_count" in sys_prompt
+    assert "data_exposure_signal_count" in sys_prompt
+    assert "sensitive_property_exposure_findings_count" in sys_prompt
+    assert "sensitive_field_categories" in sys_prompt
+    assert "sensitive_fields_sample" in sys_prompt
+    assert "data_exposure_results" in sys_prompt
+    assert "data_exposure_probe_result_count" in sys_prompt
+    assert "data_exposure_non_200_count" in sys_prompt
+    assert "data_exposure_non_json_count" in sys_prompt
+    assert "data_exposure_no_fields_count" in sys_prompt
+    assert "data_exposure_fields_extracted_count" in sys_prompt
+    assert "data_exposure_probe_results" in sys_prompt
+    assert "authenticated_response_field_inventory_count" in sys_prompt
+    assert "authenticated_data_exposure_signal_count" in sys_prompt
+    assert "authenticated_data_exposure_probe_result_count" in sys_prompt
+    assert "authenticated_data_exposure_results" in sys_prompt
+    assert "auth_profiles_used_count" in sys_prompt
+    assert "operations_with_authenticated_inventory" in sys_prompt
+    assert "data_exposure_authenticated_non_200_count" in sys_prompt
+    assert "data_exposure_authenticated_fields_extracted_count" in sys_prompt
+    assert "auth_profile_id — безопасная ссылка на auth profile" in sys_prompt
+    assert "последующие проверки API3 с аутентификацией успешно извлекли response field inventory" in sys_prompt
+    assert "authenticated follow-up выполнялся, но inventory полей не извлечён" in sys_prompt
+    assert "аутентификация разблокировала получение API3 field inventory" in sys_prompt
+    assert "Диагностика data_exposure_validator" in sys_prompt
+    assert "data_exposure_probe_result не является уязвимостью" in sys_prompt
+    assert (
+        "data_exposure_validator был выполнен, но не создал response_field_inventory. Причина указана в data_exposure_probe_results. Эти диагностические результаты не являются подтверждёнными уязвимостями."
+        in sys_prompt
+    )
+    assert (
+        "Часть проверок не дала inventory из-за non-200 ответов; endpoint-ы могут требовать авторизацию, seed context, параметры или предварительное состояние."
+        in sys_prompt
+    )
+    assert "response_field_inventory — диагностический inventory" in sys_prompt
+    assert "data_exposure_signal — сигнал" in sys_prompt
+    assert (
+        "обнаружены сигналы потенциального раскрытия чувствительных свойств, но подтверждённые уязвимости не созданы без вердикта Judge"
+        in sys_prompt
+    )
+    assert "llm_candidate_advisor_used" in sys_prompt
+    assert "не утверждай, что использовался LLM candidate advisor" in sys_prompt
+    assert "не как подтверждение уязвимости и не как замену вердикта Judge" in sys_prompt
     assert "finding не создаётся без runtime_effect_proven:true" in sys_prompt
     assert "Раздел \"Покрытие OWASP API Top 10\" всегда должен содержать" in sys_prompt
     assert "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION" in sys_prompt
@@ -2042,8 +2756,32 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "zap_discovery_passive" in sys_prompt
     assert "cors_validator" in sys_prompt
     assert "cookie_flag_validator" in sys_prompt
+    assert "API7_SERVER_SIDE_REQUEST_FORGERY" in sys_prompt
     assert "js_endpoint_extractor трактуй строго как worker расширения поверхности и discovery" in sys_prompt
     assert "это не уязвимость и не прямой источник finding" in sys_prompt
+    assert "ssrf_candidate_detector и ssrf_candidate_signal трактуй строго как диагностический API7 coverage" in sys_prompt
+    assert "запрещено описывать покрытие API7 одной фразой «не доступно» целиком" in sys_prompt
+    assert "диагностические SSRF-кандидаты обнаружены, подтверждённых SSRF-уязвимостей нет" in sys_prompt
+    assert "ssrf_candidate_signal не является confirmed vulnerability" in sys_prompt
+    assert "Auth Flow Diagnostics" in sys_prompt
+    assert "auth_flow_diagnostics" in sys_prompt
+    assert "auth_flow_signal — диагностический сигнал" in sys_prompt
+    assert "auth_flow_detector не создаёт пользователей и не выполняет login/signup" in sys_prompt
+    assert "token_response_candidate_count — безопасный числовой счётчик" in sys_prompt
+    assert "test_account_materialization_status" in sys_prompt
+    assert "auth_profiles_created_count" in sys_prompt
+    assert "signup_success_count" in sys_prompt
+    assert "login_success_count" in sys_prompt
+    assert "test_account_materializer может выполнять signup/login только как ограниченный backend worker" in sys_prompt
+    assert "не выводи raw token, password, cookie, Authorization, raw request body, raw response body" in sys_prompt
+    assert "test_account_materialization_result — диагностический контекст, не confirmed vulnerability" in sys_prompt
+    assert "auth_profiles_created_count >= 2" in sys_prompt
+    assert "authenticated follow-up checks" in sys_prompt
+    assert "Не выводи raw tokens, passwords, cookies, Authorization headers, Set-Cookie." in sys_prompt
+    assert "не утверждай SSRF exploitability без callback/runtime proof" in sys_prompt
+    assert "runtime/callback verification" in sys_prompt
+    assert "Обнаружены входные поля, потенциально релевантные SSRF. Эти сигналы не являются подтверждёнными уязвимостями, так как в текущей фазе не выполнялась runtime/callback verification." in sys_prompt
+    assert "Для каждого элемента ssrf_candidates выводи только безопасные поля: operation_id, method, path, field_name, field_path, schema_type, schema_format, confidence, reason_codes." in sys_prompt
     assert "Ожидающие проверки не считаются подтверждёнными уязвимостями." in sys_prompt
     assert "Ошибка инструмента не является подтверждённой уязвимостью." in sys_prompt
     assert "Не используй форму \"endpoint-ах\"" in sys_prompt
@@ -2061,6 +2799,10 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "js_route_fragments_matched_count" in sys_prompt
     assert "js_endpoints_emitted_count" in sys_prompt
     assert "js_extraction_results" in sys_prompt
+    assert "ssrf_candidate_signal_count" in sys_prompt
+    assert "ssrf_candidate_operations_count" in sys_prompt
+    assert "ssrf_candidate_fields_count" in sys_prompt
+    assert "ssrf_candidates" in sys_prompt
     assert "Извлечение поверхности из JavaScript" in sys_prompt
     assert "JS surface extraction" in sys_prompt
     assert (
@@ -2091,25 +2833,78 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     for section in (
         "## 1. Область проверки",
         "## 2. Краткое резюме",
+        "## 2a. Auth Flow Diagnostics",
         "## 3. Покрытие OWASP API Top 10",
         "## 4. Подтверждённые уязвимости",
         "## 5. Детали API8 Security Misconfiguration",
         "## 6. Детали API9 Improper Inventory Management",
+        "## 7. Детали API7 Server-Side Request Forgery",
         "Извлечение поверхности из JavaScript",
-        "## 7. Диагностика API3 BOPLA / Mass Assignment",
-        "## 8. Ожидающие проверки",
-        "## 9. Заблокированные и пропущенные проверки",
-        "## 10. Сводка выполнения worker-ов",
-        "## 11. Ошибки инструментов",
-        "## 12. Ограничения",
-        "## 13. Общие рекомендации",
+        "## 8. Диагностика API3 BOPLA / Mass Assignment",
+        "## 9. Ожидающие проверки",
+        "## 10. Заблокированные и пропущенные проверки",
+        "## 11. Сводка выполнения worker-ов",
+        "## 12. Ошибки инструментов",
+        "## 13. Ограничения",
+        "## 14. Общие рекомендации",
     ):
         assert section in user_prompt
     assert "js_endpoint_extraction_count" in user_prompt
     assert "js_extraction_results" in user_prompt
     assert "не называй js_endpoint_extractor источником уязвимостей или findings" in user_prompt
+    assert "ssrf_candidate_signal_count" in user_prompt
+    assert "ssrf_candidate_operations_count" in user_prompt
+    assert "ssrf_candidate_fields_count" in user_prompt
+    assert "ssrf_candidates" in user_prompt
+    assert "Не называй ssrf_candidate_signal подтверждённой SSRF-уязвимостью" in user_prompt
+    assert "запрещено писать, что API7 целиком «не доступно»" in user_prompt
+    assert "field_path, schema_type, schema_format, confidence, reason_codes" in user_prompt
+    assert "ssrf_candidate_signal не является confirmed vulnerability" in user_prompt
     assert "не своди статус к «не доступно»" in user_prompt
     assert "диагностическая проверка выполнена, подтверждённых уязвимостей нет" in user_prompt
+    assert "response_field_inventory_count" in user_prompt
+    assert "data_exposure_signal_count" in user_prompt
+    assert "sensitive_property_exposure_findings_count" in user_prompt
+    assert "sensitive_field_categories" in user_prompt
+    assert "sensitive_fields_sample" in user_prompt
+    assert "data_exposure_results" in user_prompt
+    assert "data_exposure_probe_result_count" in user_prompt
+    assert "data_exposure_non_200_count" in user_prompt
+    assert "data_exposure_non_json_count" in user_prompt
+    assert "data_exposure_no_fields_count" in user_prompt
+    assert "data_exposure_fields_extracted_count" in user_prompt
+    assert "data_exposure_probe_results" in user_prompt
+    assert "authenticated_response_field_inventory_count" in user_prompt
+    assert "authenticated_data_exposure_signal_count" in user_prompt
+    assert "authenticated_data_exposure_probe_result_count" in user_prompt
+    assert "authenticated_data_exposure_results" in user_prompt
+    assert "auth_profiles_used_count" in user_prompt
+    assert "operations_with_authenticated_inventory" in user_prompt
+    assert "data_exposure_authenticated_non_200_count" in user_prompt
+    assert "data_exposure_authenticated_fields_extracted_count" in user_prompt
+    assert "auth_profile_id — безопасная ссылка" in user_prompt
+    assert "не выводи raw token, password, cookie, Authorization, raw request/response body" in user_prompt
+    assert "аутентификация разблокировала API3 field inventory" in user_prompt
+    assert "Диагностика data_exposure_validator" in user_prompt
+    assert "non-200" in user_prompt.lower()
+    assert "авторизац" in user_prompt.lower()
+    assert "seed context" in user_prompt.lower()
+    assert "Только элементы confirmed_findings — подтверждённые уязвимости" in user_prompt
+    assert "auth_flow_signal — диагностика, не уязвимость" in user_prompt
+    assert "auth_flow_detector не выполняет login/signup" in user_prompt
+    assert "token_response_candidate_count — безопасный счётчик, не значение токена" in user_prompt
+    assert "test_account_materialization_status" in user_prompt
+    assert "auth_profiles_created_count" in user_prompt
+    assert "signup_success_count" in user_prompt
+    assert "login_success_count" in user_prompt
+    assert "test_account_materialization_result — диагностика, не уязвимость" in user_prompt
+    assert "не выводи raw token, password, cookie, Authorization, raw request/response body" in user_prompt
+    assert "auth_profiles_created_count >= 2" in user_prompt
+    assert "authenticated follow-up checks" in user_prompt
+    assert "raw tokens, passwords, cookies, Authorization" in user_prompt
+    assert "## 13. Ограничения" in user_prompt
+    assert "llm_candidate_advisor_used=false" in user_prompt
+    assert "не пиши, что LLM advisor подтверждал уязвимости" in user_prompt
 
 
 def test_report_markdown_branching_and_merge_fallback_edges_exist() -> None:

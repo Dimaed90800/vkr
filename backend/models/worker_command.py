@@ -18,7 +18,9 @@ class WorkerClass(str, Enum):
     stateful_flow = "stateful_flow"
     discovery_inventory = "discovery_inventory"
     misconfiguration = "misconfiguration"
+    input_validation = "input_validation"
     ssrf_external = "ssrf_external"
+    auth_context = "auth_context"
 
 
 WORKER_CLASS_COMPAT: dict[str, str] = {
@@ -35,6 +37,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "auth_test_access",
         "replay_http_sequence",
         "property_mutation_test",
+        "data_exposure_validator",
         "akto_inventory_discovery",
         "akto_authz_scan",
         "astf_top10_suite",
@@ -97,6 +100,13 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "security_header_validator",
         "cors_validator",
         "cookie_flag_validator",
+    ],
+    "input_validation": [
+        "ssrf_candidate_detector",
+    ],
+    "auth_context": [
+        "auth_flow_detector",
+        "test_account_materializer",
     ],
     "ssrf_external": [
         "custom_ssrf_checker",

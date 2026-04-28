@@ -14,6 +14,7 @@ try:
         ReportDataQuality,
         ReportExecutiveSummary,
     )
+    from backend.services.auth_profile_store import AuthProfileStore
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.campaign import Campaign
@@ -24,6 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover
         ReportDataQuality,
         ReportExecutiveSummary,
     )
+    from services.auth_profile_store import AuthProfileStore
     from storage.memory_store import memory_store
 
 
@@ -41,6 +43,7 @@ _RECOMMENDATIONS_BY_CLASS = {
     "cors_misconfiguration": "Restrict allowed origins and never combine wildcard origins with credentialed requests.",
     "cookie_flag_misconfiguration": "Set Secure, HttpOnly, and appropriate SameSite flags for session cookies.",
     "undocumented_api_endpoint": "Synchronize runtime-discovered endpoints with the OpenAPI inventory and retire or protect undocumented routes.",
+    "ssrf_candidate": "Review URL-like request fields, constrain outbound destinations, and add allow-lists or egress controls before enabling any server-side fetch behavior.",
     "schema_contract_violation": "Align API behavior with schema contracts and reject malformed inputs deterministically.",
     "api_schema_contract_violation": "Align API behavior with schema contracts and reject malformed inputs deterministically.",
     "potential_mass_assignment": "Use explicit allow-lists for writable fields and enforce server-side field-level authorization.",
@@ -51,6 +54,7 @@ _IMPACT_BY_CLASS = {
     "cors_misconfiguration": "При некорректной CORS-политике может возникнуть несанкционированное чтение данных в браузерном контексте авторизованного пользователя.",
     "cookie_flag_misconfiguration": "Сессионные cookie могут быть более подвержены перехвату или использованию в нежелательном контексте при отсутствии защитных флагов.",
     "undocumented_api_endpoint": "Неописанный endpoint усложняет контроль поверхности атаки и может обходить ожидаемые процессы тестирования, авторизации и инвентаризации.",
+    "ssrf_candidate": "URL-подобные входные поля могут стать SSRF-риском, если сервер использует их для исходящих запросов без строгой валидации и сетевых ограничений.",
     "schema_contract_violation": "Отклонение от контракта API может привести к непредсказуемой обработке входных данных и росту риска логических и валидационных дефектов.",
     "api_schema_contract_violation": "Отклонение от контракта API может привести к непредсказуемой обработке входных данных и росту риска логических и валидационных дефектов.",
     "potential_mass_assignment": "Неконтролируемая запись полей может позволить изменение чувствительных атрибутов объекта при наличии подходящего авторизованного контекста.",
@@ -61,6 +65,7 @@ _EXPLOITATION_SUMMARY_BY_CLASS = {
     "cors_misconfiguration": "В рамках разрешённой тестовой среды можно проверить, что CORS-доверие к Origin настроено слишком широко для credentialed-сценариев.",
     "cookie_flag_misconfiguration": "В рамках разрешённой тестовой среды можно подтвердить отсутствие обязательных защитных атрибутов сессионных cookie.",
     "undocumented_api_endpoint": "В рамках разрешённой тестовой среды можно подтвердить, что runtime-обнаруженный endpoint отвечает и отсутствует в OpenAPI-инвентаре.",
+    "ssrf_candidate": "На данном этапе подтвержден только диагностический признак SSRF-кандидата по OpenAPI-схеме; активные SSRF-проверки не выполнялись.",
     "schema_contract_violation": "В рамках разрешённой тестовой среды можно подтвердить отклонение фактического поведения API от OpenAPI-контракта.",
     "api_schema_contract_violation": "В рамках разрешённой тестовой среды можно подтвердить отклонение фактического поведения API от OpenAPI-контракта.",
     "potential_mass_assignment": "В рамках разрешённой тестовой среды можно проверить риск изменения чувствительных полей через разрешённый API-вызов.",
@@ -76,6 +81,7 @@ _NORMALIZED_OWASP_BY_CLASS = {
     "cookie_flag_misconfiguration": "API8_SECURITY_MISCONFIGURATION",
     "cookie_misconfiguration": "API8_SECURITY_MISCONFIGURATION",
     "potential_mass_assignment": "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+    "ssrf_candidate": "API7_SERVER_SIDE_REQUEST_FORGERY",
 }
 
 _STATIC_RESOURCE_MARKERS = (
@@ -101,6 +107,15 @@ _SAFE_KEY_EXCEPTIONS = {
     "validated_cookie_flag_issue",
     "blocked_missing_seed_context",
     "api3_broken_object_property_level_authorization",
+    # Aggregate count name contains "token" but is not a secret field.
+    "token_response_candidate_count",
+    "token_response_detected",
+    "token_ref",
+    "token_field_path",
+    "auth_profile_id",
+    "owner_auth_profile_id",
+    "attacker_auth_profile_id",
+    "credential_ref",
 }
 
 _DROP_KEY_PARTS = (
@@ -120,6 +135,9 @@ _DROP_KEY_PARTS = (
 
 
 class ReportContextBuilder:
+    def __init__(self) -> None:
+        self._auth_profiles = AuthProfileStore()
+
     def build(
         self,
         campaign_id: str,
@@ -178,6 +196,7 @@ class ReportContextBuilder:
             tool_runs=tool_runs,
             worker_execution_summary=worker_execution_summary,
         )
+        auth_flow_diagnostics = self._build_auth_flow_diagnostics(campaign_id, observations)
 
         stopped_reason = "not_available"
         if runtime_attached:
@@ -219,6 +238,7 @@ class ReportContextBuilder:
                 runtime_state_attached=runtime_attached,
                 missing_sections=missing_sections,
             ),
+            auth_flow_diagnostics=auth_flow_diagnostics,
         )
         sanitized = self._sanitize_recursive(context.model_dump(mode="json"))
         return sanitized, None
@@ -523,6 +543,8 @@ class ReportContextBuilder:
             "schema_contract_violation": "schemathesis_negative_test",
             "api_schema_contract_violation": "schemathesis_negative_test",
             "potential_mass_assignment": "property_mutation_test",
+            "sensitive_property_exposure": "data_exposure_validator",
+            "ssrf_candidate": "ssrf_candidate_detector",
         }
         return mapping.get(vulnerability_class, "not_available")
 
@@ -627,6 +649,127 @@ class ReportContextBuilder:
             })
         return out[:50]
 
+    def _build_auth_flow_diagnostics(self, campaign_id: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
+        empty = {
+            "auth_flow_detected": False,
+            "signup_candidate_count": 0,
+            "login_candidate_count": 0,
+            "token_response_candidate_count": 0,
+            "profile_candidate_count": 0,
+            "auth_flow_candidates_sample": [],
+            "missing_prerequisites": [],
+            "auth_limitations": [],
+            "test_account_materialization_status": "not_attempted",
+            "auth_profiles_created_count": 0,
+            "signup_success_count": 0,
+            "login_success_count": 0,
+            "owner_auth_profile_id": "",
+            "attacker_auth_profile_id": "",
+            "auth_type": "unknown",
+            "token_response_detected": False,
+            "materialization_errors": [],
+            "auth_profiles": [],
+            "selected_signup_path": "",
+            "selected_login_path": "",
+            "signup_response_status_codes": [],
+            "login_response_status_codes": [],
+            "attempted_signup_operation_ids": [],
+            "attempted_login_operation_ids": [],
+            "signup_payload_field_names": [],
+            "login_payload_field_names": [],
+            "materialization_reason_codes": [],
+        }
+        latest: dict[str, Any] | None = None
+        latest_materialization: dict[str, Any] | None = None
+        for o in reversed(observations):
+            otype = str(o.get("type") or o.get("observation_type") or "")
+            if otype != "auth_flow_signal":
+                if latest_materialization is None and otype == "test_account_materialization_result":
+                    det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                    if str(det.get("source") or "") == "test_account_materializer":
+                        latest_materialization = det
+                continue
+            det = o.get("details") if isinstance(o.get("details"), dict) else {}
+            if str(det.get("source") or "") != "auth_flow_detector":
+                continue
+            latest = det
+            if latest_materialization is not None:
+                break
+        if latest is None and latest_materialization is None:
+            return empty
+        out = dict(empty)
+        if latest is not None:
+            def _count(key: str) -> int:
+                v = latest.get(key)
+                return len(v) if isinstance(v, list) else 0
+
+            sample: list[dict[str, Any]] = []
+            for bucket in (
+                "signup_candidates",
+                "login_candidates",
+                "token_response_candidates",
+                "profile_candidates",
+            ):
+                rows = latest.get(bucket)
+                if not isinstance(rows, list):
+                    continue
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    sample.append({
+                        "operation_id": str(row.get("operation_id") or ""),
+                        "method": str(row.get("method") or ""),
+                        "path": str(row.get("path") or ""),
+                        "confidence": str(row.get("confidence") or ""),
+                        "reason_codes": list(row.get("reason_codes") or [])
+                        if isinstance(row.get("reason_codes"), list) else [],
+                    })
+                    if len(sample) >= 12:
+                        break
+                if len(sample) >= 12:
+                    break
+
+            miss = latest.get("missing_prerequisites")
+            miss_list = list(miss) if isinstance(miss, list) else []
+            out.update({
+                "auth_flow_detected": bool(latest.get("auth_flow_detected")),
+                "signup_candidate_count": _count("signup_candidates"),
+                "login_candidate_count": _count("login_candidates"),
+                "token_response_candidate_count": _count("token_response_candidates"),
+                "profile_candidate_count": _count("profile_candidates"),
+                "auth_flow_candidates_sample": sample,
+                "missing_prerequisites": miss_list,
+                "auth_limitations": miss_list,
+            })
+
+        if latest_materialization is not None:
+            created = self._safe_int(latest_materialization.get("auth_profiles_created_count"), 0)
+            out.update({
+                "test_account_materialization_status": (
+                    "materialized" if created >= 2 else "partial_or_failed"
+                ),
+                "auth_profiles_created_count": created,
+                "signup_success_count": self._safe_int(latest_materialization.get("signup_success_count"), 0),
+                "login_success_count": self._safe_int(latest_materialization.get("login_success_count"), 0),
+                "owner_auth_profile_id": str(latest_materialization.get("owner_auth_profile_id") or ""),
+                "attacker_auth_profile_id": str(latest_materialization.get("attacker_auth_profile_id") or ""),
+                "auth_type": str(latest_materialization.get("auth_type") or "unknown"),
+                "token_response_detected": bool(latest_materialization.get("token_response_detected")),
+                "materialization_errors": list(latest_materialization.get("materialization_errors") or [])[:10],
+                "selected_signup_path": str(latest_materialization.get("selected_signup_path") or ""),
+                "selected_login_path": str(latest_materialization.get("selected_login_path") or ""),
+                "signup_response_status_codes": list(latest_materialization.get("signup_response_status_codes") or [])[:10],
+                "login_response_status_codes": list(latest_materialization.get("login_response_status_codes") or [])[:10],
+                "attempted_signup_operation_ids": list(latest_materialization.get("attempted_signup_operation_ids") or [])[:15],
+                "attempted_login_operation_ids": list(latest_materialization.get("attempted_login_operation_ids") or [])[:15],
+                "signup_payload_field_names": list(latest_materialization.get("signup_payload_field_names") or [])[:20],
+                "login_payload_field_names": list(latest_materialization.get("login_payload_field_names") or [])[:20],
+                "materialization_reason_codes": list(latest_materialization.get("reason_codes") or [])[:20],
+            })
+
+        out["auth_profiles"] = self._auth_profiles.list_auth_profiles(campaign_id)[:10]
+        return out
+
     def _build_worker_execution_summary(
         self,
         runtime: dict[str, Any] | None,
@@ -655,6 +798,10 @@ class ReportContextBuilder:
                 finding_kinds["schemathesis_negative_test"] += 1
             elif vc == "potential_mass_assignment":
                 finding_kinds["property_mutation_test"] += 1
+            elif vc == "sensitive_property_exposure":
+                finding_kinds["data_exposure_validator"] += 1
+            elif vc == "ssrf_candidate":
+                finding_kinds["ssrf_candidate_detector"] += 1
 
         per_kind: dict[str, Any] = {}
         keys = set(executed.keys()) | set(failed_by_kind.keys()) | set(ready_by_kind.keys()) | set(blocked_by_kind.keys())
@@ -731,6 +878,174 @@ class ReportContextBuilder:
             "js_extraction_results": samples,
         }
 
+    @staticmethod
+    def _api3_data_exposure_coverage(
+        observations: list[dict[str, Any]],
+        findings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        inv_count = 0
+        sig_count = 0
+        probe_count = 0
+        auth_inv_count = 0
+        auth_sig_count = 0
+        auth_probe_count = 0
+        auth_non_200 = 0
+        auth_fields_extracted = 0
+        fields_extracted = 0
+        auth_profiles_used: set[str] = set()
+        auth_inventory_ops: set[str] = set()
+        probe_samples: list[dict[str, Any]] = []
+        auth_probe_samples: list[dict[str, Any]] = []
+        probe_results: list[str] = []
+        for o in observations:
+            otype = str(o.get("type") or o.get("observation_type") or "")
+            if otype == "response_field_inventory":
+                inv_count += 1
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("tool_name") or "") == "data_exposure_validator" and str(det.get("auth_mode") or "unauthenticated") == "authenticated":
+                    auth_inv_count += 1
+                    if str(det.get("auth_profile_id") or "").strip():
+                        auth_profiles_used.add(str(det.get("auth_profile_id") or "").strip())
+                    if str(det.get("operation_id") or "").strip():
+                        auth_inventory_ops.add(str(det.get("operation_id") or "").strip())
+            elif otype == "data_exposure_signal":
+                sig_count += 1
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("tool_name") or "") == "data_exposure_validator" and str(det.get("auth_mode") or "unauthenticated") == "authenticated":
+                    auth_sig_count += 1
+                    if str(det.get("auth_profile_id") or "").strip():
+                        auth_profiles_used.add(str(det.get("auth_profile_id") or "").strip())
+            elif otype == "data_exposure_probe_result":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("source") or "") != "data_exposure_validator":
+                    continue
+                probe_count += 1
+                pr = str(det.get("result") or "")
+                probe_results.append(pr)
+                field_count = ReportContextBuilder._safe_int(det.get("field_count"), 0)
+                extracted = pr in {"fields_extracted", "sensitive_fields_found"} or field_count > 0
+                if extracted:
+                    fields_extracted += 1
+                is_auth = str(det.get("auth_mode") or "unauthenticated") == "authenticated"
+                if is_auth:
+                    auth_probe_count += 1
+                    if str(det.get("auth_profile_id") or "").strip():
+                        auth_profiles_used.add(str(det.get("auth_profile_id") or "").strip())
+                    if pr == "non_200_response":
+                        auth_non_200 += 1
+                    if extracted:
+                        auth_fields_extracted += 1
+                if len(probe_samples) < 15:
+                    rc = det.get("reason_codes")
+                    sc = det.get("sensitive_categories")
+                    probe_samples.append({
+                        "operation_id": str(det.get("operation_id") or ""),
+                        "method": str(det.get("method") or ""),
+                        "path": str(det.get("path") or ""),
+                        "status_code": ReportContextBuilder._safe_int(det.get("status_code"), 0),
+                        "content_type": str(det.get("content_type") or ""),
+                        "result": pr,
+                        "field_count": field_count,
+                        "sensitive_field_count": ReportContextBuilder._safe_int(det.get("sensitive_field_count"), 0),
+                        "sensitive_categories": list(sc) if isinstance(sc, list) else [],
+                        "auth_mode": str(det.get("auth_mode") or "unauthenticated"),
+                        "auth_profile_id": str(det.get("auth_profile_id") or ""),
+                        "role_hint": str(det.get("role_hint") or ""),
+                        "reason_codes": list(rc) if isinstance(rc, list) else [],
+                    })
+                if is_auth and len(auth_probe_samples) < 15:
+                    auth_probe_samples.append({
+                        "operation_id": str(det.get("operation_id") or ""),
+                        "method": str(det.get("method") or ""),
+                        "path": str(det.get("path") or ""),
+                        "status_code": ReportContextBuilder._safe_int(det.get("status_code"), 0),
+                        "result": pr,
+                        "field_count": field_count,
+                        "sensitive_field_count": ReportContextBuilder._safe_int(det.get("sensitive_field_count"), 0),
+                        "auth_mode": "authenticated",
+                        "auth_profile_id": str(det.get("auth_profile_id") or ""),
+                        "role_hint": str(det.get("role_hint") or ""),
+                        "reason_codes": list(det.get("reason_codes") or []) if isinstance(det.get("reason_codes"), list) else [],
+                    })
+        sens_findings = sum(
+            1 for f in findings
+            if str(f.get("vulnerability_class") or "") == "sensitive_property_exposure"
+        )
+        categories: set[str] = set()
+        field_sample: list[dict[str, str]] = []
+        results: list[dict[str, Any]] = []
+        for o in observations:
+            otype = str(o.get("type") or o.get("observation_type") or "")
+            det = o.get("details") if isinstance(o.get("details"), dict) else {}
+            if str(det.get("tool_name") or "") != "data_exposure_validator":
+                continue
+            if otype == "data_exposure_signal":
+                is_auth = str(det.get("auth_mode") or "unauthenticated") == "authenticated"
+                rc = det.get("sensitive_categories")
+                if isinstance(rc, list):
+                    for x in rc:
+                        t = str(x).strip()
+                        if t:
+                            categories.add(t)
+                sf = det.get("sensitive_fields")
+                if isinstance(sf, list):
+                    for item in sf:
+                        if isinstance(item, dict) and len(field_sample) < 10:
+                            field_sample.append({
+                                "field_name": str(item.get("field_name") or ""),
+                                "category": str(item.get("category") or ""),
+                            })
+                results.append({
+                    "operation_id": str(det.get("operation_id") or ""),
+                    "path": str(det.get("path") or ""),
+                    "method": str(det.get("method") or ""),
+                    "status_code": ReportContextBuilder._safe_int(det.get("status_code"), 0),
+                    "sensitive_field_count": ReportContextBuilder._safe_int(det.get("sensitive_field_count"), 0),
+                    "result": "data_exposure_signal",
+                    "auth_mode": "authenticated" if is_auth else "unauthenticated",
+                    "auth_profile_id": str(det.get("auth_profile_id") or ""),
+                    "role_hint": str(det.get("role_hint") or ""),
+                })
+            elif otype == "response_field_inventory":
+                is_auth = str(det.get("auth_mode") or "unauthenticated") == "authenticated"
+                results.append({
+                    "operation_id": str(det.get("operation_id") or ""),
+                    "path": str(det.get("path") or ""),
+                    "method": str(det.get("method") or ""),
+                    "status_code": ReportContextBuilder._safe_int(det.get("status_code"), 0),
+                    "field_count": ReportContextBuilder._safe_int(det.get("field_count"), 0),
+                    "sensitive_field_count": ReportContextBuilder._safe_int(det.get("sensitive_field_count"), 0),
+                    "result": "response_field_inventory",
+                    "auth_mode": "authenticated" if is_auth else "unauthenticated",
+                    "auth_profile_id": str(det.get("auth_profile_id") or ""),
+                    "role_hint": str(det.get("role_hint") or ""),
+                })
+        non_200 = sum(1 for x in probe_results if x == "non_200_response")
+        non_json = sum(1 for x in probe_results if x == "non_json_response")
+        no_fields = sum(1 for x in probe_results if x == "no_fields_found")
+        return {
+            "response_field_inventory_count": inv_count,
+            "data_exposure_signal_count": sig_count,
+            "data_exposure_probe_result_count": probe_count,
+            "authenticated_response_field_inventory_count": auth_inv_count,
+            "authenticated_data_exposure_signal_count": auth_sig_count,
+            "authenticated_data_exposure_probe_result_count": auth_probe_count,
+            "data_exposure_non_200_count": non_200,
+            "data_exposure_non_json_count": non_json,
+            "data_exposure_no_fields_count": no_fields,
+            "data_exposure_fields_extracted_count": fields_extracted,
+            "data_exposure_authenticated_non_200_count": auth_non_200,
+            "data_exposure_authenticated_fields_extracted_count": auth_fields_extracted,
+            "auth_profiles_used_count": len(auth_profiles_used),
+            "operations_with_authenticated_inventory": len(auth_inventory_ops),
+            "data_exposure_probe_results": probe_samples,
+            "authenticated_data_exposure_results": auth_probe_samples,
+            "sensitive_property_exposure_findings_count": sens_findings,
+            "sensitive_field_categories": sorted(categories)[:20],
+            "sensitive_fields_sample": field_sample[:10],
+            "data_exposure_results": results[:15],
+        }
+
     def _build_owasp_coverage(
         self,
         *,
@@ -751,6 +1066,7 @@ class ReportContextBuilder:
         findings_api8 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API8_SECURITY_MISCONFIGURATION")
         findings_api9 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API9_IMPROPER_INVENTORY_MANAGEMENT")
         findings_api3 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION")
+        findings_api7 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API7_SERVER_SIDE_REQUEST_FORGERY")
 
         schema_mismatch_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "schema_mismatch")
         undocumented_endpoint_signal_count = sum(
@@ -759,6 +1075,7 @@ class ReportContextBuilder:
             if str(o.get("type") or o.get("observation_type") or "") == "undocumented_endpoint_signal"
         )
         mass_assignment_signal_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "mass_assignment_signal")
+        ssrf_candidate_signal_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "ssrf_candidate_signal")
         undocumented_endpoint_findings_count = sum(
             1
             for f in findings
@@ -816,8 +1133,55 @@ class ReportContextBuilder:
         api3_ex = self._safe_int(executed.get("property_mutation_test"), 0)
         api3_ready = self._safe_int(ready_map.get("property_mutation_test"), 0)
         api3_blocked_total = self._safe_int(blocked_map.get("property_mutation_test"), 0) if runtime is not None else "not_available"
+        api3_dex_ex = self._safe_int(executed.get("data_exposure_validator"), 0)
+        api3_dex_ready = self._safe_int(ready_map.get("data_exposure_validator"), 0)
+        api3_dex_blocked = self._safe_int(blocked_map.get("data_exposure_validator"), 0) if runtime is not None else "not_available"
+        api3_de_cov = self._api3_data_exposure_coverage(observations, findings)
+        ssrf_operations: set[str] = set()
+        ssrf_fields = 0
+        ssrf_samples: list[dict[str, Any]] = []
+        for o in observations:
+            if str(o.get("type") or o.get("observation_type") or "") != "ssrf_candidate_signal":
+                continue
+            det = o.get("details") if isinstance(o.get("details"), dict) else {}
+            op_id = str(det.get("operation_id") or o.get("operation_id") or "").strip()
+            field_name = str(det.get("field_name") or "").strip()
+            field_path = str(det.get("field_path") or "").strip()
+            if op_id:
+                ssrf_operations.add(op_id)
+            if field_name and field_path:
+                ssrf_fields += 1
+            if len(ssrf_samples) < 15:
+                ssrf_samples.append({
+                    "operation_id": op_id,
+                    "method": str(det.get("method") or ""),
+                    "path": str(det.get("path") or ""),
+                    "field_name": field_name,
+                    "field_path": field_path,
+                    "schema_type": str(det.get("schema_type") or ""),
+                    "schema_format": str(det.get("schema_format") or ""),
+                    "confidence": str(det.get("confidence") or ""),
+                    "reason_codes": list(det.get("reason_codes")) if isinstance(det.get("reason_codes"), list) else [],
+                })
 
         return {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic" if (ssrf_candidate_signal_count > 0 or findings_api7 > 0) else ("not_available" if runtime is None else "pending"),
+                "workers": {
+                    "ssrf_candidate_detector": {
+                        "executed": self._safe_int(executed.get("ssrf_candidate_detector"), 0) if runtime is not None else "not_available",
+                        "findings": self._safe_int(worker_execution_summary.get("per_kind", {}).get("ssrf_candidate_detector", {}).get("findings_created", 0)),
+                        "no_observations": no_obs_by_kind.get("ssrf_candidate_detector", "not_available" if runtime is None else 0),
+                        "ready": self._safe_int(ready_map.get("ssrf_candidate_detector"), 0) if runtime is not None else "not_available",
+                        "blocked": self._safe_int(blocked_map.get("ssrf_candidate_detector"), 0) if runtime is not None else "not_available",
+                    },
+                },
+                "confirmed_findings_count": findings_api7,
+                "ssrf_candidate_signal_count": ssrf_candidate_signal_count,
+                "ssrf_candidate_operations_count": len(ssrf_operations),
+                "ssrf_candidate_fields_count": ssrf_fields,
+                "ssrf_candidates": ssrf_samples,
+            },
             "API8_SECURITY_MISCONFIGURATION": {
                 "status": "checked" if (runtime is not None and sum(self._safe_int(executed.get(k), 0) for k in api8_workers) > 0) else ("not_available" if runtime is None else "pending"),
                 "workers": api8_worker_map,
@@ -864,6 +1228,17 @@ class ReportContextBuilder:
             },
             "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION": {
                 "status": "checked" if runtime_effect_proven_count > 0 else "diagnostic",
+                "mass_assignment_signal_count": mass_assignment_signal_count,
+                "candidates_considered": (
+                    api3_ex + api3_ready + (api3_blocked_total if isinstance(api3_blocked_total, int) else 0)
+                    + api3_dex_ex + api3_dex_ready + (api3_dex_blocked if isinstance(api3_dex_blocked, int) else 0)
+                    if runtime is not None else "not_available"
+                ),
+                "blocked_no_sensitive_fields_count": blocked_no_sensitive if runtime is not None else "not_available",
+                "blocked_missing_seed_context_count": blocked_missing_seed if runtime is not None else "not_available",
+                "runtime_effect_proven_count": runtime_effect_proven_count,
+                "confirmed_findings_count": findings_api3,
+                **api3_de_cov,
                 "workers": {
                     "property_mutation_test": {
                         "executed": api3_ex if runtime is not None else "not_available",
@@ -872,16 +1247,14 @@ class ReportContextBuilder:
                         "ready": api3_ready if runtime is not None else "not_available",
                         "blocked": self._safe_int(blocked_map.get("property_mutation_test"), 0) if runtime is not None else "not_available",
                     },
+                    "data_exposure_validator": {
+                        "executed": api3_dex_ex if runtime is not None else "not_available",
+                        "findings": self._safe_int(worker_execution_summary.get("per_kind", {}).get("data_exposure_validator", {}).get("findings_created", 0)),
+                        "no_observations": no_obs_by_kind.get("data_exposure_validator", "not_available" if runtime is None else 0),
+                        "ready": api3_dex_ready if runtime is not None else "not_available",
+                        "blocked": api3_dex_blocked if runtime is not None else "not_available",
+                    },
                 },
-                "mass_assignment_signal_count": mass_assignment_signal_count,
-                "candidates_considered": (
-                    api3_ex + api3_ready + (api3_blocked_total if isinstance(api3_blocked_total, int) else 0)
-                    if runtime is not None else "not_available"
-                ),
-                "blocked_no_sensitive_fields_count": blocked_no_sensitive if runtime is not None else "not_available",
-                "blocked_missing_seed_context_count": blocked_missing_seed if runtime is not None else "not_available",
-                "runtime_effect_proven_count": runtime_effect_proven_count,
-                "confirmed_findings_count": findings_api3,
             },
         }
 
@@ -933,6 +1306,7 @@ class ReportContextBuilder:
                 classes.add(cls)
         # Always include MVP classes
         classes.update({
+            "ssrf_candidate",
             "security_header_misconfiguration",
             "cors_misconfiguration",
             "cookie_flag_misconfiguration",

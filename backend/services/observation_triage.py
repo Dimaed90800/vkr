@@ -133,6 +133,10 @@ _STORE_ONLY_TYPES = {
     "tool_error",
     "sensitive_field_seen",
     "js_endpoint_extraction_result",
+    "response_field_inventory",
+    "data_exposure_probe_result",
+    "auth_flow_signal",
+    "test_account_materialization_result",
 }
 
 _SCHEMA_MISMATCH_STRONG_SIGNALS = {"5xx", "unexpected_2xx", "schema_violation"}
@@ -191,6 +195,10 @@ class ObservationTriage:
             return self._triage_validated_cookie_flag_issue(obs)
         if obs_type == "undocumented_endpoint_signal":
             return self._triage_undocumented_endpoint_signal(obs)
+        if obs_type == "ssrf_candidate_signal":
+            return self._triage_ssrf_candidate_signal(obs)
+        if obs_type == "data_exposure_signal":
+            return self._triage_data_exposure_signal(obs)
 
         rule = _TRIAGE_RULES.get(obs_type)
         if rule is None:
@@ -372,6 +380,61 @@ class ObservationTriage:
         self._persist_obs(obs)
         return obs, None, None
 
+    def _triage_data_exposure_signal(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        sens = int(details.get("sensitive_field_count") or 0)
+        op = str(details.get("operation_id") or obs.operation_id or "").strip()
+        path = str(details.get("path") or "").strip()
+        if sens > 0 and op and path:
+            rec = str(details.get("recommended_next_action") or "").strip()
+            if rec:
+                obs.recommended_next_action = rec
+            sec_raw = str(details.get("security_relevance") or "medium").lower()
+            try:
+                obs.security_relevance = SecurityRelevance(sec_raw)
+            except ValueError:
+                obs.security_relevance = (
+                    SecurityRelevance.medium
+                    if "sensitive" in sec_raw or "exposure" in sec_raw
+                    else SecurityRelevance.informational
+                )
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="prove_sensitive_property_exposure",
+                worker_class="access_control",
+                strategy="validate_response_field_exposure",
+                required_evidence=[
+                    "response_field_inventory",
+                    "sensitive_field_names",
+                    "operation_context",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
     def _triage_validated_cors_issue(
         self, obs: Observation,
     ) -> tuple[Observation, VerificationPlan | None, None]:
@@ -526,6 +589,52 @@ class ObservationTriage:
                     "discovered_endpoint",
                     "openapi_absence",
                     "runtime_observed_status",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_ssrf_candidate_signal(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        operation_id = str(details.get("operation_id") or obs.operation_id or "").strip()
+        field_name = str(details.get("field_name") or "").strip()
+        field_path = str(details.get("field_path") or "").strip()
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        strong_enough = bool(operation_id and field_name and field_path and validation_mode == "ssrf_candidate_detection")
+        if strong_enough:
+            obs.security_relevance = SecurityRelevance.medium
+            obs.recommended_next_action = "validate_ssrf_candidate_safely"
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_ssrf_candidate_safely",
+                worker_class="input_validation",
+                strategy="detect_ssrf_candidate_fields",
+                required_evidence=[
+                    "openapi_schema_url_like_field",
+                    "operation_context",
                 ],
                 commands=[],
                 status=VerificationPlanStatus.pending,

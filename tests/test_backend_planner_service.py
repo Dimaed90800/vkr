@@ -19,7 +19,9 @@ from backend.models.tool_run import (
     ToolRunStatus,
 )
 from backend.services.command_validator import CommandValidator
+from backend.services.auth_profile_store import AuthProfileStore
 from backend.services.injection_scenario_parameter_candidates import INJECTION_COMPILER_PAYLOAD_FAMILIES
+from backend.services.llm_candidate_advisor import LlmCandidateAdvisor
 from backend.services.planner_service import PlannerService
 from backend.storage.memory_store import memory_store
 
@@ -39,7 +41,8 @@ def _reset_store() -> None:
         "judge_decisions_by_campaign", "judge_decisions_by_evidence",
         "confirmed_findings", "confirmed_findings_by_campaign",
         "findings_by_fingerprint", "evidence_pack_apply_meta",
-        "observation_apply_meta",
+        "observation_apply_meta", "auth_profiles", "auth_profiles_by_campaign",
+        "runtime_token_secrets", "runtime_credential_secrets",
     ]:
         getattr(memory_store, name).clear()
     memory_store.evidence_records.clear()
@@ -2723,3 +2726,1276 @@ def test_planner_ordering_property_mutation_after_injection_before_zap() -> None
     assert ready_kinds.index("injection_test") < ready_kinds.index("property_mutation_test")
     if "zap_discovery_passive" in ready_kinds:
         assert ready_kinds.index("property_mutation_test") < ready_kinds.index("zap_discovery_passive")
+
+
+def test_planner_data_exposure_validator_ready_for_get_operations_only() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/items",
+                method="GET",
+                path_template="/api/v1/items",
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_POST_/api/v1/items",
+                method="POST",
+                path_template="/api/v1/items",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator" and c.status.value == "ready"]
+    assert len(rows) == 1
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "data_exposure_validator"
+    assert rows[0].command.inputs.get("method") == "GET"
+    assert rows[0].command.operation_id == "op_GET_/api/v1/items"
+
+
+def test_planner_ssrf_candidate_detector_ready_for_url_like_request_fields() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/workshop/api/mechanic/receive_report",
+                method="POST",
+                path_template="/workshop/api/mechanic/receive_report",
+                body_fields=["mechanic_api", "title"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "ssrf_candidate_detector"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "ssrf_candidate_detector"
+    assert rows[0].command.worker_class == "input_validation"
+    assert rows[0].command.strategy == "detect_ssrf_candidate_fields"
+    assert rows[0].command.inputs.get("validation_mode") == "ssrf_candidate_detection"
+    assert rows[0].summary.get("ssrf_candidate_source") == "openapi_schema"
+    assert rows[0].summary.get("candidate_field_count") == 1
+    sample = rows[0].summary.get("candidate_fields_sample") or []
+    assert sample[0]["field_name"] == "mechanic_api"
+
+
+def test_planner_ssrf_candidate_detector_not_created_without_request_fields() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/ping",
+                method="GET",
+                path_template="/api/v1/ping",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    assert [c for c in resp.candidates if c.kind.value == "ssrf_candidate_detector"] == []
+
+
+def test_planner_ssrf_candidate_detector_skipped_when_signal_exists() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/api/v1/hooks",
+                method="POST",
+                path_template="/api/v1/hooks",
+                body_fields=["callback_url"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_ssrf_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.ssrf_candidate_signal.value,
+        details={
+            "operation_id": "op_POST_/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "validation_mode": "ssrf_candidate_detection",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "ssrf_candidate_detector"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_data_exposure_validator_skips_static_get_paths() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/static/app.js",
+                method="GET",
+                path_template="/static/app.js",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    assert [c for c in resp.candidates if c.kind.value == "data_exposure_validator"] == []
+
+
+def test_planner_data_exposure_validator_skipped_when_inventory_exists() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/profile",
+                method="GET",
+                path_template="/api/v1/profile",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_inv_1",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.response_field_inventory.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/profile",
+            "path": "/api/v1/profile",
+            "method": "GET",
+            "field_count": 2,
+            "sensitive_field_count": 0,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+    assert rows[0].reason == "Data exposure validator already executed for this operation."
+    assert "prior_result" not in rows[0].summary
+
+
+def test_planner_data_exposure_probe_result_skips_duplicate_candidate() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/workshop/api/mechanic/receive_report",
+                method="GET",
+                path_template="/workshop/api/mechanic/receive_report",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_dex_probe_1",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_probe_result.value,
+        details={
+            "source": "data_exposure_validator",
+            "operation_id": "op_GET_/workshop/api/mechanic/receive_report",
+            "path": "/workshop/api/mechanic/receive_report",
+            "method": "GET",
+            "status_code": 400,
+            "content_type": "application/json",
+            "result": "non_200_response",
+            "field_count": 0,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["non_200_response"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+    assert rows[0].reason == "Data exposure validator already executed for this operation."
+    assert rows[0].summary.get("prior_result") == "non_200_response"
+    assert rows[0].summary.get("prior_status_code") == 400
+    assert rows[0].summary.get("prior_reason_codes") == ["non_200_response"]
+
+
+def test_planner_data_exposure_probe_on_one_operation_other_still_ready() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/workshop/api/mechanic/receive_report",
+                method="GET",
+                path_template="/workshop/api/mechanic/receive_report",
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_GET_/api/v1/ping",
+                method="GET",
+                path_template="/api/v1/ping",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_dex_probe_only_a",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_probe_result.value,
+        details={
+            "source": "data_exposure_validator",
+            "operation_id": "op_GET_/workshop/api/mechanic/receive_report",
+            "path": "/workshop/api/mechanic/receive_report",
+            "method": "GET",
+            "status_code": 400,
+            "content_type": "application/json",
+            "result": "non_200_response",
+            "field_count": 0,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["non_200_response"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    dex = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    by_op = {c.summary.get("operation_id"): c for c in dex}
+    assert by_op["op_GET_/workshop/api/mechanic/receive_report"].status.value == "skipped_existing"
+    assert by_op["op_GET_/api/v1/ping"].status.value == "ready"
+
+
+def test_planner_data_exposure_path_fallback_dedup_when_probe_missing_operation_id() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/workshop/api/mechanic/receive_report",
+                method="GET",
+                path_template="/workshop/api/mechanic/receive_report",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_dex_probe_no_opid",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_probe_result.value,
+        details={
+            "source": "data_exposure_validator",
+            "path": "/workshop/api/mechanic/receive_report",
+            "method": "GET",
+            "status_code": 400,
+            "content_type": "application/json",
+            "result": "non_200_response",
+            "field_count": 0,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["non_200_response"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+    assert rows[0].summary.get("prior_result") == "non_200_response"
+
+
+def test_planner_data_exposure_signal_still_dedups_candidate() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/signal",
+                method="GET",
+                path_template="/api/v1/signal",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_dex_sig_dedup",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_signal.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/signal",
+            "path": "/api/v1/signal",
+            "method": "GET",
+            "status_code": 200,
+            "sensitive_field_count": 1,
+            "sensitive_categories": ["identity"],
+            "sensitive_fields": [{"field_name": "email", "field_path": "$.email", "category": "identity"}],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_auth_flow_detector_ready_when_graph_exists() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/ping",
+                method="GET",
+                path_template="/api/ping",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "auth_flow_detector"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "auth_flow_detector"
+    assert rows[0].command.worker_class == "auth_context"
+    assert rows[0].command.strategy == "detect_auth_flow"
+    blob = json.dumps(rows[0].summary, ensure_ascii=False).lower()
+    assert "bearer " not in blob
+    assert "authorization" not in blob
+
+
+def test_planner_auth_flow_skipped_when_existing_signal() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/ping",
+                method="GET",
+                path_template="/api/ping",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_af_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.auth_flow_signal.value,
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": False,
+            "signup_candidates": [],
+            "login_candidates": [],
+            "token_response_candidates": [],
+            "profile_candidates": [],
+            "missing_prerequisites": [],
+            "reason_codes": ["no_auth_flow_patterns"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "auth_flow_detector"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_test_account_materializer_ready_from_auth_flow_signal() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/identity/api/auth/signup",
+                method="POST",
+                path_template="/identity/api/auth/signup",
+                body_fields=["name", "email", "number", "password"],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_POST_/identity/api/auth/login",
+                method="POST",
+                path_template="/identity/api/auth/login",
+                body_fields=["email", "password"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_auth_flow_materializer",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.auth_flow_signal.value,
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": True,
+            "signup_candidates": [{"operation_id": "op_POST_/identity/api/auth/signup", "method": "POST", "path": "/identity/api/auth/signup"}],
+            "login_candidates": [{"operation_id": "op_POST_/identity/api/auth/login", "method": "POST", "path": "/identity/api/auth/login"}],
+            "token_response_candidates": [{"operation_id": "op_POST_/identity/api/auth/login", "method": "POST", "path": "/identity/api/auth/login"}],
+            "profile_candidates": [],
+            "missing_prerequisites": [],
+            "reason_codes": [],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "test_account_materializer"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "test_account_materializer"
+    assert rows[0].command.worker_class == "auth_context"
+    assert rows[0].command.strategy == "materialize_test_accounts"
+
+
+def test_planner_test_account_materializer_skipped_when_already_materialized() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/identity/api/auth/signup",
+                method="POST",
+                path_template="/identity/api/auth/signup",
+                body_fields=["email", "password"],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_POST_/identity/api/auth/login",
+                method="POST",
+                path_template="/identity/api/auth/login",
+                body_fields=["email", "password"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_auth_flow_materializer_skip",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.auth_flow_signal.value,
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": True,
+            "signup_candidates": [{"operation_id": "op_POST_/identity/api/auth/signup", "method": "POST", "path": "/identity/api/auth/signup"}],
+            "login_candidates": [{"operation_id": "op_POST_/identity/api/auth/login", "method": "POST", "path": "/identity/api/auth/login"}],
+            "token_response_candidates": [],
+            "profile_candidates": [],
+            "missing_prerequisites": [],
+            "reason_codes": [],
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_materialized_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "auth_profiles_created_count": 2,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "test_account_materializer"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_test_account_materializer_blocked_when_signup_or_login_missing() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/identity/api/auth/login",
+                method="POST",
+                path_template="/identity/api/auth/login",
+                body_fields=["email", "password"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_auth_flow_materializer_blocked",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.auth_flow_signal.value,
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": True,
+            "signup_candidates": [],
+            "login_candidates": [{"operation_id": "op_POST_/identity/api/auth/login", "method": "POST", "path": "/identity/api/auth/login"}],
+            "token_response_candidates": [],
+            "profile_candidates": [],
+            "missing_prerequisites": [],
+            "reason_codes": [],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "test_account_materializer"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "blocked"
+    assert "signup_operation_id_missing" in (rows[0].missing_inputs or [])
+
+
+def test_planner_data_exposure_llm_advisor_orders_collection_before_parameterized_get() -> None:
+    _reset_store()
+    _campaign()
+
+    def llm(_sys: str, user: str) -> str:
+        assert "Bearer" not in user
+        assert "Authorization" not in user
+        return json.dumps(
+            {
+                "ranked_candidates": [
+                    {
+                        "operation_id": "op_GET_/api/v1/orders/{orderId}",
+                        "recommended": True,
+                        "priority": 0,
+                        "requires_seed": True,
+                        "requires_auth": True,
+                        "reason": "LLM prefers first",
+                    },
+                    {
+                        "operation_id": "op_GET_/api/v1/me",
+                        "recommended": True,
+                        "priority": 1,
+                        "requires_seed": False,
+                        "requires_auth": False,
+                        "reason": "LLM second",
+                    },
+                ],
+                "warnings": [],
+            }
+        )
+
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                successful_seed_request_ids=[],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_GET_/api/v1/orders/{orderId}",
+                method="GET",
+                path_template="/api/v1/orders/{orderId}",
+                path_params=["orderId"],
+                successful_seed_request_ids=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    req = PlannerRequest.model_validate(
+        {"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40, "enable_llm_candidate_advisor": True}
+    )
+    resp = PlannerService(advisor=LlmCandidateAdvisor(llm_complete=llm)).plan("cmp_plan", req)
+    dex = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(dex) == 2
+    by_path = {str(c.summary.get("path_template")): c for c in dex}
+    blocked = by_path["/api/v1/orders/{orderId}"]
+    ready = by_path["/api/v1/me"]
+    assert blocked.status.value == "blocked"
+    assert "path_params_without_seed" in (blocked.missing_inputs or [])
+    assert ready.status.value == "ready"
+    assert ready.summary.get("llm_candidate_advisor_used") is True
+    assert blocked.summary.get("llm_candidate_priority") == 0
+    assert ready.summary.get("llm_candidate_priority") == 1
+
+
+def test_planner_data_exposure_parameterized_stays_blocked_even_if_llm_prioritizes_it() -> None:
+    _reset_store()
+    _campaign()
+
+    def llm(_sys: str, _user: str) -> str:
+        return json.dumps(
+            {
+                "ranked_candidates": [
+                    {
+                        "operation_id": "op_GET_/api/v1/orders/{orderId}",
+                        "recommended": True,
+                        "priority": 0,
+                        "requires_seed": False,
+                        "requires_auth": False,
+                        "reason": "LLM wrong: no seed",
+                    },
+                ],
+                "warnings": [],
+            }
+        )
+
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/orders/{orderId}",
+                method="GET",
+                path_template="/api/v1/orders/{orderId}",
+                path_params=["orderId"],
+                successful_seed_request_ids=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    req = PlannerRequest.model_validate(
+        {"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40, "enable_llm_candidate_advisor": True}
+    )
+    resp = PlannerService(advisor=LlmCandidateAdvisor(llm_complete=llm)).plan("cmp_plan", req)
+    row = next(c for c in resp.candidates if c.kind.value == "data_exposure_validator")
+    assert row.status.value == "blocked"
+    assert row.command is None
+    assert row.summary.get("llm_candidate_advisor_used") is True
+
+
+def test_planner_data_exposure_advisor_fallback_when_llm_unavailable() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/a",
+                method="GET",
+                path_template="/api/a",
+                path_params=[],
+                resource_type="user",
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_GET_/api/b",
+                method="GET",
+                path_template="/api/b",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    req = PlannerRequest.model_validate(
+        {"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40, "enable_llm_candidate_advisor": True}
+    )
+    resp = PlannerService(advisor=LlmCandidateAdvisor(llm_complete=None)).plan("cmp_plan", req)
+    ready = [c for c in resp.candidates if c.kind.value == "data_exposure_validator" and c.status.value == "ready"]
+    assert len(ready) == 2
+    assert all(c.summary.get("llm_candidate_advisor_used") is False for c in ready)
+
+
+def test_planner_data_exposure_advisor_summary_no_raw_leakage() -> None:
+    _reset_store()
+    _campaign()
+
+    def llm(_sys: str, _user: str) -> str:
+        return json.dumps(
+            {
+                "ranked_candidates": [
+                    {
+                        "operation_id": "op_GET_/api/v1/me",
+                        "recommended": True,
+                        "priority": 0,
+                        "requires_seed": False,
+                        "requires_auth": False,
+                        "reason": "ok",
+                    },
+                ],
+                "warnings": [],
+            }
+        )
+
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    req = PlannerRequest.model_validate(
+        {"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40, "enable_llm_candidate_advisor": True}
+    )
+    resp = PlannerService(advisor=LlmCandidateAdvisor(llm_complete=llm)).plan("cmp_plan", req)
+    row = next(c for c in resp.candidates if c.kind.value == "data_exposure_validator")
+    blob = json.dumps(row.summary, ensure_ascii=False).lower()
+    for bad in ("bearer ", "authorization:", "set-cookie", "response_body", "request_body"):
+        assert bad not in blob
+
+
+def test_planner_data_exposure_validator_skipped_when_tool_run_exists() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/ping",
+                method="GET",
+                path_template="/api/v1/ping",
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    memory_store.store_command(
+        "cmd_dex_existing",
+        "cmp_plan",
+        {
+            "command_id": "cmd_dex_existing",
+            "campaign_id": "cmp_plan",
+            "worker_class": "access_control",
+            "strategy": "validate_response_field_exposure",
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/ping",
+            "inputs": {
+                "target_url": "http://target.local",
+                "operation_id": "op_GET_/api/v1/ping",
+                "path_template": "/api/v1/ping",
+                "validation_mode": "response_field_inventory_check",
+            },
+        },
+    )
+    memory_store.store_tool_run(
+        "toolrun_dex_existing",
+        "cmp_plan",
+        {
+            "schema_version": "tool-run/v1",
+            "tool_run_id": "toolrun_dex_existing",
+            "campaign_id": "cmp_plan",
+            "tool_name": "data_exposure_validator",
+            "status": "finished",
+            "command_id": "cmd_dex_existing",
+            "result_ready": True,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "data_exposure_validator"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_authenticated_data_exposure_candidate_ready_when_materialized_owner_exists() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={"token_field_path": "$.token"},
+    )
+    _store_raw_observation(
+        observation_id="obs_test_authmat",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "attacker_auth_profile_id": "",
+            "auth_profiles_created_count": 1,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and (c.command.inputs.get("auth_mode") if c.command else c.summary.get("auth_mode")) == "authenticated"
+    ]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].summary.get("auth_profile_id") == profile.auth_profile_id
+    assert rows[0].summary.get("role_hint") == "owner"
+
+
+def test_planner_authenticated_data_exposure_retry_created_after_unauth_401() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_401",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "auth_profiles_created_count": 1,
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_unauth_401_probe",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_probe_result.value,
+        details={
+            "source": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "method": "GET",
+            "status_code": 401,
+            "content_type": "application/json",
+            "result": "non_200_response",
+            "field_count": 0,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["non_200_response"],
+            "auth_mode": "unauthenticated",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and (c.command.inputs.get("auth_mode") if c.command else c.summary.get("auth_mode")) == "authenticated"
+    ]
+    assert len(auth_rows) == 1
+    assert auth_rows[0].summary.get("prior_unauth_status_code") == 401
+    assert "retry_after_unauth_401" in (auth_rows[0].summary.get("reason_codes") or [])
+
+
+def test_planner_authenticated_data_exposure_dedup_separate_from_unauthenticated() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_dedup_sep",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "auth_profiles_created_count": 1,
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_unauth_only_inventory",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.response_field_inventory.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "method": "GET",
+            "field_count": 1,
+            "sensitive_field_count": 0,
+            "auth_mode": "unauthenticated",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and (c.command.inputs.get("auth_mode") if c.command else c.summary.get("auth_mode")) == "authenticated"
+    ]
+    assert len(auth_rows) == 1
+    assert auth_rows[0].status.value == "ready"
+
+
+def test_planner_existing_authenticated_probe_skips_authenticated_candidate() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_existing_auth_probe",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "auth_profiles_created_count": 1,
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_authenticated_probe_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.data_exposure_probe_result.value,
+        details={
+            "source": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "method": "GET",
+            "status_code": 200,
+            "content_type": "application/json",
+            "result": "fields_extracted",
+            "field_count": 2,
+            "sensitive_field_count": 0,
+            "sensitive_categories": [],
+            "reason_codes": ["fields_extracted"],
+            "auth_mode": "authenticated",
+            "auth_profile_id": profile.auth_profile_id,
+            "role_hint": "owner",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and c.summary.get("auth_mode") == "authenticated"
+    ]
+    assert len(auth_rows) == 1
+    assert auth_rows[0].status.value == "skipped_existing"
+
+
+def test_planner_no_authenticated_data_exposure_candidate_without_auth_profile() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and c.summary.get("auth_mode") == "authenticated"
+    ]
+    assert auth_rows == []
+
+
+def test_planner_no_authenticated_data_exposure_candidate_when_owner_profile_missing_in_materialization() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    _store_raw_observation(
+        observation_id="obs_authmat_missing_owner",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and c.summary.get("auth_mode") == "authenticated"
+    ]
+    assert auth_rows == []
+
+
+def test_planner_latest_successful_materialization_used_for_authenticated_followup() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/me",
+                method="GET",
+                path_template="/api/v1/me",
+                path_params=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_success_old",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "auth_profiles_created_count": 2,
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_latest_but_failed",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "failed",
+            "auth_profiles_created_count": 0,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and (c.command.inputs.get("auth_mode") if c.command else c.summary.get("auth_mode")) == "authenticated"
+    ]
+    assert len(auth_rows) == 1
+    assert auth_rows[0].status.value == "ready"
+    assert auth_rows[0].summary.get("auth_profile_id") == profile.auth_profile_id
+
+
+def test_planner_authenticated_data_exposure_path_params_blocked_without_seed() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_GET_/api/v1/users/{id}",
+                method="GET",
+                path_template="/api/v1/users/{id}",
+                path_params=["id"],
+                successful_seed_request_ids=[],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_raw_observation(
+        observation_id="obs_authmat_for_path_block",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "owner_auth_profile_id": profile.auth_profile_id,
+            "auth_profiles_created_count": 2,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    auth_rows = [
+        c for c in resp.candidates
+        if c.kind.value == "data_exposure_validator"
+        and c.summary.get("auth_mode") == "authenticated"
+    ]
+    assert len(auth_rows) == 1
+    assert auth_rows[0].status.value == "blocked"
+    assert "path_params_without_seed" in (auth_rows[0].missing_inputs or [])
+    assert auth_rows[0].summary.get("auth_profile_id") == profile.auth_profile_id

@@ -158,22 +158,31 @@ _WORKERS: tuple[WorkerCapability, ...] = (
     ),
     WorkerCapability(
         worker_name="data_exposure_validator",
-        tool_name="data_exposure_test",
-        worker_class="contract_fuzzing",
-        scenario_types=["excessive_data_exposure"],
-        observation_types=["sensitive_field_seen"],
+        tool_name="data_exposure_validator",
+        worker_class="access_control",
+        scenario_types=["excessive_data_exposure", "mass_assignment"],
+        observation_types=[
+            "response_field_inventory",
+            "data_exposure_signal",
+            "data_exposure_probe_result",
+        ],
         owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
-        status="planned",
-        adapter_available=False,
-        execution_mode="async",
-        triage_support=False,
-        evidence_support=False,
-        judge_support=False,
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
         requires_openapi=True,
-        requires_auth=True,
-        requires_corpus=True,
-        risk_level="high",
-        notes="Planned response-shape / role-comparison exposure checks.",
+        requires_auth=False,
+        requires_corpus=False,
+        risk_level="medium",
+        notes=(
+            "Coverage-3A-1: bounded GET JSON field-name inventory; classifies sensitive names only, "
+            "never stores raw values, headers, cookies, or tokens. "
+            "data_exposure_probe_result is store-only diagnostic (per-run outcome: non_200, non_json, "
+            "empty body, parse failure, no fields, inventory, sensitive hit)."
+        ),
     ),
     WorkerCapability(
         worker_name="bfla_validator",
@@ -230,6 +239,68 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         notes=(
             "Phase API8-2: bounded cookie_flag_validator replay with sanitized Set-Cookie flag metadata only; "
             "no raw Set-Cookie/header/body/token values are stored."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="ssrf_candidate_detector",
+        tool_name="ssrf_candidate_detector",
+        worker_class="input_validation",
+        scenario_types=["ssrf_candidate_detection"],
+        observation_types=["ssrf_candidate_signal"],
+        owasp_categories=["API7_SERVER_SIDE_REQUEST_FORGERY"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=True,
+        judge_support=False,
+        requires_openapi=True,
+        risk_level="low",
+        notes=(
+            "Diagnostic-only SSRF candidate detector; inspects safe OpenAPI-derived field names only, "
+            "does not perform network SSRF probes, callbacks, or raw request/response storage."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="auth_flow_detector",
+        tool_name="auth_flow_detector",
+        worker_class="auth_context",
+        scenario_types=["auth_flow_detection"],
+        observation_types=["auth_flow_signal"],
+        owasp_categories=["API2_AUTH"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=True,
+        judge_support=False,
+        requires_openapi=True,
+        requires_auth=False,
+        requires_corpus=False,
+        risk_level="low",
+        notes=(
+            "Diagnostic-only: detects signup/login/token/profile candidates from OpenAPI graph metadata; "
+            "does not execute login/signup or store secrets."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="test_account_materializer",
+        tool_name="test_account_materializer",
+        worker_class="auth_context",
+        scenario_types=["auth_context_materialization"],
+        observation_types=["test_account_materialization_result"],
+        owasp_categories=["API2_AUTH"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=False,
+        judge_support=False,
+        requires_openapi=True,
+        risk_level="medium",
+        notes=(
+            "Context-producing only: creates bounded owner/attacker test accounts and stores only runtime "
+            "auth profile refs plus sanitized metadata; no raw passwords, tokens, cookies, headers, or bodies."
         ),
     ),
     WorkerCapability(

@@ -52,6 +52,10 @@ def _reset_store() -> None:
     memory_store.tool_results.clear()
     memory_store.artifacts.clear()
     memory_store.artifacts_by_run.clear()
+    memory_store.auth_profiles.clear()
+    memory_store.auth_profiles_by_campaign.clear()
+    memory_store.runtime_token_secrets.clear()
+    memory_store.runtime_credential_secrets.clear()
 
 
 def _create_campaign(
@@ -459,10 +463,34 @@ def test_registry_cookie_flag_validator_has_sync_adapter() -> None:
     assert reg.get_execution_mode("cookie_flag_validator") == "sync"
 
 
+def test_registry_ssrf_candidate_detector_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("ssrf_candidate_detector") is True
+    assert reg.get_execution_mode("ssrf_candidate_detector") == "sync"
+
+
 def test_registry_js_endpoint_extractor_has_sync_adapter() -> None:
     reg = ToolRegistry()
     assert reg.has_adapter("js_endpoint_extractor") is True
     assert reg.get_execution_mode("js_endpoint_extractor") == "sync"
+
+
+def test_registry_data_exposure_validator_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("data_exposure_validator") is True
+    assert reg.get_execution_mode("data_exposure_validator") == "sync"
+
+
+def test_registry_auth_flow_detector_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("auth_flow_detector") is True
+    assert reg.get_execution_mode("auth_flow_detector") == "sync"
+
+
+def test_registry_test_account_materializer_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("test_account_materializer") is True
+    assert reg.get_execution_mode("test_account_materializer") == "sync"
 
 
 def test_registry_undocumented_endpoint_validator_has_sync_adapter() -> None:
@@ -612,6 +640,48 @@ def test_tool_executor_dispatches_cookie_flag_validator() -> None:
     assert result.tool_name == "cookie_flag_validator"
 
 
+def test_tool_executor_dispatches_ssrf_candidate_detector() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="input_validation",
+        strategy="detect_ssrf_candidate_fields",
+        tool_name="ssrf_candidate_detector",
+        operation_id="op_POST_/api/v1/hooks",
+        inputs={
+            "target_url": "http://testapp.local",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "path_template": "/api/v1/hooks",
+            "method": "POST",
+            "validation_mode": "ssrf_candidate_detection",
+            "candidate_fields": [
+                {
+                    "field_name": "callback_url",
+                    "field_path": "$.callback_url",
+                    "schema_type": "string",
+                    "schema_format": "uri",
+                    "confidence": "high",
+                    "reason_codes": ["url_like_field_name", "schema_format_uri"],
+                }
+            ],
+        },
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_ssrf_test",
+        campaign_id="cmp_test1",
+        tool_name="ssrf_candidate_detector",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.ssrf_candidate_detector_adapter.SsrfCandidateDetectorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "ssrf_candidate_detector"
+
+
 def test_cookie_flag_validator_rejects_method_budget_and_scope() -> None:
     _reset_store()
     _create_campaign()
@@ -637,6 +707,34 @@ def test_cookie_flag_validator_rejects_method_budget_and_scope() -> None:
     assert "cookie_validation_mode_invalid" in codes
     assert "cookie_budget_max_requests" in codes
     assert "cookie_budget_timeout" in codes
+
+
+def test_ssrf_candidate_detector_rejects_invalid_mode_strategy_and_budget() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="input_validation",
+        strategy="custom_mode",
+        tool_name="ssrf_candidate_detector",
+        operation_id="op_POST_/api/v1/hooks",
+        inputs={
+            "target_url": "http://testapp.local",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "path_template": "/api/v1/hooks",
+            "method": "POST",
+            "validation_mode": "custom_mode",
+            "candidate_fields": [],
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "ssrf_candidate_strategy_invalid" in codes
+    assert "ssrf_candidate_validation_mode_invalid" in codes
+    assert "ssrf_candidate_budget_max_requests" in codes
+    assert "ssrf_candidate_budget_timeout" in codes
 
 
 def test_tool_executor_dispatches_undocumented_endpoint_validator() -> None:
@@ -672,6 +770,42 @@ def test_tool_executor_dispatches_undocumented_endpoint_validator() -> None:
     assert result.tool_name == "undocumented_endpoint_validator"
 
 
+def test_tool_executor_dispatches_data_exposure_validator() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        operation_id="op_GET_/api/x",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/x",
+            "operation_id": "op_GET_/api/x",
+            "path_template": "/api/x",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "max_response_bytes": 262144,
+            "max_depth": 6,
+            "max_fields": 200,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    fake = ToolResult(
+        tool_run_id="toolrun_dex",
+        campaign_id="cmp_test1",
+        tool_name="data_exposure_validator",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.data_exposure_validator_adapter.DataExposureValidatorAdapter.execute",
+        return_value=fake,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.tool_name == "data_exposure_validator"
+    assert result.status == "finished"
+
+
 def test_tool_executor_dispatches_js_endpoint_extractor() -> None:
     _reset_store()
     _create_campaign()
@@ -702,6 +836,121 @@ def test_tool_executor_dispatches_js_endpoint_extractor() -> None:
         result = ToolExecutor().execute_sync(cmd)
     assert result.status == "finished"
     assert result.tool_name == "js_endpoint_extractor"
+
+
+def test_tool_executor_dispatches_auth_flow_detector() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="detect_auth_flow",
+        tool_name="auth_flow_detector",
+        inputs={"validation_mode": "auth_flow_detection"},
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_auth_flow_test",
+        campaign_id="cmp_test1",
+        tool_name="auth_flow_detector",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.auth_flow_detector_adapter.AuthFlowDetectorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "auth_flow_detector"
+
+
+def test_tool_executor_dispatches_test_account_materializer() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="materialize_test_accounts",
+        tool_name="test_account_materializer",
+        operation_id="op_POST_/signup",
+        inputs={
+            "target_url": "http://testapp.local",
+            "signup_operation_id": "op_POST_/signup",
+            "login_operation_id": "op_POST_/login",
+            "validation_mode": "test_account_materialization",
+            "max_accounts": 2,
+        },
+        budget=CommandBudget(max_requests=6, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_auth_materialize_test",
+        campaign_id="cmp_test1",
+        tool_name="test_account_materializer",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.test_account_materializer_adapter.TestAccountMaterializerAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "test_account_materializer"
+
+
+def test_auth_flow_detector_rejects_unsupported_strategy_and_nonzero_budget() -> None:
+    _reset_store()
+    _create_campaign()
+    bad_strategy = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="validate_response_field_exposure",
+        tool_name="auth_flow_detector",
+        inputs={"validation_mode": "auth_flow_detection"},
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    v = CommandValidator().validate(bad_strategy)
+    assert not v.valid
+    assert any(e.code == "auth_flow_strategy_invalid" for e in v.errors)
+
+    bad_budget = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="detect_auth_flow",
+        tool_name="auth_flow_detector",
+        inputs={"validation_mode": "auth_flow_detection"},
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v2 = CommandValidator().validate(bad_budget)
+    assert not v2.valid
+    assert any(e.code == "auth_flow_budget_max_requests" for e in v2.errors)
+
+
+def test_test_account_materializer_rejects_unsafe_limits_and_wrong_strategy() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="detect_auth_flow",
+        tool_name="test_account_materializer",
+        operation_id="op_POST_/signup",
+        inputs={
+            "target_url": "http://testapp.local",
+            "signup_operation_id": "op_POST_/signup",
+            "login_operation_id": "op_POST_/login",
+            "validation_mode": "custom_mode",
+            "max_accounts": 3,
+        },
+        budget=CommandBudget(max_requests=7, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "test_account_materializer_strategy_invalid" in codes
+    assert "test_account_materializer_validation_mode_invalid" in codes
+    assert "test_account_materializer_max_accounts_invalid" in codes
+    assert "test_account_materializer_budget_max_requests" in codes
+    assert "test_account_materializer_budget_timeout" in codes
 
 
 def test_undocumented_endpoint_validator_rejects_method_budget_and_scope() -> None:
@@ -758,6 +1007,142 @@ def test_js_endpoint_extractor_rejects_budget_mode_limits_and_scope() -> None:
     assert "js_extractor_max_endpoints_invalid" in codes
     assert "js_extractor_budget_max_requests" in codes
     assert "js_extractor_budget_timeout" in codes
+
+
+def test_data_exposure_validator_rejects_non_get_and_limits() -> None:
+    _reset_store()
+    _create_campaign()
+    bad_method = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/x",
+            "operation_id": "op_x",
+            "path_template": "/api/x",
+            "method": "POST",
+            "validation_mode": "response_field_inventory_check",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v = CommandValidator().validate(bad_method)
+    assert not v.valid
+    assert any(e.code == "data_exposure_method_not_allowed" for e in v.errors)
+
+    bad_depth = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/x",
+            "operation_id": "op_x",
+            "path_template": "/api/x",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "max_depth": 9,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v2 = CommandValidator().validate(bad_depth)
+    assert not v2.valid
+    assert any(e.code == "data_exposure_max_depth_invalid" for e in v2.errors)
+
+    bad_scope = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://evil.local/api/x",
+            "operation_id": "op_x",
+            "path_template": "/api/x",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v3 = CommandValidator().validate(bad_scope)
+    assert not v3.valid
+    assert any(e.code == "host_not_allowed" for e in v3.errors)
+
+    bad_fields = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/x",
+            "operation_id": "op_x",
+            "path_template": "/api/x",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "max_fields": 500,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v4 = CommandValidator().validate(bad_fields)
+    assert not v4.valid
+    assert any(e.code == "data_exposure_max_fields_invalid" for e in v4.errors)
+
+
+def test_data_exposure_validator_accepts_authenticated_mode_with_auth_profile_id() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        operation_id="op_GET_/api/me",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/me",
+            "operation_id": "op_GET_/api/me",
+            "path_template": "/api/me",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_test_1",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert v.valid
+
+
+def test_data_exposure_validator_rejects_raw_secret_inputs() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        operation_id="op_GET_/api/me",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/me",
+            "operation_id": "op_GET_/api/me",
+            "path_template": "/api/me",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_test_1",
+            "authorization": "Bearer should-not-pass",
+            "token": "secret",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "data_exposure_forbidden_secret_input" in codes
 
 
 def test_js_endpoint_extractor_accepts_max_js_bytes_up_to_three_million() -> None:

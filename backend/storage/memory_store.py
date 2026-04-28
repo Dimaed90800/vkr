@@ -21,6 +21,10 @@ class MemoryStore:
         self.resources_by_campaign: dict[str, list[str]] = defaultdict(list)
 
         self.graphs_by_campaign: dict[str, dict] = {}
+        self.auth_profiles: dict[str, dict] = {}
+        self.auth_profiles_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.runtime_token_secrets: dict[str, object] = {}
+        self.runtime_credential_secrets: dict[str, object] = {}
 
         self.commands: dict[str, dict] = {}
         self.commands_by_campaign: dict[str, list[str]] = defaultdict(list)
@@ -107,6 +111,35 @@ class MemoryStore:
 
     def replace_graph_for_campaign(self, campaign_id: str, data: dict) -> None:
         self.graphs_by_campaign[campaign_id] = data
+
+    def store_auth_profile(self, auth_profile_id: str, campaign_id: str, data: dict) -> None:
+        self.auth_profiles[auth_profile_id] = data
+        if auth_profile_id not in self.auth_profiles_by_campaign[campaign_id]:
+            self.auth_profiles_by_campaign[campaign_id].append(auth_profile_id)
+
+    def get_auth_profile(self, auth_profile_id: str) -> dict | None:
+        return self.auth_profiles.get(auth_profile_id)
+
+    def list_auth_profiles_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.auth_profiles[aid]
+            for aid in self.auth_profiles_by_campaign.get(campaign_id, [])
+            if aid in self.auth_profiles
+        ]
+
+    def store_runtime_token_secret(self, token_ref: str, value: object) -> None:
+        if token_ref:
+            self.runtime_token_secrets[token_ref] = value
+
+    def get_runtime_token_secret(self, token_ref: str) -> object | None:
+        return self.runtime_token_secrets.get(token_ref)
+
+    def store_runtime_credential_secret(self, credential_ref: str, value: object) -> None:
+        if credential_ref:
+            self.runtime_credential_secrets[credential_ref] = value
+
+    def get_runtime_credential_secret(self, credential_ref: str) -> object | None:
+        return self.runtime_credential_secrets.get(credential_ref)
 
     def store_command(self, command_id: str, campaign_id: str, data: dict) -> None:
         self.commands[command_id] = data

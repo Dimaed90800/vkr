@@ -24,11 +24,15 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "security_header_validator": "security_header_validator",
     "cors_validator": "cors_validator",
     "cookie_flag_validator": "cookie_flag_validator",
+    "ssrf_candidate_detector": "ssrf_candidate_detector",
     "js_endpoint_extractor": "js_endpoint_extractor",
     "undocumented_endpoint_validator": "undocumented_endpoint_validator",
     "schemathesis_negative_test": "schemathesis_negative",
     "injection_test": "injection_test",
     "property_mutation_test": "property_mutation_test",
+    "data_exposure_validator": "data_exposure_validator",
+    "auth_flow_detector": "auth_flow_detector",
+    "test_account_materializer": "test_account_materializer",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
@@ -40,11 +44,15 @@ SYNC_ONLY_TOOLS: set[str] = {
     "security_header_validator",
     "cors_validator",
     "cookie_flag_validator",
+    "ssrf_candidate_detector",
     "js_endpoint_extractor",
     "undocumented_endpoint_validator",
     "auth_test_access",
     "replay_http_sequence",
     "property_mutation_test",
+    "data_exposure_validator",
+    "auth_flow_detector",
+    "test_account_materializer",
     "schemathesis_negative_test",
     "injection_test",
 }

@@ -787,6 +787,72 @@ def test_build_undocumented_endpoint_signal_missing_status_not_judge_ready():
     assert pack.judge_ready is False
 
 
+def test_build_ssrf_candidate_signal_maps_to_api7_and_stays_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="ssrf_candidate_detector")
+    obs = _make_obs(
+        ObservationType.ssrf_candidate_signal.value,
+        operation_id="op_POST_/api/v1/hooks",
+        details={
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "schema_type": "string",
+            "schema_format": "uri",
+            "confidence": "high",
+            "reason_codes": ["url_like_field_name", "schema_format_uri"],
+            "validation_mode": "ssrf_candidate_detection",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_ssrf_candidate_safely",
+        required_evidence=["openapi_schema_url_like_field", "operation_context"],
+        plan_id="vplan_ssrf_diag",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_ssrf_diag")
+    assert pack is not None
+    assert pack.owasp_category == "API7_SERVER_SIDE_REQUEST_FORGERY"
+    assert pack.vulnerability_class == "ssrf_candidate"
+    assert pack.status == "not_judge_ready"
+    assert pack.judge_ready is False
+    assert "ssrf_candidate_signal" in pack.derived_signals
+    blob = json.dumps(pack.model_dump(mode="json")).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_build_auth_flow_signal_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="auth_flow_detector")
+    obs = _make_obs(
+        ObservationType.auth_flow_signal.value,
+        observation_id="obs_auth_flow_evp",
+        details={
+            "source": "auth_flow_detector",
+            "validation_mode": "auth_flow_detection",
+            "auth_flow_detected": True,
+            "signup_candidates": [],
+            "login_candidates": [],
+            "token_response_candidates": [],
+            "profile_candidates": [{"operation_id": "op_GET_/me", "method": "GET", "path": "/me", "confidence": "low", "reason_codes": ["path_profile_me_user_account"]}],
+            "missing_prerequisites": [],
+            "reason_codes": [],
+        },
+    )
+    pack, error, _existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert pack is not None
+    assert pack.owasp_category == "API2_AUTH"
+    assert pack.vulnerability_class == "auth_flow_diagnostic"
+    assert pack.status == "not_judge_ready"
+    assert pack.judge_ready is False
+
+
 def test_schema_mismatch_schemathesis_strong_signals_ready_for_judge():
     _reset_store()
     _create_campaign()
@@ -2362,6 +2428,89 @@ def test_build_mass_assignment_signal_pack_with_diagnostic_context_ready_for_jud
         assert bad not in blob
     assert re.search(r"[\"']authorization[\"']\\s*:", blob) is None
     assert re.search(r"[\"']cookie[\"']\\s*:", blob) is None
+
+
+def test_build_data_exposure_signal_pack_api3_sensitive_property_exposure_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="data_exposure_validator")
+    _store_api_graph_with_op(
+        operation_id="op_GET_/api/profile",
+        method="GET",
+        path_template="/api/profile",
+        owasp_candidates=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
+    )
+    obs = _make_obs(
+        ObservationType.data_exposure_signal.value,
+        observation_id="obs_dex_evp_1",
+        operation_id="op_GET_/api/profile",
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/profile",
+            "path": "/api/profile",
+            "method": "GET",
+            "status_code": 200,
+            "sensitive_field_count": 1,
+            "sensitive_categories": ["identity"],
+            "sensitive_fields": [{"field_name": "email", "field_path": "$.email", "category": "identity"}],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_sensitive_property_exposure",
+        required_evidence=[
+            "response_field_inventory",
+            "sensitive_field_names",
+            "operation_context",
+        ],
+        plan_id="vplan_dex_evp",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_dex_evp")
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.owasp_category == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+    assert pack.vulnerability_class == "sensitive_property_exposure"
+    assert pack.judge_ready is True
+    assert pack.status == "ready_for_judge"
+    blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("request_body", "response_body", "raw_body", "set-cookie", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_build_data_exposure_signal_wrong_tool_not_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="data_exposure_validator")
+    obs = _make_obs(
+        ObservationType.data_exposure_signal.value,
+        observation_id="obs_dex_evp_badtool",
+        operation_id="op_GET_/api/profile",
+        details={
+            "tool_name": "other_tool",
+            "operation_id": "op_GET_/api/profile",
+            "path": "/api/profile",
+            "method": "GET",
+            "status_code": 200,
+            "sensitive_field_count": 1,
+            "sensitive_categories": ["identity"],
+            "sensitive_fields": [{"field_name": "email", "field_path": "$.email", "category": "identity"}],
+        },
+    )
+    _make_plan(
+        obs,
+        goal="prove_sensitive_property_exposure",
+        required_evidence=["operation_context"],
+        plan_id="vplan_dex_bad",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_dex_bad")
+    assert error is None
+    assert pack is not None
+    assert pack.judge_ready is False
 
 
 def test_build_mass_assignment_signal_pack_missing_seed_not_judge_ready():

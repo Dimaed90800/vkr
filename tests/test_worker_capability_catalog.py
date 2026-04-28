@@ -87,6 +87,48 @@ def test_mass_assignment_worker_now_partial_diagnostic_adapter() -> None:
     assert "runtime_effect_proven:true" in w.notes
 
 
+def test_auth_flow_detector_capability_partial_diagnostic() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("auth_flow_detector")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "auth_context"
+    assert "auth_flow_signal" in w.observation_types
+    assert w.judge_support is False
+    assert "does not execute login" in w.notes.lower()
+
+
+def test_test_account_materializer_capability_partial_context_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("test_account_materializer")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "auth_context"
+    assert "test_account_materialization_result" in w.observation_types
+    assert w.evidence_support is False
+    assert w.judge_support is False
+    assert "runtime auth profile refs" in w.notes.lower()
+
+
+def test_data_exposure_validator_capability_partial_sync_finding_capable() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("data_exposure_validator")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "access_control"
+    assert "response_field_inventory" in w.observation_types
+    assert "data_exposure_signal" in w.observation_types
+    assert "data_exposure_probe_result" in w.observation_types
+    assert "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION" in w.owasp_categories
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
+    assert "never stores raw values" in w.notes.lower()
+
+
 def test_cors_validator_capability_is_partial_and_finding_capable() -> None:
     w = WorkerCapabilityCatalog().get_by_tool_name("cors_validator")
     assert w is not None
@@ -109,6 +151,21 @@ def test_cookie_flag_validator_capability_is_partial_and_finding_capable() -> No
     assert w.triage_support is True
     assert w.evidence_support is True
     assert w.judge_support is True
+
+
+def test_ssrf_candidate_detector_capability_is_partial_and_diagnostic_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("ssrf_candidate_detector")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "input_validation"
+    assert "ssrf_candidate_signal" in w.observation_types
+    assert "API7_SERVER_SIDE_REQUEST_FORGERY" in w.owasp_categories
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is False
+    assert "does not perform network ssrf probes" in w.notes.lower()
 
 
 def test_js_endpoint_extractor_capability_is_partial_surface_only() -> None:

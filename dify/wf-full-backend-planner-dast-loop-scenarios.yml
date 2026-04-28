@@ -898,6 +898,7 @@ workflow:
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
               "max_candidates": 50,
+              "enable_llm_candidate_advisor": False,
               "enable_cors_baseline": True,
               "enable_cookie_baseline": True,
               "zap": {
@@ -918,8 +919,8 @@ workflow:
           }
           DEFAULT_PROFILE = "safe"
           PROFILE_MAX_ITERATIONS = {
-              "safe": 25,
-              "balanced": 35,
+              "safe": 30,
+              "balanced": 45,
               "aggressive": 50,
           }
 
@@ -1418,7 +1419,11 @@ workflow:
                       "cors_validator": 2,
                       "cookie_flag_validator": 2,
                       "js_endpoint_extractor": 1,
+                      "auth_flow_detector": 1,
+                      "test_account_materializer": 1,
+                      "ssrf_candidate_detector": 2,
                       "undocumented_endpoint_validator": 2,
+                      "data_exposure_validator": 3,
                       "zap_discovery_passive": 1,
                       "bola_replay_probe": 2,
                   },
@@ -1597,6 +1602,7 @@ workflow:
           DEFAULT_PLANNER_REQUEST = {
               "include_blocked": True,
               "max_candidates": 50,
+              "enable_llm_candidate_advisor": False,
               "enable_cors_baseline": True,
               "enable_cookie_baseline": True,
               "zap": {"enabled": True, "target_url": "", "zap_base_url": "http://zap:8080", "seed_urls": [], "use_spider": True, "use_ajax_spider": False, "max_duration_sec": 30, "max_discovered_urls": 100, "max_alerts": 100},
@@ -2090,10 +2096,14 @@ workflow:
               MAX_READY_CANDIDATE_SAMPLE = 10
               KIND_PRIORITY = [
                   "schemathesis_negative_test",
-                  "injection_test",
                   "zap_discovery_passive",
                   "js_endpoint_extractor",
+                  "auth_flow_detector",
+                  "test_account_materializer",
+                  "ssrf_candidate_detector",
+                  "data_exposure_validator",
                   "undocumented_endpoint_validator",
+                  "injection_test",
                   "security_header_validator",
                   "cors_validator",
                   "cookie_flag_validator",
@@ -2136,9 +2146,64 @@ workflow:
                       'js_url_sanitized': str(summary.get('js_url_sanitized') or ''),
                       'source_observation_id': str(summary.get('source_observation_id') or ''),
                       'validation_mode': str(summary.get('validation_mode') or ''),
+                      'ssrf_candidate_source': str(summary.get('ssrf_candidate_source') or ''),
+                      'candidate_field_count': int(summary.get('candidate_field_count') or 0),
+                      'candidate_fields_sample': (
+                          summary.get('candidate_fields_sample')
+                          if isinstance(summary.get('candidate_fields_sample'), list) else []
+                      ),
+                      'confidence': str(summary.get('confidence') or ''),
+                      'field_name': str(summary.get('field_name') or ''),
+                      'field_path': str(summary.get('field_path') or ''),
+                      'schema_format': str(summary.get('schema_format') or ''),
                       'max_endpoints': int(summary.get('max_endpoints') or 0),
                       'openapi_match': bool(summary.get('openapi_match')),
                       'is_static_asset': bool(summary.get('is_static_asset')),
+                      'data_exposure_candidate_source': str(summary.get('data_exposure_candidate_source') or ''),
+                      'auth_mode': str(summary.get('auth_mode') or ''),
+                      'auth_profile_id': str(summary.get('auth_profile_id') or ''),
+                      'role_hint': str(summary.get('role_hint') or ''),
+                      'prior_unauth_status_code': int(summary.get('prior_unauth_status_code') or 0),
+                      'prior_unauth_result': str(summary.get('prior_unauth_result') or ''),
+                      'operations_with_authenticated_inventory': (
+                          [str(x) for x in summary.get('operations_with_authenticated_inventory')[:20]]
+                          if isinstance(summary.get('operations_with_authenticated_inventory'), list)
+                          else int(summary.get('operations_with_authenticated_inventory') or 0)
+                      ),
+                      'path_template': str(summary.get('path_template') or ''),
+                      'field_count': int(summary.get('field_count') or 0),
+                      'sensitive_field_count': int(summary.get('sensitive_field_count') or 0),
+                      'sensitive_categories': (
+                          summary.get('sensitive_categories')
+                          if isinstance(summary.get('sensitive_categories'), list) else []
+                      ),
+                      'llm_candidate_advisor_used': bool(summary.get('llm_candidate_advisor_used')),
+                      'llm_candidate_priority': int(summary.get('llm_candidate_priority') or 0),
+                      'llm_candidate_reason': str(summary.get('llm_candidate_reason') or ''),
+                      'llm_requires_seed': bool(summary.get('llm_requires_seed')),
+                      'llm_requires_auth': bool(summary.get('llm_requires_auth')),
+                      'auth_flow_detected': bool(summary.get('auth_flow_detected')),
+                      'signup_candidate_count': int(summary.get('signup_candidate_count') or 0),
+                      'login_candidate_count': int(summary.get('login_candidate_count') or 0),
+                      'token_response_candidate_count': int(summary.get('token_response_candidate_count') or 0),
+                      'profile_candidate_count': int(summary.get('profile_candidate_count') or 0),
+                      'auth_candidate_source': str(summary.get('auth_candidate_source') or summary.get('data_source') or ''),
+                      'test_account_materialization_status': str(summary.get('test_account_materialization_status') or ''),
+                      'auth_profiles_created_count': int(summary.get('auth_profiles_created_count') or 0),
+                      'signup_success_count': int(summary.get('signup_success_count') or 0),
+                      'login_success_count': int(summary.get('login_success_count') or 0),
+                      'owner_auth_profile_id': str(summary.get('owner_auth_profile_id') or ''),
+                      'attacker_auth_profile_id': str(summary.get('attacker_auth_profile_id') or ''),
+                      'auth_type': str(summary.get('auth_type') or ''),
+                      'token_response_detected': bool(summary.get('token_response_detected')),
+                      'materialization_errors': (
+                          summary.get('materialization_errors')
+                          if isinstance(summary.get('materialization_errors'), list) else []
+                      ),
+                      'auth_profiles': (
+                          summary.get('auth_profiles')
+                          if isinstance(summary.get('auth_profiles'), list) else []
+                      ),
                   }
 
               def _safe_ready(candidate_obj: dict) -> dict:
@@ -2160,6 +2225,16 @@ workflow:
                       'js_url_sanitized': str(summary.get('js_url_sanitized') or ''),
                       'source_observation_id': str(summary.get('source_observation_id') or ''),
                       'validation_mode': str(summary.get('validation_mode') or ''),
+                      'ssrf_candidate_source': str(summary.get('ssrf_candidate_source') or ''),
+                      'candidate_field_count': int(summary.get('candidate_field_count') or 0),
+                      'candidate_fields_sample': (
+                          summary.get('candidate_fields_sample')
+                          if isinstance(summary.get('candidate_fields_sample'), list) else []
+                      ),
+                      'confidence': str(summary.get('confidence') or ''),
+                      'field_name': str(summary.get('field_name') or ''),
+                      'field_path': str(summary.get('field_path') or ''),
+                      'schema_format': str(summary.get('schema_format') or ''),
                       'max_endpoints': int(summary.get('max_endpoints') or 0),
                       'openapi_match': bool(summary.get('openapi_match')),
                       'is_static_asset': bool(summary.get('is_static_asset')),
@@ -2168,6 +2243,51 @@ workflow:
                       'fields_selected_count': int(summary.get('fields_selected_count') or 0),
                       'seed_request_id_present': bool(summary.get('seed_request_id_present')),
                       'mass_assignment_candidate_result': str(summary.get('mass_assignment_candidate_result') or ''),
+                      'data_exposure_candidate_source': str(summary.get('data_exposure_candidate_source') or ''),
+                      'auth_mode': str(summary.get('auth_mode') or ''),
+                      'auth_profile_id': str(summary.get('auth_profile_id') or ''),
+                      'role_hint': str(summary.get('role_hint') or ''),
+                      'prior_unauth_status_code': int(summary.get('prior_unauth_status_code') or 0),
+                      'prior_unauth_result': str(summary.get('prior_unauth_result') or ''),
+                      'operations_with_authenticated_inventory': (
+                          [str(x) for x in summary.get('operations_with_authenticated_inventory')[:20]]
+                          if isinstance(summary.get('operations_with_authenticated_inventory'), list)
+                          else int(summary.get('operations_with_authenticated_inventory') or 0)
+                      ),
+                      'path_template': str(summary.get('path_template') or ''),
+                      'field_count': int(summary.get('field_count') or 0),
+                      'sensitive_field_count': int(summary.get('sensitive_field_count') or 0),
+                      'sensitive_categories': (
+                          summary.get('sensitive_categories')
+                          if isinstance(summary.get('sensitive_categories'), list) else []
+                      ),
+                      'llm_candidate_advisor_used': bool(summary.get('llm_candidate_advisor_used')),
+                      'llm_candidate_priority': int(summary.get('llm_candidate_priority') or 0),
+                      'llm_candidate_reason': str(summary.get('llm_candidate_reason') or ''),
+                      'llm_requires_seed': bool(summary.get('llm_requires_seed')),
+                      'llm_requires_auth': bool(summary.get('llm_requires_auth')),
+                      'auth_flow_detected': bool(summary.get('auth_flow_detected')),
+                      'signup_candidate_count': int(summary.get('signup_candidate_count') or 0),
+                      'login_candidate_count': int(summary.get('login_candidate_count') or 0),
+                      'token_response_candidate_count': int(summary.get('token_response_candidate_count') or 0),
+                      'profile_candidate_count': int(summary.get('profile_candidate_count') or 0),
+                      'auth_candidate_source': str(summary.get('auth_candidate_source') or summary.get('data_source') or ''),
+                      'test_account_materialization_status': str(summary.get('test_account_materialization_status') or ''),
+                      'auth_profiles_created_count': int(summary.get('auth_profiles_created_count') or 0),
+                      'signup_success_count': int(summary.get('signup_success_count') or 0),
+                      'login_success_count': int(summary.get('login_success_count') or 0),
+                      'owner_auth_profile_id': str(summary.get('owner_auth_profile_id') or ''),
+                      'attacker_auth_profile_id': str(summary.get('attacker_auth_profile_id') or ''),
+                      'auth_type': str(summary.get('auth_type') or ''),
+                      'token_response_detected': bool(summary.get('token_response_detected')),
+                      'materialization_errors': (
+                          summary.get('materialization_errors')
+                          if isinstance(summary.get('materialization_errors'), list) else []
+                      ),
+                      'auth_profiles': (
+                          summary.get('auth_profiles')
+                          if isinstance(summary.get('auth_profiles'), list) else []
+                      ),
                   }
 
               for candidate in candidates:
@@ -2253,8 +2373,15 @@ workflow:
                       str(row.get('cookie_candidate_source') or ''),
                       str(row.get('undocumented_candidate_source') or ''),
                       str(row.get('js_candidate_source') or ''),
+                      str(row.get('ssrf_candidate_source') or ''),
                       str(row.get('js_url_sanitized') or ''),
                       str(row.get('validation_mode') or ''),
+                      str(row.get('candidate_field_count') or ''),
+                      json.dumps(row.get('candidate_fields_sample') or [], ensure_ascii=False, sort_keys=True),
+                      str(row.get('confidence') or ''),
+                      str(row.get('field_name') or ''),
+                      str(row.get('field_path') or ''),
+                      str(row.get('schema_format') or ''),
                       str(row.get('openapi_match')),
                       str(row.get('is_static_asset')),
                       str(row.get('mass_assignment_candidate_result') or ''),
@@ -5153,14 +5280,48 @@ workflow:
             - mass_assignment_signal_count
             - runtime_effect_proven_count
             - confirmed_findings_count
+            - response_field_inventory_count
+            - data_exposure_signal_count
+            - sensitive_property_exposure_findings_count
+            - sensitive_field_categories
+            - sensitive_fields_sample
+            - data_exposure_results
+            - data_exposure_probe_result_count
+            - data_exposure_non_200_count
+            - data_exposure_non_json_count
+            - data_exposure_no_fields_count
+            - data_exposure_fields_extracted_count
+            - data_exposure_probe_results
+            - authenticated_response_field_inventory_count
+            - authenticated_data_exposure_signal_count
+            - authenticated_data_exposure_probe_result_count
+            - authenticated_data_exposure_results
+            - auth_profiles_used_count
+            - operations_with_authenticated_inventory
+            - data_exposure_authenticated_non_200_count
+            - data_exposure_authenticated_fields_extracted_count
+            Worker data_exposure_validator не хранит raw values, raw body, raw HTTP headers, cookies, tokens.
+            auth_profile_id — безопасная ссылка на auth profile; token_ref не выводи, кроме явно санитизированного безопасного поля из входного JSON; не выводи raw token, password, cookie, Authorization, raw request body, raw response body.
+            response_field_inventory — диагностический inventory имён полей ответа, это не уязвимость до подтверждения Judge; data_exposure_signal — сигнал, не confirmed vulnerability.
+            data_exposure_probe_result не является уязвимостью; response_field_inventory не является уязвимостью; data_exposure_signal — сигнал, но не confirmed vulnerability; подтверждённые уязвимости только в confirmed_findings; не выводи raw values, raw body, raw headers, cookies, tokens.
             И добавь пояснение, что finding не создаётся без runtime_effect_proven:true.
+            Если data_exposure_signal_count > 0 и при этом confirmed_findings_count = 0, обязательно укажи формулировку близкую по смыслу: «обнаружены сигналы потенциального раскрытия чувствительных свойств, но подтверждённые уязвимости не созданы без вердикта Judge».
+            Обязательная подсекция в разделе API3 (секция 7): «Диагностика data_exposure_validator». Выведи счётчики data_exposure_probe_result_count, data_exposure_non_200_count, data_exposure_non_json_count, data_exposure_no_fields_count, data_exposure_fields_extracted_count и для каждого элемента data_exposure_probe_results только безопасные поля: operation_id, method, path, status_code, content_type, result, field_count, sensitive_field_count, sensitive_categories, reason_codes.
+            Если data_exposure_probe_result_count > 0 и response_field_inventory_count == 0, обязательно укажи формулировку близкую по смыслу: «data_exposure_validator был выполнен, но не создал response_field_inventory. Причина указана в data_exposure_probe_results. Эти диагностические результаты не являются подтверждёнными уязвимостями.»
+            Если data_exposure_non_200_count > 0, обязательно укажи формулировку близкую по смыслу: «Часть проверок не дала inventory из-за non-200 ответов; endpoint-ы могут требовать авторизацию, seed context, параметры или предварительное состояние.»
+            Если во входном JSON auth_profiles_created_count >= 2 (в т.ч. auth_flow_diagnostics) и authenticated_response_field_inventory_count > 0, обязательно укажи формулировку близкую по смыслу: «последующие проверки API3 с аутентификацией успешно извлекли response field inventory».
+            Если authenticated_data_exposure_probe_result_count > 0 и authenticated_response_field_inventory_count == 0, укажи, что authenticated follow-up выполнялся, но inventory полей не извлечён; объясни причину только по безопасным полям authenticated_data_exposure_results / authenticated probe results.
+            Если неаутентифицированные data_exposure_probe_results содержали 401/403 (или data_exposure_non_200_count > 0 по неаутентифицированным проверкам) и при этом data_exposure_authenticated_fields_extracted_count > 0 или authenticated_response_field_inventory_count > 0, обязательно укажи формулировку близкую по смыслу: «аутентификация разблокировала получение API3 field inventory».
             Для API3 (owasp_coverage.API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION): если во входном JSON присутствуют диагностические счётчики (например candidates_considered, blocked_no_sensitive_fields_count, blocked_missing_seed_context_count, mass_assignment_signal_count, runtime_effect_proven_count) и для них заданы числовые значения или 0, не описывай весь раздел API3 одной фразой «не доступно» из‑за отсутствия подтверждённых уязвимостей — выведи фактические числа; при confirmed_findings_count = 0 и наличии таких счётчиков используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет» (близкий по смыслу эквивалент допускается).
             Если перечисленные поля API3 действительно отсутствуют во входном JSON, для отсутствующих полей используй «не доступно».
             Раздел "Покрытие OWASP API Top 10" всегда должен содержать:
+            - API7_SERVER_SIDE_REQUEST_FORGERY
             - API8_SECURITY_MISCONFIGURATION
             - API9_IMPROPER_INVENTORY_MANAGEMENT
             - API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION
             Даже если confirmed_findings_count = 0.
+            Если во входном JSON присутствует объект owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY, запрещено описывать покрытие API7 одной фразой «не доступно» целиком или утверждать, что API7 отсутствует, только из‑за confirmed_findings_count = 0: обязательно выведи status из этого объекта (например diagnostic, checked, pending) и confirmed_findings_count.
+            В разделе «Покрытие OWASP API Top 10» для API7 при наличии объекта API7 во входном JSON обязательно выведи status и confirmed_findings_count; если ssrf_candidate_signal_count > 0, добавь формулировку: «диагностические SSRF-кандидаты обнаружены, подтверждённых SSRF-уязвимостей нет».
             В разделе "Сводка выполнения worker-ов" выводи все worker kinds из worker_execution_summary/executed_by_kind, включая worker-ов с 0 findings.
             Для каждого worker укажи:
             - executed
@@ -5174,6 +5335,33 @@ workflow:
             - это не уязвимость и не прямой источник finding
             - не называй вывод js_endpoint_extractor подтверждённой уязвимостью, finding или vulnerability
             - он только расширяет список discovered endpoints для последующей проверки и даёт диагностические счётчики по JS
+            ssrf_candidate_detector и ssrf_candidate_signal трактуй строго как диагностический API7 coverage:
+            - ssrf_candidate_signal не является confirmed vulnerability
+            - это не подтверждённая SSRF-уязвимость и не прямой источник finding
+            - не утверждай SSRF exploitability без callback/runtime proof
+            - не выводи raw values, request/response bodies, raw HTTP headers, cookies, tokens для SSRF-кандидатов
+            - выводи status, ssrf_candidate_signal_count, ssrf_candidate_operations_count, ssrf_candidate_fields_count, confirmed_findings_count и ssrf_candidates, если они присутствуют во входном JSON
+            - не называй ssrf_candidate_signal подтверждённой уязвимостью; только элементы confirmed_findings являются подтверждёнными уязвимостями
+            Если ssrf_candidate_signal_count > 0 и confirmed_findings_count = 0, обязательно укажи формулировку близкую по смыслу: «Обнаружены входные поля, потенциально релевантные SSRF. Эти сигналы не являются подтверждёнными уязвимостями, так как в текущей фазе не выполнялась runtime/callback verification.»
+            Для API7 (owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY), если объект присутствует во входном JSON, в секции «Детали API7 Server-Side Request Forgery» всегда выведи:
+            - status
+            - confirmed_findings_count
+            - ssrf_candidate_signal_count
+            - ssrf_candidate_operations_count
+            - ssrf_candidate_fields_count
+            - ssrf_candidates
+            Для каждого элемента ssrf_candidates выводи только безопасные поля: operation_id, method, path, field_name, field_path, schema_type, schema_format, confidence, reason_codes.
+            Если объект API7 отсутствует во входном JSON, для API7 допустимо «не доступно»; если объект есть, «не доступно» только для конкретных отсутствующих подполей, но не как замена status или всего раздела API7.
+            Auth Flow Diagnostics: если во входном JSON присутствует объект auth_flow_diagnostics (корень ReportContext), всегда выведи в отчёте раздел с заголовком «Auth Flow Diagnostics» и значениями: auth_flow_detected, signup_candidate_count, login_candidate_count, token_response_candidate_count, profile_candidate_count; при наличии — auth_flow_candidates_sample или auth_flow_candidates и missing_prerequisites / auth_limitations.
+            В том же разделе при наличии во входном JSON (корень ReportContext или вложенные безопасные поля auth) выведи метаданные материализации: test_account_materialization_status, auth_profiles_created_count, signup_success_count, login_success_count, owner_auth_profile_id, attacker_auth_profile_id, auth_type, token_response_detected, materialization_errors, auth_profiles — только безопасные структурированные поля, без raw request/response body.
+            test_account_materializer может выполнять signup/login только как ограниченный backend worker; не выводи raw token, password, cookie, Authorization, raw request body, raw response body.
+            auth_profile_id — безопасная ссылка; token_ref не выводи, если он не входит в явно санитизированный безопасный профиль; предпочитай auth_profile_id.
+            test_account_materialization_result — диагностический контекст, не confirmed vulnerability.
+            Если auth_profiles_created_count >= 2, обязательно укажи формулировку близкую по смыслу: «можно планировать следующие проверки с аутентификацией (authenticated follow-up checks)».
+            auth_flow_signal — диагностический сигнал, не confirmed vulnerability; auth_flow_detector не создаёт пользователей и не выполняет login/signup (нет HTTP-вызовов аутентификации в этом шаге).
+            token_response_candidate_count — безопасный числовой счётчик кандидатов схемы ответа, не значение токена и не секрет.
+            Не выводи raw tokens, passwords, cookies, Authorization headers, Set-Cookie.
+            Если auth_flow_detected=true и при этом в диагностике API3 / data_exposure (например data_exposure_non_200_count > 0 или элементы data_exposure_probe_results с 401/non_200) видно, что проверки упираются в отсутствие аутентификации, обязательно укажи формулировку близкую по смыслу: «следующий требуемый шаг — материализация тестовых учётных записей и настройка auth profiles для воспроизводимых проверок».
             В разделе "Ожидающие проверки" выводи для каждого item:
             - verification_plan_id или observation_id
             - status
@@ -5218,6 +5406,8 @@ workflow:
             Если js_extraction_results отсутствует или пустой, в подразделе кратко укажи, что записей нет (или «не доступно» только если массив отсутствует вообще).
             Интерпретация: если js_route_fragments_matched_count > 0 и при этом undocumented_endpoint_signal_count == 0, добавь пояснение на русском:
             "JS-бандл содержит относительные маршруты; часть маршрутов сопоставлена с OpenAPI graph, поэтому они не считаются undocumented endpoints. Новых undocumented endpoint signals по JS extraction не выявлено."
+            Если во входном JSON (runtime_state_snapshot, ready_candidates_sample, blocked_candidates_sample или аналогичные поля) llm_candidate_advisor_used отсутствует или false, не утверждай, что использовался LLM candidate advisor.
+            Если llm_candidate_advisor_used=true, описывай это только как вспомогательное ранжирование кандидатов по безопасному OpenAPI summary, не как подтверждение уязвимости и не как замену вердикта Judge.
             Markdown only.
         - id: user
           role: user
@@ -5228,7 +5418,15 @@ workflow:
             # Отчёт по безопасности REST API
             ## 1. Область проверки
             ## 2. Краткое резюме
+            ## 2a. Auth Flow Diagnostics
+            Если во входном JSON есть auth_flow_diagnostics, всегда заполни секцию ## 2a сразу после ## 2: выведи auth_flow_detected, signup_candidate_count, login_candidate_count, token_response_candidate_count, profile_candidate_count; при наличии в JSON — auth_flow_candidates_sample или auth_flow_candidates и missing_prerequisites (или auth_limitations).
+            При наличии в JSON выведи также: test_account_materialization_status, auth_profiles_created_count, signup_success_count, login_success_count, owner_auth_profile_id, attacker_auth_profile_id, auth_type, token_response_detected, materialization_errors, auth_profiles (только безопасные поля, без секретов).
+            test_account_materializer — signup/login только через backend bounded worker; test_account_materialization_result — диагностика, не уязвимость; не выводи raw token, password, cookie, Authorization, raw request/response body; предпочитай auth_profile_id, не печатай token_ref без явного безопасного санитизированного профиля.
+            Если auth_profiles_created_count >= 2, укажи, что можно планировать authenticated follow-up checks.
+            auth_flow_signal — диагностика, не уязвимость; auth_flow_detector не выполняет login/signup; token_response_candidate_count — безопасный счётчик, не значение токена; не выводи raw tokens, passwords, cookies, Authorization, Set-Cookie.
+            Если auth_flow_diagnostics отсутствует во входном JSON, секцию ## 2a пропусти (не выдумывай данные).
             ## 3. Покрытие OWASP API Top 10
+            В секции 3 для API7 (owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY): если объект API7 присутствует во входном JSON, запрещено писать, что API7 целиком «не доступно»; выведи status и confirmed_findings_count из JSON; при ssrf_candidate_signal_count > 0 добавь «диагностические SSRF-кандидаты обнаружены, подтверждённых SSRF-уязвимостей нет».
             ## 4. Подтверждённые уязвимости
             Для каждой уязвимости в секции 4 используй:
             ### 4.N <Название>
@@ -5240,14 +5438,30 @@ workflow:
             ## 5. Детали API8 Security Misconfiguration
             ## 6. Детали API9 Improper Inventory Management
             В секции 6 обязательно: счётчики schema_mismatch_count, undocumented_endpoint_signal_count, undocumented_endpoint_findings_count, js_endpoint_extraction_count, js_route_fragments_count, js_route_fragments_matched_count, js_endpoints_emitted_count (если есть в JSON); подраздел «Извлечение поверхности из JavaScript» с элементами js_extraction_results (безопасные поля по system prompt); не называй js_endpoint_extractor источником уязвимостей или findings.
-            ## 7. Диагностика API3 BOPLA / Mass Assignment
-            В секции 7 при наличии диагностических счётчиков API3 не своди статус к «не доступно»; при отсутствии подтверждённых уязвимостей используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет».
-            ## 8. Ожидающие проверки
-            ## 9. Заблокированные и пропущенные проверки
-            ## 10. Сводка выполнения worker-ов
-            ## 11. Ошибки инструментов
-            ## 12. Ограничения
-            ## 13. Общие рекомендации
+            ## 7. Детали API7 Server-Side Request Forgery
+            В секции 7: если объект owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY есть во входном JSON, обязательно выведи status, confirmed_findings_count, ssrf_candidate_signal_count, ssrf_candidate_operations_count, ssrf_candidate_fields_count и элементы ssrf_candidates; для каждого кандидата только поля operation_id, method, path, field_name, field_path, schema_type, schema_format, confidence, reason_codes. Запрещено сводить весь API7 к «не доступно», если объект API7 присутствует; «не доступно» только для отдельного отсутствующего подполя. Если ssrf_candidate_signal_count > 0 и confirmed_findings_count == 0, добавь интерпретацию из system prompt (runtime/callback verification).
+            Не называй ssrf_candidate_signal подтверждённой SSRF-уязвимостью; ssrf_candidate_signal не является confirmed vulnerability.
+            Не утверждай exploitability SSRF без runtime/callback proof.
+            ## 8. Диагностика API3 BOPLA / Mass Assignment
+            В секции 8 при наличии диагностических счётчиков API3 не своди статус к «не доступно»; при отсутствии подтверждённых уязвимостей используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет».
+            В секции 8, если во входном JSON (owasp_coverage.API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION) присутствуют поля response_field_inventory_count, data_exposure_signal_count, sensitive_property_exposure_findings_count, sensitive_field_categories, sensitive_fields_sample, data_exposure_results, data_exposure_probe_result_count, data_exposure_non_200_count, data_exposure_non_json_count, data_exposure_no_fields_count, data_exposure_fields_extracted_count, data_exposure_probe_results, обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            В секции 8 при наличии во входном JSON (API3 или auth_flow_diagnostics) полей authenticated_response_field_inventory_count, authenticated_data_exposure_signal_count, authenticated_data_exposure_probe_result_count, authenticated_data_exposure_results, auth_profiles_used_count, operations_with_authenticated_inventory, data_exposure_authenticated_non_200_count, data_exposure_authenticated_fields_extracted_count — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            auth_profile_id — безопасная ссылка; token_ref не выводи без явного безопасного санитизированного поля; не выводи raw token, password, cookie, Authorization, raw request/response body.
+            Если auth_profiles_created_count >= 2 и authenticated_response_field_inventory_count > 0 — добавь интерпретацию успешного authenticated API3 inventory из system prompt.
+            Если authenticated_data_exposure_probe_result_count > 0 и authenticated_response_field_inventory_count == 0 — добавь интерпретацию неуспешного authenticated inventory из system prompt.
+            Если неаутентифицированные probes дали 401/403 и authenticated извлёк поля — добавь интерпретацию «аутентификация разблокировала API3 field inventory» из system prompt.
+            В секции 8 обязательно включи подраздел с заголовком «Диагностика data_exposure_validator»: счётчики probe и перечисление элементов data_exposure_probe_results только по полям operation_id, method, path, status_code, content_type, result, field_count, sensitive_field_count, sensitive_categories, reason_codes.
+            Если data_exposure_probe_result_count > 0 и response_field_inventory_count == 0, добавь пояснение: data_exposure_validator был выполнен, но не создал response_field_inventory; причина в data_exposure_probe_results; это не подтверждённые уязвимости.
+            Если data_exposure_non_200_count > 0, добавь пояснение про non-200, авторизацию, seed context и параметры (как в system prompt).
+            Не называй data_exposure_probe_result, response_field_inventory или data_exposure_signal подтверждённой уязвимостью.
+            Только элементы confirmed_findings — подтверждённые уязвимости.
+            ## 9. Ожидающие проверки
+            ## 10. Заблокированные и пропущенные проверки
+            ## 11. Сводка выполнения worker-ов
+            ## 12. Ошибки инструментов
+            ## 13. Ограничения
+            В секции 13 при наличии llm_candidate_advisor_used=false или поля нет — не пиши, что LLM advisor подтверждал уязвимости; при true укажи только роль ранжирования кандидатов (не подтверждение уязвимости, не Judge).
+            ## 14. Общие рекомендации
 
             ReportContext JSON:
             {{#extract_report_context.report_context_json#}}

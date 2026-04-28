@@ -35,7 +35,13 @@ class ObservationType(str, Enum):
     validated_cors_issue = "validated_cors_issue"
     validated_cookie_flag_issue = "validated_cookie_flag_issue"
     undocumented_endpoint_signal = "undocumented_endpoint_signal"
+    ssrf_candidate_signal = "ssrf_candidate_signal"
     js_endpoint_extraction_result = "js_endpoint_extraction_result"
+    response_field_inventory = "response_field_inventory"
+    data_exposure_signal = "data_exposure_signal"
+    data_exposure_probe_result = "data_exposure_probe_result"
+    auth_flow_signal = "auth_flow_signal"
+    test_account_materialization_result = "test_account_materialization_result"
 
 
 class SecurityRelevance(str, Enum):

@@ -47,6 +47,7 @@ class ReportContext(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     recommendations_seed: list[dict[str, str]] = Field(default_factory=list)
     data_quality: ReportDataQuality = Field(default_factory=ReportDataQuality)
+    auth_flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportContextRequest(BaseModel):

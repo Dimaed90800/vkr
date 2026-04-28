@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -88,8 +89,11 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.nuclei_match.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
     ObservationType.undocumented_endpoint_signal.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
+    ObservationType.ssrf_candidate_signal.value: "API7_SERVER_SIDE_REQUEST_FORGERY",
+    ObservationType.auth_flow_signal.value: "API2_AUTH",
     ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.validated_cookie_flag_issue.value: "API8_SECURITY_MISCONFIGURATION",
+    ObservationType.data_exposure_signal.value: "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
 }
 
 
@@ -98,6 +102,7 @@ _NOT_JUDGE_READY_TYPES: set[str] = {
     ObservationType.unsupported_tool_signal.value,
     ObservationType.tool_error.value,
     ObservationType.sensitive_field_seen.value,
+    ObservationType.auth_flow_signal.value,
 }
 
 _INJECTION_STRONG_SIGNALS: frozenset[str] = frozenset({
@@ -244,12 +249,16 @@ class EvidencePackBuilder:
             self._fill_discovered_endpoint(pack, obs, plan)
         elif obs_type == ObservationType.undocumented_endpoint_signal.value:
             self._fill_undocumented_endpoint_signal(pack, obs, plan)
+        elif obs_type == ObservationType.ssrf_candidate_signal.value:
+            self._fill_ssrf_candidate_signal(pack, obs, plan)
         elif obs_type == ObservationType.schema_mismatch.value:
             self._fill_schema_mismatch(pack, obs, plan)
         elif obs_type == ObservationType.injection_signal.value:
             self._fill_injection_signal(pack, obs, plan)
         elif obs_type == ObservationType.mass_assignment_signal.value:
             self._fill_mass_assignment_signal(pack, obs, plan)
+        elif obs_type == ObservationType.data_exposure_signal.value:
+            self._fill_data_exposure_signal(pack, obs, plan)
         elif obs_type == ObservationType.validated_cors_issue.value:
             self._fill_validated_cors_issue_cors(pack, obs, plan)
         elif obs_type == ObservationType.validated_cookie_flag_issue.value:
@@ -435,6 +444,16 @@ class EvidencePackBuilder:
             )
         if code == "mass_assignment_signal":
             return "mass_assignment_signal" in (pack.derived_signals or [])
+        if code == "response_field_inventory":
+            return any(
+                str(s).startswith("response_field_inventory:")
+                for s in (pack.derived_signals or [])
+            )
+        if code == "sensitive_field_names":
+            return any(
+                str(s).startswith("sensitive_field_name:")
+                for s in (pack.derived_signals or [])
+            )
         if code == "seed_reference":
             return (
                 pack.attack is not None
@@ -508,6 +527,12 @@ class EvidencePackBuilder:
             return "cookie_flag_misconfiguration"
         if obs_type == ObservationType.undocumented_endpoint_signal.value:
             return "undocumented_api_endpoint"
+        if obs_type == ObservationType.ssrf_candidate_signal.value:
+            return "ssrf_candidate"
+        if obs_type == ObservationType.data_exposure_signal.value:
+            return "sensitive_property_exposure"
+        if obs_type == ObservationType.auth_flow_signal.value:
+            return "auth_flow_diagnostic"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -996,6 +1021,81 @@ class EvidencePackBuilder:
                 required_for="undocumented_endpoint_signal",
             ))
 
+    def _fill_ssrf_candidate_signal(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None,
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        operation_id = str(details.get("operation_id") or obs.operation_id or "").strip()
+        method = str(details.get("method") or "").strip().upper()
+        path = str(details.get("path") or "").strip()
+        field_name = str(details.get("field_name") or "").strip()
+        field_path = str(details.get("field_path") or "").strip()
+        schema_type = str(details.get("schema_type") or "string").strip() or "string"
+        schema_format = str(details.get("schema_format") or "").strip()
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        confidence = str(details.get("confidence") or "").strip()
+        reason_codes = details.get("reason_codes") if isinstance(details.get("reason_codes"), list) else []
+
+        pack.owasp_category = "API7_SERVER_SIDE_REQUEST_FORGERY"
+        pack.vulnerability_class = "ssrf_candidate"
+        if operation_id:
+            pack.operation_id = operation_id
+        if method:
+            pack.method = method
+        if path:
+            pack.endpoint = path
+        pack.hypothesis = (
+            "OpenAPI schema analysis found URL-like request fields that may be SSRF-relevant and require safe follow-up validation."
+        )
+        pack.derived_signals.extend([
+            "ssrf_candidate_signal",
+            f"operation_id:{operation_id}",
+            f"method:{method or 'unknown'}",
+            f"path:{path or 'unknown'}",
+            f"field_name:{field_name}",
+            f"field_path:{field_path}",
+            f"schema_type:{schema_type}",
+            f"schema_format:{schema_format or 'unknown'}",
+            f"validation_mode:{validation_mode or 'unknown'}",
+        ])
+        if confidence:
+            pack.derived_signals.append(f"confidence:{confidence}")
+        for code in reason_codes[:6]:
+            text = str(code).strip()
+            if text:
+                pack.derived_signals.append(f"reason_code:{text}")
+        pack.status = EvidencePackStatus.not_judge_ready
+        pack.judge_ready = False
+        pack.missing_evidence.append(MissingEvidenceItem(
+            code="runtime_ssrf_proof_missing",
+            description="ssrf_candidate is diagnostic-only in this phase and requires explicit safe runtime proof before Judge.",
+            required_for="ssrf_candidate_signal",
+        ))
+        if not field_name:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="field_name_missing",
+                description="ssrf_candidate_signal evidence requires field_name.",
+                required_for="ssrf_candidate_signal",
+            ))
+        if not field_path:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="field_path_missing",
+                description="ssrf_candidate_signal evidence requires field_path.",
+                required_for="ssrf_candidate_signal",
+            ))
+        if not operation_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="ssrf_candidate_signal evidence requires operation_id.",
+                required_for="ssrf_candidate_signal",
+            ))
+        if not validation_mode:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="validation_mode_missing",
+                description="ssrf_candidate_signal evidence requires validation_mode.",
+                required_for="ssrf_candidate_signal",
+            ))
+
     @staticmethod
     def _schema_mismatch_signal_count(
         details: Mapping[str, object], signal_types: list[str]
@@ -1445,6 +1545,100 @@ class EvidencePackBuilder:
                 url="",
                 request_ref=pack.attack.request_ref if pack.attack is not None else None,
                 description="Property mutation diagnostic signal context captured",
+            ),
+        ]
+
+    def _fill_data_exposure_signal(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(obs.operation_id or details.get("operation_id") or "").strip()
+        path = str(details.get("path") or "").strip()
+        method = str(details.get("method") or "GET").strip().upper() or "GET"
+        status_code = int(details.get("status_code") or 0)
+        sens_count = int(details.get("sensitive_field_count") or 0)
+        tool_name = str(details.get("tool_name") or "").strip()
+
+        pack.owasp_category = "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+        pack.vulnerability_class = "sensitive_property_exposure"
+        if op_id:
+            pack.operation_id = op_id
+        if path:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(path)
+        if method:
+            pack.method = method
+        op = self._lookup_operation(obs.campaign_id, op_id) if op_id else None
+        if op is not None and not pack.endpoint:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(op.path_template or "")
+        if op is not None and not pack.method:
+            pack.method = (op.method or "GET").upper()
+
+        pack.hypothesis = (
+            "JSON response exposes field names that match sensitive categories; "
+            "review authorization and response minimization (field names only in evidence)."
+        )
+        cats_raw = details.get("sensitive_categories")
+        cats = (
+            [str(x).strip() for x in cats_raw if str(x).strip()]
+            if isinstance(cats_raw, list)
+            else []
+        )
+        sens_fields = details.get("sensitive_fields")
+        rows: list[dict[str, Any]] = []
+        if isinstance(sens_fields, list):
+            for item in sens_fields:
+                if isinstance(item, dict):
+                    rows.append(item)
+        derived: list[str] = [
+            "data_exposure_signal",
+            "response_field_inventory:true",
+            f"sensitive_field_count:{max(0, sens_count)}",
+            f"status_code:{status_code}",
+            f"operation_id:{op_id}",
+            f"method:{method}",
+        ]
+        for c in cats[:20]:
+            derived.append(f"sensitive_category:{c}")
+        for row in rows[:40]:
+            fn = str(row.get("field_name") or "").strip()
+            if fn:
+                derived.append(f"sensitive_field_name:{fn}")
+        pack.derived_signals = derived
+
+        if tool_name and tool_name != "data_exposure_validator":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="tool_name_mismatch",
+                description="data_exposure_signal must come from data_exposure_validator.",
+                required_for="sensitive_property_exposure",
+            ))
+        if sens_count <= 0:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="sensitive_field_count_missing",
+                description="sensitive_field_count must be > 0 for judge-ready exposure evidence.",
+                required_for="sensitive_property_exposure",
+            ))
+        if not op_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="operation_id is required for data_exposure_signal evidence.",
+                required_for="sensitive_property_exposure",
+            ))
+        if not path:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="endpoint_context_missing",
+                description="path is required for data_exposure_signal evidence.",
+                required_for="sensitive_property_exposure",
+            ))
+
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role="",
+                method=pack.method or "",
+                path_template=pack.endpoint or "",
+                url="",
+                request_ref=None,
+                description="Safe GET response field inventory (names only)",
             ),
         ]
 
