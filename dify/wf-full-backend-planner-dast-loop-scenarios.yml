@@ -5058,8 +5058,8 @@ workflow:
             Вход: ReportContext JSON со schema_version report-context/v1.
             Пиши отчёт на русском языке.
             Используй только факты из входного JSON.
-            Не придумывай уязвимости, endpoint-ы, severity, evidence, рекомендации и количества.
-            Только элементы confirmed_findings являются уязвимостями.
+            Не придумывай уязвимости, конечные точки API, severity, evidence, рекомендации и количества.
+            Только элементы confirmed_findings являются подтверждёнными уязвимостями.
             pending_verification, blocked_checks, ready_but_not_executed и tool_failures не являются уязвимостями.
             Для каждой confirmed finding обязательно создай подразделы:
             - Что найдено
@@ -5075,16 +5075,100 @@ workflow:
             - Severity
             - Endpoint
             - Method
-            - Worker / observation / judge verdict (если доступны)
+            - Worker
+            - Observation type
+            - Judge verdict
             Если данных нет или значение not_available, пиши "не доступно".
             Не выводи raw request/response bodies, raw HTTP headers, Authorization, Cookie, Set-Cookie, tokens, bearer, payload values.
             В разделе "Как воспроизвести / подтвердить" не используй формулировку "авторизованный запрос", если это явно не указано в ReportContext.
             Используй формулировки:
             - "В рамках разрешённой тестовой среды..."
-            - "Повторить bounded-проверку..."
+            - "Повторить ограниченную проверку..."
             - "Сопоставить результат с Evidence ID..."
+            Для находок по static assets явно укажи контекст статического ресурса и сниженное/ограниченное влияние относительно бизнес-API, если это отражено в resource_context.
+            Если finding.resource_context.is_static_asset=true, обязательно добавь формулировку:
+            "Находка относится к статическому ресурсу; влияние обычно ниже, чем для бизнес-API, но заголовки безопасности рекомендуется применять централизованно."
+            Если finding.resource_context.impact_note заполнено, обязательно выведи это значение в подразделе "Потенциальное влияние".
+            Если несколько confirmed_findings имеют одинаковый finding_group_key, сгруппируй их в один подраздел.
+            Если findings сгруппированы по finding_group_key, внутри группы обязательно выведи таблицу affected findings с колонками:
+            - Endpoint
+            - Method
+            - Finding ID
+            - Evidence ID
+            - Severity
+            - Worker
+            - Observation type
+            - Judge verdict
+            Запрещено группировать findings без перечисления Finding ID и Evidence ID.
+            Внутри группы перечисли:
+            - affected endpoints
+            - Finding ID
+            - Evidence ID
+            - Method
+            Не теряй traceability.
+            Если finding_groups не пустой, используй finding_groups как основу группировки для раздела "Подтверждённые уязвимости", не теряя отдельные Finding ID и Evidence ID.
+            Раздел "Область проверки" должен выводить, если доступно:
+            - Campaign ID
+            - Target URL
+            - OpenAPI URL
+            - Profile
+            - Started At
+            - Finished At
+            - Stopped Reason
+            Для отсутствующих значений используй "не доступно".
+            В разделе API3 обязательно отрази:
+            - candidates_considered
+            - blocked_no_sensitive_fields_count
+            - blocked_missing_seed_context_count
+            - mass_assignment_signal_count
+            - runtime_effect_proven_count
+            - confirmed_findings_count
+            И добавь пояснение, что finding не создаётся без runtime_effect_proven:true.
+            Раздел "Покрытие OWASP API Top 10" всегда должен содержать:
+            - API8_SECURITY_MISCONFIGURATION
+            - API9_IMPROPER_INVENTORY_MANAGEMENT
+            - API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION
+            Даже если confirmed_findings_count = 0.
+            В разделе API3, если значения отсутствуют, используй "не доступно".
+            В разделе "Сводка выполнения worker-ов" выводи все worker kinds из worker_execution_summary/executed_by_kind, включая worker-ов с 0 findings.
+            Для каждого worker укажи:
+            - executed
+            - findings_created
+            - no_observations
+            - pending_verification
+            - tool_failed
+            - blocked и ready (если доступны)
+            Не скрывай zap_discovery_passive, cors_validator, cookie_flag_validator, если они присутствуют в context.
+            В разделе "Ожидающие проверки" выводи для каждого item:
+            - verification_plan_id или observation_id
+            - status
+            - goal
+            - candidate_kind (если доступен)
+            И явно укажи: "Ожидающие проверки не считаются подтверждёнными уязвимостями."
+            В разделе "Ошибки инструментов" выводи:
+            - worker/tool kind
+            - count
+            - safe error type/message (если доступны)
+            И явно укажи: "Ошибка инструмента не является подтверждённой уязвимостью."
+            Пояснительный текст должен быть на русском языке. Английские технические идентификаторы допускаются только для названий полей, классов, worker-ов, OWASP category и Evidence ID.
+            Пиши технически грамотным русским языком.
+            Избегай разговорных формулировок.
+            Проверяй согласование слов и терминов.
+            Используй единые термины: "заголовок", "проверка", "уязвимость", "подтверждение".
+            Не используй форму "endpoint-ах"; используй "конечных точках API" или "API endpoint-ах".
+            Используй русские технические формулировки:
+            - "ограниченную проверку контракта по OpenAPI"
+            - "метаданные ответа"
+            - "заголовок безопасности"
+            - "подтверждённые уязвимости"
+            - "сильные сигналы не обнаружены"
+            Не используй слово "эксплуатация" без контекста авторизованного тестирования; предпочитай "воспроизведение / подтверждение".
             Сохраняй названия категорий OWASP без изменений.
             Не изменяй severity, если она не указана во confirmed_findings.
+            В кратком резюме не утверждай, что только N итераций завершились обнаружением, если это не указано явно.
+            Используй безопасную формулировку:
+            "В ходе N итераций выполнены проверки несколькими worker-ами. Подтверждено M уязвимостей: ..."
+            Если доступны данные покрытия, кратко укажи counts по API8/API9/API3.
             Markdown only.
         - id: user
           role: user

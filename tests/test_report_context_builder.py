@@ -133,6 +133,7 @@ def test_report_context_confirmed_finding_and_api8_grouping() -> None:
     assert finding["impact_summary"]
     assert finding["remediation_hint"]
     assert ctx["owasp_coverage"]["API8_SECURITY_MISCONFIGURATION"]["confirmed_findings_count"] == 1
+    assert "finding_groups" in ctx
 
 
 def test_report_context_api9_and_api3_diagnostics_with_runtime_snapshot() -> None:
@@ -345,6 +346,8 @@ def test_confirmed_finding_contains_traceability_fields() -> None:
     assert row["evidence_id"] == "evp_1"
     assert row["judge_verdict"] == "confirmed"
     assert isinstance(row["detection_chain"], dict)
+    assert row["detection_chain"]["worker_kind"] == "security_header_validator"
+    assert row["detection_chain"]["observation_type"] == "validated_security_header_issue"
     assert row["detection_chain"]["evidence_id"] == "evp_1"
     assert isinstance(row["safe_reproduction_steps"], list) and row["safe_reproduction_steps"]
 
@@ -389,3 +392,211 @@ def test_api3_diagnostics_counts_from_blocked_snapshot() -> None:
     assert api3["runtime_effect_proven_count"] >= 1
     assert api3["confirmed_findings_count"] == 0
     assert api3["candidates_considered"] == 6
+
+
+def test_api3_coverage_present_even_when_no_findings() -> None:
+    _reset_store()
+    _create_campaign()
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    assert "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION" in ctx["owasp_coverage"]
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert "confirmed_findings_count" in api3
+    assert api3["confirmed_findings_count"] == 0
+
+
+def test_static_asset_context_and_security_header_grouping_fields() -> None:
+    _reset_store()
+    _create_campaign()
+    for idx, endpoint in enumerate(("/static/css/app.css", "/images/favicon.ico"), start=1):
+        finding = ConfirmedFinding(
+            finding_id=f"finding_static_{idx}",
+            campaign_id="cmp_report",
+            evidence_id=f"evp_static_{idx}",
+            decision_id=f"jdec_static_{idx}",
+            owasp_category="API8_SECURITY_MISCONFIGURATION",
+            vulnerability_class="security_header_misconfiguration",
+            endpoint=endpoint,
+            method="GET",
+            title="Missing X-Frame-Options",
+            severity="low",
+            summary="header missing",
+        )
+        memory_store.store_confirmed_finding(
+            finding.finding_id,
+            finding.campaign_id,
+            f"fp_static_{idx}",
+            finding.model_dump(mode="json"),
+        )
+        evidence = EvidencePack(
+            evidence_id=f"evp_static_{idx}",
+            campaign_id="cmp_report",
+            owasp_category="API8_SECURITY_MISCONFIGURATION",
+            vulnerability_class="security_header_misconfiguration",
+            hypothesis="Validated security header issue.",
+            status=EvidencePackStatus.ready_for_judge,
+            judge_ready=True,
+            derived_signals=["validated_security_header_issue", "header_name:X-Frame-Options"],
+        )
+        memory_store.store_evidence_pack(
+            f"evp_static_{idx}",
+            "cmp_report",
+            f"obs_static_{idx}",
+            "",
+            evidence.model_dump(mode="json"),
+        )
+        decision = JudgeDecisionRecord(
+            decision_id=f"jdec_static_{idx}",
+            campaign_id="cmp_report",
+            evidence_id=f"evp_static_{idx}",
+            verdict=JudgeVerdictKind.confirmed,
+            reason="confirmed",
+        )
+        memory_store.store_judge_decision(
+            decision.decision_id,
+            "cmp_report",
+            f"evp_static_{idx}",
+            decision.model_dump(mode="json"),
+        )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    rows = ctx["confirmed_findings"]
+    assert len(rows) == 2
+    for row in rows:
+        assert row["resource_context"]["is_static_asset"] is True
+        assert row["resource_context"]["resource_type"] == "static_asset"
+        assert "статическому или служебному ресурсу" in row["resource_context"]["impact_note"]
+        assert row["finding_group_key"].startswith("security_header_misconfiguration:")
+        assert row["similar_findings_count"] == 2
+        assert len(row["similar_affected_endpoints"]) == 2
+    groups = ctx["finding_groups"]
+    assert len(groups) == 1
+    assert groups[0]["count"] == 2
+    assert len(groups[0]["affected_endpoints"]) == 2
+    assert len(groups[0]["finding_ids"]) == 2
+
+
+def test_robots_txt_is_static_asset_with_service_note() -> None:
+    _reset_store()
+    _create_campaign()
+    finding = ConfirmedFinding(
+        finding_id="finding_robots",
+        campaign_id="cmp_report",
+        evidence_id="evp_robots",
+        decision_id="jdec_robots",
+        owasp_category="API8_SECURITY_MISCONFIGURATION",
+        vulnerability_class="security_header_misconfiguration",
+        endpoint="/robots.txt",
+        method="GET",
+        title="Missing X-Content-Type-Options",
+        severity="low",
+        summary="header missing",
+    )
+    memory_store.store_confirmed_finding(finding.finding_id, finding.campaign_id, "fp_robots", finding.model_dump(mode="json"))
+    evidence = EvidencePack(
+        evidence_id="evp_robots",
+        campaign_id="cmp_report",
+        vulnerability_class="security_header_misconfiguration",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        derived_signals=["validated_security_header_issue"],
+    )
+    memory_store.store_evidence_pack("evp_robots", "cmp_report", "obs_robots", "", evidence.model_dump(mode="json"))
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_robots",
+        campaign_id="cmp_report",
+        evidence_id="evp_robots",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(decision.decision_id, "cmp_report", "evp_robots", decision.model_dump(mode="json"))
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    row = ctx["confirmed_findings"][0]
+    assert row["resource_context"]["is_static_asset"] is True
+    assert "статическому или служебному ресурсу" in row["resource_context"]["impact_note"]
+
+
+def test_safe_reproduction_steps_are_russian() -> None:
+    _reset_store()
+    _create_campaign()
+    finding = ConfirmedFinding(
+        finding_id="finding_schema_ru",
+        campaign_id="cmp_report",
+        evidence_id="evp_schema_ru",
+        decision_id="jdec_schema_ru",
+        owasp_category="API9_IMPROPER_INVENTORY_MANAGEMENT",
+        vulnerability_class="api_schema_contract_violation",
+        endpoint="/api/v1/orders",
+        method="POST",
+        title="Schema mismatch",
+        severity="medium",
+        summary="schema mismatch",
+    )
+    memory_store.store_confirmed_finding(finding.finding_id, finding.campaign_id, "fp_schema_ru", finding.model_dump(mode="json"))
+    evidence = EvidencePack(
+        evidence_id="evp_schema_ru",
+        campaign_id="cmp_report",
+        vulnerability_class="api_schema_contract_violation",
+        hypothesis="schema check",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        derived_signals=["schema_mismatch"],
+    )
+    memory_store.store_evidence_pack("evp_schema_ru", "cmp_report", "obs_schema_ru", "", evidence.model_dump(mode="json"))
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_schema_ru",
+        campaign_id="cmp_report",
+        evidence_id="evp_schema_ru",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(decision.decision_id, "cmp_report", "evp_schema_ru", decision.model_dump(mode="json"))
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    steps_blob = json.dumps(ctx["confirmed_findings"][0]["safe_reproduction_steps"], ensure_ascii=False)
+    assert "ограниченную проверку контракта по OpenAPI" in steps_blob
+    assert "bounded contract check against OpenAPI" not in steps_blob
+
+
+def test_security_header_endpoint_fallback() -> None:
+    _reset_store()
+    _create_campaign()
+    finding = ConfirmedFinding(
+        finding_id="finding_hdr_fallback",
+        campaign_id="cmp_report",
+        evidence_id="evp_hdr_fallback",
+        decision_id="jdec_hdr_fallback",
+        owasp_category="API8_SECURITY_MISCONFIGURATION",
+        vulnerability_class="security_header_misconfiguration",
+        endpoint="",
+        method="GET",
+        title="Missing CSP",
+        severity="low",
+        summary="header issue",
+    )
+    memory_store.store_confirmed_finding(finding.finding_id, finding.campaign_id, "fp_hdr_fallback", finding.model_dump(mode="json"))
+    evidence = EvidencePack(
+        evidence_id="evp_hdr_fallback",
+        campaign_id="cmp_report",
+        vulnerability_class="security_header_misconfiguration",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        attack={"request_ref": {"path_template": "/static/app.js"}},
+        derived_signals=["validated_security_header_issue", "header_name:Content-Security-Policy"],
+    )
+    memory_store.store_evidence_pack("evp_hdr_fallback", "cmp_report", "obs_hdr_fallback", "", evidence.model_dump(mode="json"))
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_hdr_fallback",
+        campaign_id="cmp_report",
+        evidence_id="evp_hdr_fallback",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(decision.decision_id, "cmp_report", "evp_hdr_fallback", decision.model_dump(mode="json"))
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    row = ctx["confirmed_findings"][0]
+    assert row["endpoint"] == "/static/app.js"

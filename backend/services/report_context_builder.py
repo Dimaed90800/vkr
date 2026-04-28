@@ -74,6 +74,22 @@ _NORMALIZED_OWASP_BY_CLASS = {
     "potential_mass_assignment": "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
 }
 
+_STATIC_RESOURCE_MARKERS = (
+    "/static/",
+    "/images/",
+    ".css",
+    ".js",
+    ".ico",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".map",
+    "/robots.txt",
+    "/sitemap.xml",
+    "/manifest.json",
+)
+
 _SAFE_KEY_EXCEPTIONS = {
     "cookie_name_hash",
     "cookie_candidate_source",
@@ -137,6 +153,7 @@ class ReportContextBuilder:
             evidence_by_id=evidence_by_id,
             latest_decision_by_evidence=latest_decision_by_evidence,
         )
+        finding_groups = self._build_finding_groups(confirmed_findings)
         pending_verification = self._build_pending_verification(
             verification_plans=verification_plans,
             judge_decisions=judge_decisions,
@@ -186,6 +203,7 @@ class ReportContextBuilder:
             ),
             owasp_coverage=owasp_coverage,
             confirmed_findings=confirmed_findings,
+            finding_groups=finding_groups,
             pending_verification=pending_verification,
             blocked_checks=blocked_checks,
             ready_but_not_executed=ready_but_not_executed,
@@ -247,19 +265,29 @@ class ReportContextBuilder:
                 observation_type=observation_type,
             )
             category_normalized = normalized_owasp != source_owasp
+            endpoint = self._resolve_report_endpoint(item=item, evidence=ev)
+            title = str(item.get("title") or item.get("summary") or "not_available")
+            resource_context = self._resource_context(endpoint, vulnerability_class)
+            group_key = self._finding_group_key(
+                vulnerability_class=vulnerability_class,
+                title=title,
+                evidence=ev,
+            )
             out.append({
                 "finding_id": finding_id,
-                "title": str(item.get("title") or item.get("summary") or "not_available"),
+                "title": title,
                 "owasp_category": normalized_owasp,
                 "source_owasp_category": source_owasp if category_normalized else source_owasp,
                 "category_normalized": category_normalized,
                 "vulnerability_class": vulnerability_class,
                 "severity": str(item.get("severity") or "not_available"),
-                "endpoint": str(item.get("endpoint") or "not_available"),
+                "endpoint": endpoint,
                 "method": str(item.get("method") or "not_available"),
                 "evidence_id": evidence_id or "not_available",
                 "evidence_summary": str(ev.get("hypothesis") or "not_available"),
                 "judge_verdict": str(decision.get("verdict") or "not_available"),
+                "resource_context": resource_context,
+                "finding_group_key": group_key,
                 "detection_chain": {
                     "worker_kind": worker_kind,
                     "tool_name": tool_name,
@@ -272,15 +300,22 @@ class ReportContextBuilder:
                     {
                         "step": 1,
                         "method": str(item.get("method") or "not_available"),
-                        "endpoint": str(item.get("endpoint") or "not_available"),
+                        "endpoint": endpoint,
                         "check": self._safe_reproduction_check_1(vulnerability_class),
                         "evidence_id": evidence_id or "not_available",
                     },
                     {
                         "step": 2,
                         "method": str(item.get("method") or "not_available"),
-                        "endpoint": str(item.get("endpoint") or "not_available"),
-                        "check": "Использовать Evidence ID для сопоставления с сохранёнными структурированными доказательствами. Не использовать raw tokens/cookies/request bodies из отчёта, так как они не сохраняются.",
+                        "endpoint": endpoint,
+                        "check": self._safe_reproduction_check_2(vulnerability_class),
+                        "evidence_id": evidence_id or "not_available",
+                    },
+                    {
+                        "step": 3,
+                        "method": str(item.get("method") or "not_available"),
+                        "endpoint": endpoint,
+                        "check": f"Использовать Evidence ID {evidence_id or 'не доступно'} для сопоставления с сохранёнными структурированными доказательствами.",
                         "evidence_id": evidence_id or "not_available",
                     },
                 ],
@@ -293,23 +328,153 @@ class ReportContextBuilder:
                     "Выявленная конфигурация или поведение может снизить уровень защищенности API и требует корректирующих мер.",
                 ),
                 "safe_reproduction_summary": (
-                    f"{replay_steps_count} replay step(s) captured; use evidence_id reference."
-                    if replay_steps_count > 0 else "not_available"
+                    f"{replay_steps_count} шаг(ов) воспроизведения сохранено; используйте ссылку на Evidence ID."
+                    if replay_steps_count > 0 else "не доступно"
                 ),
                 "remediation_hint": _RECOMMENDATIONS_BY_CLASS.get(
                     vulnerability_class,
                     "Apply least-privilege controls and verify remediation with bounded replay checks.",
                 ),
             })
+        group_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in out:
+            group_key = str(row.get("finding_group_key") or "").strip()
+            if group_key:
+                group_map[group_key].append(row)
+        for row in out:
+            group_key = str(row.get("finding_group_key") or "").strip()
+            peers = group_map.get(group_key) or []
+            similar_count = len(peers)
+            row["similar_finding_hint"] = {
+                "enabled": similar_count > 1,
+                "group_title": str(row.get("title") or "not_available"),
+            }
+            row["similar_findings_count"] = similar_count
+            row["similar_affected_endpoints"] = sorted(
+                {
+                    str(peer.get("endpoint") or "")
+                    for peer in peers
+                    if str(peer.get("endpoint") or "").strip()
+                }
+            )[:20]
         return out
 
     @staticmethod
     def _safe_reproduction_check_1(vulnerability_class: str) -> str:
         if vulnerability_class == "security_header_misconfiguration":
-            return "В рамках разрешённой тестовой среды выполнить bounded-проверку для указанного endpoint и проверить response metadata на наличие/состояние security header."
+            return "В рамках разрешённой тестовой среды выполнить ограниченную проверку указанного endpoint."
         if vulnerability_class in {"schema_contract_violation", "api_schema_contract_violation"}:
-            return "В рамках разрешённой тестовой среды повторить bounded contract check against OpenAPI и сравнить фактическое поведение с OpenAPI."
-        return "В рамках разрешённой тестовой среды выполнить bounded-проверку для указанного endpoint и зафиксировать безопасные метаданные результата."
+            return "В рамках разрешённой тестовой среды повторить ограниченную проверку контракта по OpenAPI для указанной операции."
+        return "В рамках разрешённой тестовой среды выполнить ограниченную проверку указанного endpoint и зафиксировать безопасные метаданные результата."
+
+    @staticmethod
+    def _safe_reproduction_check_2(vulnerability_class: str) -> str:
+        if vulnerability_class == "security_header_misconfiguration":
+            return "Проверить метаданные ответа на наличие и состояние требуемого заголовка безопасности."
+        if vulnerability_class in {"schema_contract_violation", "api_schema_contract_violation"}:
+            return "Сравнить фактическое поведение API с ожидаемым поведением, описанным в OpenAPI."
+        return "Зафиксировать результат проверки без использования сырых токенов, cookie, тел запросов и ответов."
+
+    @staticmethod
+    def _resolve_report_endpoint(*, item: dict[str, Any], evidence: dict[str, Any]) -> str:
+        raw_endpoint = str(item.get("endpoint") or "").strip()
+        if raw_endpoint and raw_endpoint.lower() != "not_available":
+            return raw_endpoint
+        candidates: list[str] = []
+        endpoint = str(evidence.get("endpoint") or "").strip()
+        if endpoint:
+            candidates.append(endpoint)
+        attack = evidence.get("attack") if isinstance(evidence.get("attack"), dict) else {}
+        request_ref = attack.get("request_ref") if isinstance(attack.get("request_ref"), dict) else {}
+        for key in ("path_template", "path", "url"):
+            value = str(request_ref.get(key) or "").strip()
+            if value:
+                candidates.append(value)
+        for step in evidence.get("replay_steps") or []:
+            if not isinstance(step, dict):
+                continue
+            for key in ("path_template", "path", "url"):
+                value = str(step.get(key) or "").strip()
+                if value:
+                    candidates.append(value)
+        for signal in evidence.get("derived_signals") or []:
+            text = str(signal or "").strip()
+            low = text.lower()
+            for prefix in ("endpoint:", "path:", "url:"):
+                if low.startswith(prefix):
+                    value = text.split(":", 1)[1].strip()
+                    if value:
+                        candidates.append(value)
+        for cand in candidates:
+            if cand:
+                return cand
+        return "не доступно"
+
+    def _build_finding_groups(self, confirmed_findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in confirmed_findings:
+            key = str(row.get("finding_group_key") or "").strip()
+            if key:
+                grouped[key].append(row)
+        out: list[dict[str, Any]] = []
+        for group_key, rows in grouped.items():
+            first = rows[0]
+            severities = [str(x.get("severity") or "").strip() for x in rows if str(x.get("severity") or "").strip()]
+            out.append(
+                {
+                    "group_key": group_key,
+                    "group_title": str(first.get("title") or "не доступно"),
+                    "vulnerability_class": str(first.get("vulnerability_class") or "не доступно"),
+                    "owasp_category": str(first.get("owasp_category") or "не доступно"),
+                    "affected_endpoints": sorted({str(x.get("endpoint") or "").strip() for x in rows if str(x.get("endpoint") or "").strip()})[:50],
+                    "finding_ids": sorted({str(x.get("finding_id") or "").strip() for x in rows if str(x.get("finding_id") or "").strip()})[:50],
+                    "evidence_ids": sorted({str(x.get("evidence_id") or "").strip() for x in rows if str(x.get("evidence_id") or "").strip()})[:50],
+                    "severity": max(severities) if severities else "не доступно",
+                    "severity_max": max(severities) if severities else "не доступно",
+                    "count": len(rows),
+                }
+            )
+        return sorted(out, key=lambda x: str(x.get("group_key") or ""))
+
+    @staticmethod
+    def _resource_context(endpoint: str, vulnerability_class: str) -> dict[str, Any]:
+        ep = str(endpoint or "").strip()
+        lower = ep.lower()
+        is_static = any(marker in lower for marker in _STATIC_RESOURCE_MARKERS)
+        resource_type = "static_asset" if is_static else ("api_endpoint" if ep and ep != "not_available" else "unknown")
+        impact_note = "Стандартный контекст API endpoint."
+        if is_static:
+            impact_note = "Контекст статического ресурса; влияние может отличаться от бизнес-API и требует отдельной приоритизации."
+        if is_static and vulnerability_class == "security_header_misconfiguration":
+            impact_note = (
+                "Находка относится к статическому или служебному ресурсу; влияние обычно ниже, чем для бизнес-API, "
+                "но заголовки безопасности рекомендуется применять централизованно."
+            )
+        return {
+            "is_static_asset": is_static,
+            "resource_type": resource_type,
+            "impact_note": impact_note,
+        }
+
+    @staticmethod
+    def _finding_group_key(
+        *,
+        vulnerability_class: str,
+        title: str,
+        evidence: dict[str, Any],
+    ) -> str:
+        if vulnerability_class != "security_header_misconfiguration":
+            return f"{vulnerability_class}:{title or 'not_available'}"
+        header_name = str(evidence.get("header_name") or "").strip()
+        if not header_name:
+            derived = evidence.get("derived_signals") if isinstance(evidence.get("derived_signals"), list) else []
+            for item in derived:
+                text = str(item or "")
+                if text.lower().startswith("header_name:"):
+                    header_name = text.split(":", 1)[1].strip()
+                    break
+        key_tail = header_name or title or "not_available"
+        return f"security_header_misconfiguration:{key_tail}"
 
     @staticmethod
     def _normalized_owasp_category(

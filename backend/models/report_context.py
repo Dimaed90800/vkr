@@ -38,6 +38,7 @@ class ReportContext(BaseModel):
     executive_summary: ReportExecutiveSummary = Field(default_factory=ReportExecutiveSummary)
     owasp_coverage: dict[str, Any] = Field(default_factory=dict)
     confirmed_findings: list[dict[str, Any]] = Field(default_factory=list)
+    finding_groups: list[dict[str, Any]] = Field(default_factory=list)
     pending_verification: list[dict[str, Any]] = Field(default_factory=list)
     blocked_checks: list[dict[str, Any]] = Field(default_factory=list)
     ready_but_not_executed: list[dict[str, Any]] = Field(default_factory=list)

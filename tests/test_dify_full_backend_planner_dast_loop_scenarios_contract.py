@@ -1662,7 +1662,7 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     user_prompt = prompts[1]["text"]
     assert "Пиши отчёт на русском языке" in sys_prompt
     assert "Не придумывай уязвимости" in sys_prompt
-    assert "Только элементы confirmed_findings являются уязвимостями" in sys_prompt
+    assert "Только элементы confirmed_findings являются подтверждёнными уязвимостями" in sys_prompt
     assert "pending_verification, blocked_checks" in sys_prompt
     assert "Markdown only" in sys_prompt
     assert "Что найдено" in sys_prompt
@@ -1675,9 +1675,56 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "Evidence ID" in sys_prompt
     assert "OWASP category" in sys_prompt
     assert "Vulnerability class" in sys_prompt
+    assert "Worker" in sys_prompt
+    assert "Observation type" in sys_prompt
+    assert "Judge verdict" in sys_prompt
+    assert "технически грамотным русским языком" in sys_prompt
+    assert "статического ресурса" in sys_prompt
+    assert "сгруппируй их в один подраздел" in sys_prompt
+    assert "candidates_considered" in sys_prompt
+    assert "blocked_no_sensitive_fields_count" in sys_prompt
+    assert "blocked_missing_seed_context_count" in sys_prompt
+    assert "mass_assignment_signal_count" in sys_prompt
+    assert "runtime_effect_proven_count" in sys_prompt
+    assert "confirmed_findings_count" in sys_prompt
+    assert "finding не создаётся без runtime_effect_proven:true" in sys_prompt
+    assert "Раздел \"Покрытие OWASP API Top 10\" всегда должен содержать" in sys_prompt
+    assert "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION" in sys_prompt
+    assert "если confirmed_findings_count = 0" in sys_prompt
+    assert "finding.resource_context.is_static_asset=true" in sys_prompt
+    assert "Находка относится к статическому ресурсу; влияние обычно ниже, чем для бизнес-API, но заголовки безопасности рекомендуется применять централизованно." in sys_prompt
+    assert "finding.resource_context.impact_note" in sys_prompt
+    assert "одинаковый finding_group_key" in sys_prompt
+    assert "Если finding_groups не пустой, используй finding_groups как основу группировки" in sys_prompt
+    assert "внутри группы обязательно выведи таблицу affected findings" in sys_prompt
+    assert "Запрещено группировать findings без перечисления Finding ID и Evidence ID." in sys_prompt
+    assert "affected endpoints" in sys_prompt
+    assert "traceability" in sys_prompt
+    assert "Раздел \"Область проверки\" должен выводить" in sys_prompt
+    assert "Campaign ID" in sys_prompt
+    assert "Target URL" in sys_prompt
+    assert "OpenAPI URL" in sys_prompt
+    assert "Profile" in sys_prompt
+    assert "Stopped Reason" in sys_prompt
+    assert "все worker kinds из worker_execution_summary/executed_by_kind" in sys_prompt
+    assert "zap_discovery_passive" in sys_prompt
+    assert "cors_validator" in sys_prompt
+    assert "cookie_flag_validator" in sys_prompt
+    assert "Ожидающие проверки не считаются подтверждёнными уязвимостями." in sys_prompt
+    assert "Ошибка инструмента не является подтверждённой уязвимостью." in sys_prompt
+    assert "Не используй форму \"endpoint-ах\"" in sys_prompt
+    assert "конечных точках API" in sys_prompt
+    assert "ограниченную проверку контракта по OpenAPI" in sys_prompt
+    assert "метаданные ответа" in sys_prompt
+    assert "заголовок безопасности" in sys_prompt
+    assert "подтверждённые уязвимости" in sys_prompt
+    assert "сильные сигналы не обнаружены" in sys_prompt
+    assert "bounded contract check against OpenAPI" not in sys_prompt
+    assert "В кратком резюме не утверждай, что только N итераций завершились обнаружением" in sys_prompt
+    assert "В ходе N итераций выполнены проверки несколькими worker-ами. Подтверждено M уязвимостей: ..." in sys_prompt
     assert "не используй формулировку \"авторизованный запрос\"" in sys_prompt
     assert "В рамках разрешённой тестовой среды" in sys_prompt
-    assert "Повторить bounded-проверку" in sys_prompt
+    assert "Повторить ограниченную проверку" in sys_prompt
     assert "Сопоставить результат с Evidence ID" in sys_prompt
     assert "авторизованный запрос" not in user_prompt.lower()
     for needle in (
