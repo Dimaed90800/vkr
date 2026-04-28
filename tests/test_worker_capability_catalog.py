@@ -111,6 +111,19 @@ def test_cookie_flag_validator_capability_is_partial_and_finding_capable() -> No
     assert w.judge_support is True
 
 
+def test_js_endpoint_extractor_capability_is_partial_surface_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("js_endpoint_extractor")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert "discovered_endpoint" in w.observation_types
+    assert "js_endpoint_extraction_result" in w.observation_types
+    assert w.triage_support is True
+    assert w.evidence_support is False
+    assert w.judge_support is False
+
+
 def test_get_by_tool_name() -> None:
     assert WorkerCapabilityCatalog().get_by_tool_name("nuclei") is not None
     assert WorkerCapabilityCatalog().get_by_tool_name("no_such_tool_xyz") is None

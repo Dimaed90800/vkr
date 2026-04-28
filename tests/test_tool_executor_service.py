@@ -459,6 +459,18 @@ def test_registry_cookie_flag_validator_has_sync_adapter() -> None:
     assert reg.get_execution_mode("cookie_flag_validator") == "sync"
 
 
+def test_registry_js_endpoint_extractor_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("js_endpoint_extractor") is True
+    assert reg.get_execution_mode("js_endpoint_extractor") == "sync"
+
+
+def test_registry_undocumented_endpoint_validator_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("undocumented_endpoint_validator") is True
+    assert reg.get_execution_mode("undocumented_endpoint_validator") == "sync"
+
+
 def test_tool_executor_dispatches_cors_validator() -> None:
     _reset_store()
     _create_campaign()
@@ -625,6 +637,148 @@ def test_cookie_flag_validator_rejects_method_budget_and_scope() -> None:
     assert "cookie_validation_mode_invalid" in codes
     assert "cookie_budget_max_requests" in codes
     assert "cookie_budget_timeout" in codes
+
+
+def test_tool_executor_dispatches_undocumented_endpoint_validator() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="discovery_inventory",
+        strategy="validate_undocumented_endpoint",
+        tool_name="undocumented_endpoint_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/hidden",
+            "method": "GET",
+            "path": "/api/hidden",
+            "source_observation_id": "obs_disc_1",
+            "validation_mode": "one_shot_undocumented_endpoint_check",
+            "max_response_bytes": 262144,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_undoc_test",
+        campaign_id="cmp_test1",
+        tool_name="undocumented_endpoint_validator",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.undocumented_endpoint_validator_adapter.UndocumentedEndpointValidatorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "undocumented_endpoint_validator"
+
+
+def test_tool_executor_dispatches_js_endpoint_extractor() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = _sync_command(
+        worker_class="discovery_inventory",
+        strategy="extract_js_endpoints",
+        tool_name="js_endpoint_extractor",
+        inputs={
+            "target_url": "http://testapp.local",
+            "js_url": "http://testapp.local/static/app.js?token=abc",
+            "source_observation_id": "obs_js_1",
+            "validation_mode": "static_js_endpoint_extraction",
+            "max_js_bytes": 300000,
+            "max_endpoints": 50,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_js_extract",
+        campaign_id="cmp_test1",
+        tool_name="js_endpoint_extractor",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.js_endpoint_extractor_adapter.JsEndpointExtractorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "js_endpoint_extractor"
+
+
+def test_undocumented_endpoint_validator_rejects_method_budget_and_scope() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="discovery_inventory",
+        strategy="validate_undocumented_endpoint",
+        tool_name="undocumented_endpoint_validator",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://evil.local/api/hidden",
+            "method": "POST",
+            "path": "/api/hidden",
+            "validation_mode": "custom_mode",
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "host_not_allowed" in codes
+    assert "undocumented_method_not_allowed" in codes
+    assert "undocumented_validation_mode_invalid" in codes
+    assert "undocumented_budget_max_requests" in codes
+    assert "undocumented_budget_timeout" in codes
+
+
+def test_js_endpoint_extractor_rejects_budget_mode_limits_and_scope() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="discovery_inventory",
+        strategy="extract_js_endpoints",
+        tool_name="js_endpoint_extractor",
+        inputs={
+            "target_url": "http://testapp.local",
+            "js_url": "http://evil.local/static/app.txt?token=abc",
+            "validation_mode": "custom_mode",
+            "max_js_bytes": 3000001,
+            "max_endpoints": 101,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "host_not_allowed" in codes
+    assert "js_extractor_url_not_js" in codes
+    assert "js_extractor_validation_mode_invalid" in codes
+    assert "js_extractor_max_js_bytes_invalid" in codes
+    assert "js_extractor_max_endpoints_invalid" in codes
+    assert "js_extractor_budget_max_requests" in codes
+    assert "js_extractor_budget_timeout" in codes
+
+
+def test_js_endpoint_extractor_accepts_max_js_bytes_up_to_three_million() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="discovery_inventory",
+        strategy="extract_js_endpoints",
+        tool_name="js_endpoint_extractor",
+        inputs={
+            "target_url": "http://testapp.local",
+            "js_url": "http://testapp.local/static/app.js",
+            "validation_mode": "static_js_endpoint_extraction",
+            "max_js_bytes": 3000000,
+            "max_endpoints": 50,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert v.valid, [e.code for e in v.errors]
 
 
 def test_tool_executor_dispatches_property_mutation_test() -> None:

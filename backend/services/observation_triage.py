@@ -132,6 +132,7 @@ _STORE_ONLY_TYPES = {
     "unsupported_tool_signal",
     "tool_error",
     "sensitive_field_seen",
+    "js_endpoint_extraction_result",
 }
 
 _SCHEMA_MISMATCH_STRONG_SIGNALS = {"5xx", "unexpected_2xx", "schema_violation"}
@@ -188,6 +189,8 @@ class ObservationTriage:
             return self._triage_validated_cors_issue(obs)
         if obs_type == "validated_cookie_flag_issue":
             return self._triage_validated_cookie_flag_issue(obs)
+        if obs_type == "undocumented_endpoint_signal":
+            return self._triage_undocumented_endpoint_signal(obs)
 
         rule = _TRIAGE_RULES.get(obs_type)
         if rule is None:
@@ -464,6 +467,65 @@ class ObservationTriage:
                     "validated_cookie_flag_issue",
                     "cookie_flag_context",
                     "endpoint_context",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_undocumented_endpoint_signal(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        method = str(details.get("method") or "").strip().upper()
+        path = str(details.get("path") or "").strip()
+        status_code_raw = details.get("status_code")
+        try:
+            status_code = int(status_code_raw)
+        except (TypeError, ValueError):
+            status_code = 0
+        openapi_match = details.get("openapi_match") is True
+        is_static_asset = details.get("is_static_asset") is True
+        strong_enough = (
+            bool(method)
+            and bool(path)
+            and status_code > 0
+            and status_code != 404
+            and not openapi_match
+            and not is_static_asset
+        )
+        if strong_enough:
+            obs.security_relevance = SecurityRelevance.medium
+            obs.recommended_next_action = "validate_undocumented_endpoint_inventory"
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_undocumented_endpoint_inventory",
+                worker_class="discovery_inventory",
+                strategy="validate_undocumented_endpoint",
+                required_evidence=[
+                    "discovered_endpoint",
+                    "openapi_absence",
+                    "runtime_observed_status",
                 ],
                 commands=[],
                 status=VerificationPlanStatus.pending,

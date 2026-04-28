@@ -1,6 +1,7 @@
 """Phase 12A — backend WorkerCommand planner tests."""
 from __future__ import annotations
 
+import hashlib
 import json
 
 from fastapi.testclient import TestClient
@@ -1800,6 +1801,283 @@ def test_planner_cookie_flag_validator_disabled_without_flag() -> None:
     )
     cookies = [c for c in resp.candidates if c.kind.value == "cookie_flag_validator"]
     assert cookies == []
+
+
+def test_planner_creates_undocumented_endpoint_validator_candidate_from_discovery() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_vehicle_op()
+    _store_raw_observation(
+        observation_id="obs_disc_hidden",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/api/hidden?token=abc",
+            "path": "/api/hidden",
+            "method": "GET",
+            "source": "zap_spider",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "undocumented_endpoint_validator"]
+    assert len(matches) == 1
+    cand = matches[0]
+    assert cand.status.value == "ready"
+    assert cand.command is not None
+    assert cand.command.tool_name == "undocumented_endpoint_validator"
+    assert cand.command.inputs.get("validation_mode") == "one_shot_undocumented_endpoint_check"
+    assert cand.command.inputs.get("method") == "GET"
+    assert cand.summary.get("path") == "/api/hidden"
+    assert cand.summary.get("matched_operation_id") == ""
+    blob = json.dumps(cand.summary, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "token=abc", "request_body", "response_body", "headers", "bearer "):
+        assert bad not in blob
+
+
+def test_planner_creates_js_endpoint_extractor_candidate_from_js_discovery() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_disc_js",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/static/app.js?token=abc",
+            "path": "/static/app.js",
+            "method": "GET",
+            "source": "zap_spider",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "js_endpoint_extractor"]
+    assert len(matches) == 1
+    cand = matches[0]
+    assert cand.status.value == "ready"
+    assert cand.command is not None
+    assert cand.command.tool_name == "js_endpoint_extractor"
+    assert cand.command.inputs.get("validation_mode") == "static_js_endpoint_extraction"
+    assert cand.command.inputs.get("js_url") == "http://target.local/static/app.js?token=abc"
+    assert cand.summary.get("js_candidate_source") == "zap_spider"
+    assert cand.summary.get("js_url_sanitized") == "http://target.local/static/app.js"
+    blob = json.dumps(cand.summary, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "token=abc", "request_body", "response_body", "headers", "bearer "):
+        assert bad not in blob
+
+
+def test_planner_non_js_discovered_endpoint_does_not_create_js_extractor_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_disc_non_js",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/api/v1/users",
+            "path": "/api/v1/users",
+            "method": "GET",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    assert [c for c in resp.candidates if c.kind.value == "js_endpoint_extractor"] == []
+
+
+def test_planner_blocks_out_of_scope_js_endpoint_extractor_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_disc_js_oos",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://evil.local/static/app.js?token=abc",
+            "path": "/static/app.js",
+            "method": "GET",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "js_endpoint_extractor"]
+    assert len(matches) == 1
+    assert matches[0].status.value == "blocked"
+    assert "host_not_allowed" in matches[0].missing_inputs
+
+
+def test_planner_skips_js_extractor_when_js_endpoint_extraction_result_marker_exists() -> None:
+    _reset_store()
+    _campaign()
+    js_url = "http://target.local/static/app.js?token=abc"
+    sanitized = "http://target.local/static/app.js"
+    ref = hashlib.sha256(sanitized.encode("utf-8")).hexdigest()[:16]
+    _store_raw_observation(
+        observation_id="obs_disc_js",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": js_url,
+            "path": "/static/app.js",
+            "method": "GET",
+            "source": "zap_spider",
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_js_marker",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.js_endpoint_extraction_result.value,
+        details={
+            "source": "js_endpoint_extractor",
+            "js_url_sanitized": sanitized,
+            "source_js_ref": ref,
+            "source_observation_id": "",
+            "result": "route_fragments_found",
+            "absolute_paths_count": 0,
+            "route_fragments_count": 2,
+            "route_fragments_matched_count": 0,
+            "endpoints_extracted_count": 0,
+            "endpoints_emitted_count": 0,
+            "filtered_count": 0,
+            "multi_match_skipped": 0,
+            "fragment_no_graph_match": 2,
+            "reason_codes": ["fragment_no_graph_match"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "js_endpoint_extractor"]
+    assert len(matches) == 1
+    assert matches[0].status.value == "skipped_existing"
+    assert matches[0].summary.get("prior_result") == "route_fragments_found"
+    assert matches[0].summary.get("prior_reason_codes") == ["fragment_no_graph_match"]
+
+
+def test_planner_skips_existing_js_extractor_candidate_for_same_js_url() -> None:
+    _reset_store()
+    _campaign()
+    js_url = "http://target.local/static/app.js?token=abc"
+    _store_raw_observation(
+        observation_id="obs_disc_js",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": js_url,
+            "path": "/static/app.js",
+            "method": "GET",
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_disc_from_js",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "source": "js_endpoint_extractor",
+            "path": "/api/hidden",
+            "url": "http://target.local/api/hidden",
+            "method": "GET",
+            "source_js_ref": hashlib.sha256("http://target.local/static/app.js".encode("utf-8")).hexdigest()[:16],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "js_endpoint_extractor"]
+    assert len(matches) == 1
+    assert matches[0].status.value == "skipped_existing"
+
+
+def test_planner_blocks_discovered_endpoint_that_matches_openapi() -> None:
+    _reset_store()
+    _campaign()
+    _store_graph_vehicle_op()
+    _store_raw_observation(
+        observation_id="obs_disc_known",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/api/v1/vehicles/veh_1",
+            "path": "/api/v1/vehicles/veh_1",
+            "method": "GET",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "undocumented_endpoint_validator"]
+    assert len(matches) == 1
+    cand = matches[0]
+    assert cand.status.value == "blocked"
+    assert "openapi_match_present" in cand.missing_inputs
+    assert cand.summary.get("matched_operation_id") == "op_GET_/api/v1/vehicles/{vehicleId}"
+
+
+def test_planner_blocks_static_asset_discovered_endpoint() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_disc_asset",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/static/app.css",
+            "path": "/static/app.css",
+            "method": "GET",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "undocumented_endpoint_validator"]
+    assert len(matches) == 1
+    assert matches[0].status.value == "blocked"
+    assert "static_asset_ignored" in matches[0].missing_inputs
+
+
+def test_planner_skips_existing_undocumented_endpoint_signal_by_method_path() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_disc_hidden",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.discovered_endpoint.value,
+        details={
+            "url": "http://target.local/api/hidden",
+            "path": "/api/hidden",
+            "method": "GET",
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_undoc_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.undocumented_endpoint_signal.value,
+        details={
+            "method": "GET",
+            "path": "/api/hidden",
+            "url_sanitized": "http://target.local/api/hidden",
+            "status_code": 200,
+            "openapi_match": False,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 30}),
+    )
+    matches = [c for c in resp.candidates if c.kind.value == "undocumented_endpoint_validator"]
+    assert len(matches) == 1
+    assert matches[0].status.value == "skipped_existing"
 
 
 def test_planner_scenario_duplicate_schema_ops_deduped():

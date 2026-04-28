@@ -26,10 +26,12 @@ class PlannerCandidateStatus(str, Enum):
 
 class PlannerCandidateKind(str, Enum):
     zap_discovery_passive = "zap_discovery_passive"
+    js_endpoint_extractor = "js_endpoint_extractor"
     bola_replay_probe = "bola_replay_probe"
     security_header_validator = "security_header_validator"
     cors_validator = "cors_validator"
     cookie_flag_validator = "cookie_flag_validator"
+    undocumented_endpoint_validator = "undocumented_endpoint_validator"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
     property_mutation_test = "property_mutation_test"

@@ -233,6 +233,44 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         ),
     ),
     WorkerCapability(
+        worker_name="undocumented_endpoint_validator",
+        tool_name="undocumented_endpoint_validator",
+        worker_class="discovery_inventory",
+        scenario_types=["passive_signal_validation", "inventory_gap_validation"],
+        observation_types=["undocumented_endpoint_signal"],
+        owasp_categories=["API9_IMPROPER_INVENTORY_MANAGEMENT"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
+        risk_level="low",
+        notes=(
+            "Safe one-shot replay for runtime-discovered endpoints that are absent from the OpenAPI graph; "
+            "stores only method/path/status metadata and no raw body/header/cookie/token data."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="js_endpoint_extractor",
+        tool_name="js_endpoint_extractor",
+        worker_class="discovery_inventory",
+        scenario_types=["discovery_expansion", "inventory_gap_validation"],
+        observation_types=["discovered_endpoint", "js_endpoint_extraction_result"],
+        owasp_categories=["API9_IMPROPER_INVENTORY_MANAGEMENT"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=False,
+        judge_support=False,
+        risk_level="low",
+        notes=(
+            "Surface expansion only: extracts API-like paths from in-scope JS assets without executing JS; "
+            "emits sanitized discovered_endpoint observations and does not store raw JS/header/body/token data."
+        ),
+    ),
+    WorkerCapability(
         worker_name="rate_limit_validator",
         tool_name="rate_limit_validator",
         worker_class="stateful_flow",

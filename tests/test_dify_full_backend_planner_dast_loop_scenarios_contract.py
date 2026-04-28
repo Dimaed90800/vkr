@@ -166,11 +166,15 @@ def test_init_loop_state_initializes_fair_selection_fields() -> None:
         '"last_tool_error_safe_message"',
         '"max_tool_failures_total"',
         '"max_tool_failures_by_kind"',
+        '"max_tool_failures_total": 5',
+        '"max_tool_failures_by_kind": 3',
         '"property_mutation_test": 2',
         '"injection_test": 3',
         '"schemathesis_negative_test": 4',
         '"cors_validator": 2',
         '"cookie_flag_validator": 2',
+        '"js_endpoint_extractor": 1',
+        '"undocumented_endpoint_validator": 2',
     ):
         assert field in code
 
@@ -486,7 +490,7 @@ def test_loop_seed_and_final_state_use_merged_scenario_state() -> None:
     assert seed["value_selector"] == ["merge_scenario_plan_into_planner_request", "state_json"]
 
 
-def test_normalize_inputs_safe_profile_defaults_to_15_iterations() -> None:
+def test_normalize_inputs_safe_profile_defaults_to_25_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -508,7 +512,7 @@ def test_normalize_inputs_safe_profile_defaults_to_15_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "15"
+    assert result["max_iterations"] == "25"
 
 
 def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
@@ -533,10 +537,10 @@ def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "15"
+    assert result["max_iterations"] == "25"
 
 
-def test_normalize_inputs_balanced_profile_defaults_to_25_iterations() -> None:
+def test_normalize_inputs_balanced_profile_defaults_to_35_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -558,10 +562,10 @@ def test_normalize_inputs_balanced_profile_defaults_to_25_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "balanced"
-    assert result["max_iterations"] == "25"
+    assert result["max_iterations"] == "35"
 
 
-def test_normalize_inputs_aggressive_profile_defaults_to_40_iterations() -> None:
+def test_normalize_inputs_aggressive_profile_defaults_to_50_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -583,7 +587,7 @@ def test_normalize_inputs_aggressive_profile_defaults_to_40_iterations() -> None
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "aggressive"
-    assert result["max_iterations"] == "40"
+    assert result["max_iterations"] == "50"
 
 
 def test_normalize_inputs_clamps_explicit_max_iterations_to_50() -> None:
@@ -651,8 +655,32 @@ def test_normalize_inputs_invalid_or_missing_max_iterations_use_profile_default(
         scenario_llm_model="",
         scenario_prompt_version="scenario-planner/v1",
     )
-    assert invalid["max_iterations"] == "25"
-    assert missing["max_iterations"] == "25"
+    assert invalid["max_iterations"] == "35"
+    assert missing["max_iterations"] == "35"
+
+
+def test_normalize_inputs_respects_explicit_valid_max_iterations() -> None:
+    result = _run_code_node(
+        "normalize_inputs",
+        toolbox_url="http://toolbox.local",
+        target_url="http://target.local",
+        openapi_spec_text="",
+        openapi_url="",
+        allowed_hosts_json='["target.local"]',
+        roles_json="[]",
+        planner_request_json="",
+        task_id="",
+        judge_model="",
+        max_iterations="42",
+        profile="safe",
+        include_scenario_compiler="true",
+        scenario_max_operations="120",
+        scenario_max_scenarios="30",
+        scenario_llm_enabled="false",
+        scenario_llm_model="",
+        scenario_prompt_version="scenario-planner/v1",
+    )
+    assert result["max_iterations"] == "42"
 
 
 def test_effective_planner_request_preserves_enable_cors_baseline_true_when_custom_request_omits_it() -> None:
@@ -809,6 +837,14 @@ def test_select_ready_candidate_extracts_blocked_candidates_sample_with_allowlis
         "fields_selected_count",
         "seed_request_id_present",
         "reason_codes",
+        "undocumented_candidate_source",
+        "js_candidate_source",
+        "js_url_sanitized",
+        "source_observation_id",
+        "validation_mode",
+        "max_endpoints",
+        "openapi_match",
+        "is_static_asset",
     }
 
 
@@ -856,13 +892,56 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
                             "inputs": {"cookie": "secret=value", "token": "leak"},
                         },
                     },
+                    {
+                        "candidate_id": "cand_undoc",
+                        "kind": "undocumented_endpoint_validator",
+                        "status": "ready",
+                        "reason": "Discovered runtime endpoint is outside the OpenAPI graph and eligible for safe validation.",
+                        "summary": {
+                            "operation_id": "",
+                            "scenario_type": "",
+                            "undocumented_candidate_source": "zap_spider",
+                            "validation_mode": "one_shot_undocumented_endpoint_check",
+                            "openapi_match": False,
+                            "is_static_asset": False,
+                            "audit_flags": [],
+                            "reason_codes": ["undocumented_path"],
+                        },
+                        "command": {
+                            "tool_name": "undocumented_endpoint_validator",
+                            "worker_class": "discovery_inventory",
+                            "strategy": "validate_undocumented_endpoint",
+                            "inputs": {"request_body": "ignore"},
+                        },
+                    },
+                    {
+                        "candidate_id": "cand_js_extract",
+                        "kind": "js_endpoint_extractor",
+                        "status": "ready",
+                        "reason": "Discovered in-scope JavaScript asset is eligible for safe endpoint extraction.",
+                        "summary": {
+                            "js_candidate_source": "zap_spider",
+                            "js_url_sanitized": "http://target.local/static/app.js",
+                            "source_observation_id": "obs_js_1",
+                            "validation_mode": "static_js_endpoint_extraction",
+                            "max_endpoints": 50,
+                            "reason_codes": [],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "js_endpoint_extractor",
+                            "worker_class": "discovery_inventory",
+                            "strategy": "extract_js_endpoints",
+                            "inputs": {"request_body": "ignore"},
+                        },
+                    },
                 ]
             },
             ensure_ascii=False,
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"injection_test": 3, "cors_validator": 2},
+                "kind_caps": {"injection_test": 3, "cors_validator": 2, "undocumented_endpoint_validator": 2, "js_endpoint_extractor": 1},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -871,16 +950,13 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
     )
     assert result["candidate_kind"] == "injection_test"
     ready_by_kind = json.loads(result["ready_candidates_by_kind_count_json"])
-    assert ready_by_kind == {"injection_test": 1, "cors_validator": 1}
+    assert ready_by_kind == {"injection_test": 1, "cors_validator": 1, "undocumented_endpoint_validator": 1, "js_endpoint_extractor": 1}
     sample = json.loads(result["ready_candidates_sample_json"])
-    assert len(sample) == 2
-    assert sample[0]["kind"] == "cors_validator"
-    assert sample[0]["tool_name"] == "cors_validator"
-    assert sample[0]["worker_class"] == "misconfiguration"
-    assert sample[0]["strategy"] == "validate_cors_policy"
-    assert sample[0]["cors_candidate_source"] == "baseline"
-    assert sample[0]["cookie_candidate_source"] == ""
-    assert sample[0]["validation_mode"] == "baseline_cors_check"
+    assert len(sample) == 4
+    assert sample[0]["kind"] == "injection_test"
+    assert sample[0]["tool_name"] == "injection_test"
+    assert sample[0]["worker_class"] == "contract_fuzzing"
+    assert sample[0]["strategy"] == "validate_injection_impact"
     assert set(sample[0].keys()) == {
         "kind",
         "status",
@@ -892,7 +968,14 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_with_allowlist(
         "strategy",
         "cors_candidate_source",
         "cookie_candidate_source",
+        "undocumented_candidate_source",
+        "js_candidate_source",
+        "js_url_sanitized",
+        "source_observation_id",
         "validation_mode",
+        "max_endpoints",
+        "openapi_match",
+        "is_static_asset",
         "audit_flags",
         "reason_codes",
         "fields_selected_count",
@@ -949,6 +1032,100 @@ def test_select_ready_candidate_ready_sample_includes_cookie_candidate_source() 
     assert sample[0]["validation_mode"] == "baseline_cookie_flag_check"
 
 
+def test_select_ready_candidate_ready_sample_includes_undocumented_candidate_fields() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_undoc",
+                        "kind": "undocumented_endpoint_validator",
+                        "status": "ready",
+                        "reason": "Discovered runtime endpoint is outside the OpenAPI graph and eligible for safe validation.",
+                        "summary": {
+                            "undocumented_candidate_source": "zap_spider",
+                            "validation_mode": "one_shot_undocumented_endpoint_check",
+                            "openapi_match": False,
+                            "is_static_asset": False,
+                            "reason_codes": ["undocumented_path"],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "undocumented_endpoint_validator",
+                            "worker_class": "discovery_inventory",
+                            "strategy": "validate_undocumented_endpoint",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"undocumented_endpoint_validator": 2},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    sample = json.loads(result["ready_candidates_sample_json"])
+    assert sample[0]["kind"] == "undocumented_endpoint_validator"
+    assert sample[0]["undocumented_candidate_source"] == "zap_spider"
+    assert sample[0]["validation_mode"] == "one_shot_undocumented_endpoint_check"
+    assert sample[0]["openapi_match"] is False
+    assert sample[0]["is_static_asset"] is False
+
+
+def test_select_ready_candidate_ready_sample_includes_js_extractor_fields() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_js_1",
+                        "kind": "js_endpoint_extractor",
+                        "status": "ready",
+                        "reason": "Discovered in-scope JavaScript asset is eligible for safe endpoint extraction.",
+                        "summary": {
+                            "js_candidate_source": "zap_spider",
+                            "js_url_sanitized": "http://target.local/static/app.js",
+                            "source_observation_id": "obs_js_1",
+                            "validation_mode": "static_js_endpoint_extraction",
+                            "max_endpoints": 50,
+                            "reason_codes": [],
+                            "audit_flags": [],
+                        },
+                        "command": {
+                            "tool_name": "js_endpoint_extractor",
+                            "worker_class": "discovery_inventory",
+                            "strategy": "extract_js_endpoints",
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"js_endpoint_extractor": 1},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    sample = json.loads(result["ready_candidates_sample_json"])
+    assert sample[0]["kind"] == "js_endpoint_extractor"
+    assert sample[0]["js_candidate_source"] == "zap_spider"
+    assert sample[0]["js_url_sanitized"] == "http://target.local/static/app.js"
+    assert sample[0]["source_observation_id"] == "obs_js_1"
+    assert sample[0]["validation_mode"] == "static_js_endpoint_extraction"
+    assert sample[0]["max_endpoints"] == 50
+
+
 def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:
     blocked_rows = [
         {
@@ -970,6 +1147,43 @@ def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:
     assert len(sample) == 10
     by_kind = json.loads(result["blocked_candidates_by_kind_count_json"])
     assert by_kind.get("property_mutation_test") == 15
+
+
+def test_select_ready_candidate_blocked_sample_includes_js_extractor_fields() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "cand_js_blocked",
+                        "kind": "js_endpoint_extractor",
+                        "status": "blocked",
+                        "reason": "Discovered js_url is outside campaign scope.",
+                        "missing_inputs": ["host_not_allowed"],
+                        "summary": {
+                            "js_candidate_source": "zap_spider",
+                            "js_url_sanitized": "http://evil.local/static/app.js",
+                            "source_observation_id": "obs_js_1",
+                            "validation_mode": "static_js_endpoint_extraction",
+                            "max_endpoints": 50,
+                            "reason_codes": ["host_not_allowed"],
+                            "audit_flags": [],
+                        },
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps({"kind_caps": {}, "executed_by_kind": {}, "skipped_by_kind_cap_count": {}}, ensure_ascii=False),
+    )
+    sample = json.loads(result["blocked_candidates_sample_json"])
+    assert sample[0]["kind"] == "js_endpoint_extractor"
+    assert sample[0]["js_candidate_source"] == "zap_spider"
+    assert sample[0]["js_url_sanitized"] == "http://evil.local/static/app.js"
+    assert sample[0]["source_observation_id"] == "obs_js_1"
+    assert sample[0]["validation_mode"] == "static_js_endpoint_extraction"
+    assert sample[0]["max_endpoints"] == 50
 
 
 def test_select_ready_candidate_representative_sample_includes_property_mutation_with_noisy_security_headers() -> None:
@@ -1130,6 +1344,124 @@ def test_select_ready_candidate_treats_unknown_kind_as_uncapped() -> None:
     assert json.loads(result["skipped_by_kind_cap_delta_json"]) == {}
 
 
+def test_select_ready_candidate_prefers_js_extractor_over_late_validators_when_uncapped() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {"candidate_id": "cand_sec", "kind": "security_header_validator", "status": "ready", "command": {"tool_name": "security_header_validator"}},
+                    {"candidate_id": "cand_cors", "kind": "cors_validator", "status": "ready", "command": {"tool_name": "cors_validator"}},
+                    {"candidate_id": "cand_cookie", "kind": "cookie_flag_validator", "status": "ready", "command": {"tool_name": "cookie_flag_validator"}},
+                    {"candidate_id": "cand_js", "kind": "js_endpoint_extractor", "status": "ready", "command": {"tool_name": "js_endpoint_extractor"}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {
+                    "security_header_validator": 2,
+                    "cors_validator": 2,
+                    "cookie_flag_validator": 2,
+                    "js_endpoint_extractor": 1,
+                },
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "js_endpoint_extractor"
+    assert result["selection_outcome"] == "selected_ready"
+
+
+def test_select_ready_candidate_prefers_undocumented_validator_over_security_headers_when_uncapped() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {"candidate_id": "cand_sec", "kind": "security_header_validator", "status": "ready", "command": {"tool_name": "security_header_validator"}},
+                    {"candidate_id": "cand_undoc", "kind": "undocumented_endpoint_validator", "status": "ready", "command": {"tool_name": "undocumented_endpoint_validator"}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {
+                    "security_header_validator": 2,
+                    "undocumented_endpoint_validator": 2,
+                },
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "undocumented_endpoint_validator"
+    assert result["selection_outcome"] == "selected_ready"
+
+
+def test_select_ready_candidate_falls_through_when_js_extractor_cap_exhausted() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {"candidate_id": "cand_js", "kind": "js_endpoint_extractor", "status": "ready", "command": {"tool_name": "js_endpoint_extractor"}},
+                    {"candidate_id": "cand_sec", "kind": "security_header_validator", "status": "ready", "command": {"tool_name": "security_header_validator"}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {
+                    "js_endpoint_extractor": 1,
+                    "security_header_validator": 2,
+                },
+                "executed_by_kind": {"js_endpoint_extractor": 1},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "security_header_validator"
+    assert json.loads(result["skipped_by_kind_cap_delta_json"]) == {"js_endpoint_extractor": 1}
+    assert result["selection_outcome"] == "selected_ready"
+
+
+def test_select_ready_candidate_falls_through_when_undocumented_validator_cap_exhausted() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {"candidate_id": "cand_undoc", "kind": "undocumented_endpoint_validator", "status": "ready", "command": {"tool_name": "undocumented_endpoint_validator"}},
+                    {"candidate_id": "cand_sec", "kind": "security_header_validator", "status": "ready", "command": {"tool_name": "security_header_validator"}},
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {
+                    "undocumented_endpoint_validator": 2,
+                    "security_header_validator": 2,
+                },
+                "executed_by_kind": {"undocumented_endpoint_validator": 2},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "security_header_validator"
+    assert json.loads(result["skipped_by_kind_cap_delta_json"]) == {"undocumented_endpoint_validator": 1}
+    assert result["selection_outcome"] == "selected_ready"
+
+
 def test_extract_tool_run_returns_safe_failure_fields() -> None:
     result = _run_code_node(
         "extract_tool_run",
@@ -1197,8 +1529,8 @@ def test_stop_tool_failed_below_threshold_records_failure_and_continues() -> Non
         "tool_failure_summaries": [],
         "last_tool_error_type": "",
         "last_tool_error_safe_message": "",
-        "max_tool_failures_total": 3,
-        "max_tool_failures_by_kind": 2,
+        "max_tool_failures_total": 5,
+        "max_tool_failures_by_kind": 3,
         "tool_failed_fatal_mode": False,
         "skipped_by_kind_cap_count": {},
         "iteration_summaries": [],
@@ -1239,13 +1571,13 @@ def test_stop_tool_failed_below_threshold_records_failure_and_continues() -> Non
 
 def test_stop_tool_failed_stops_on_by_kind_threshold() -> None:
     input_state = {
-        "iterations_run": 1,
-        "executed_by_kind": {"security_header_validator": 1},
-        "failed_by_kind": {"security_header_validator": 1},
-        "tool_failures_count": 1,
+        "iterations_run": 2,
+        "executed_by_kind": {"security_header_validator": 2},
+        "failed_by_kind": {"security_header_validator": 2},
+        "tool_failures_count": 2,
         "tool_failure_summaries": [],
-        "max_tool_failures_total": 3,
-        "max_tool_failures_by_kind": 2,
+        "max_tool_failures_total": 5,
+        "max_tool_failures_by_kind": 3,
         "tool_failed_fatal_mode": False,
         "skipped_by_kind_cap_count": {},
         "iteration_summaries": [],
@@ -1269,19 +1601,19 @@ def test_stop_tool_failed_stops_on_by_kind_threshold() -> None:
     )
     state = json.loads(result["state_json"])
     assert result["should_exit_loop"] is True
-    assert state["tool_failures_count"] == 2
-    assert state["failed_by_kind"]["security_header_validator"] == 2
+    assert state["tool_failures_count"] == 3
+    assert state["failed_by_kind"]["security_header_validator"] == 3
     assert state["stopped_reason"] == "too_many_tool_failures"
 
 
 def test_stop_tool_failed_stops_on_total_threshold() -> None:
     input_state = {
-        "iterations_run": 2,
-        "executed_by_kind": {"security_header_validator": 1, "injection_test": 1},
-        "failed_by_kind": {"security_header_validator": 1, "injection_test": 1},
-        "tool_failures_count": 2,
+        "iterations_run": 4,
+        "executed_by_kind": {"security_header_validator": 2, "injection_test": 2},
+        "failed_by_kind": {"security_header_validator": 2, "injection_test": 2},
+        "tool_failures_count": 4,
         "tool_failure_summaries": [],
-        "max_tool_failures_total": 3,
+        "max_tool_failures_total": 5,
         "max_tool_failures_by_kind": 5,
         "tool_failed_fatal_mode": False,
         "skipped_by_kind_cap_count": {},
@@ -1306,7 +1638,7 @@ def test_stop_tool_failed_stops_on_total_threshold() -> None:
     )
     state = json.loads(result["state_json"])
     assert result["should_exit_loop"] is True
-    assert state["tool_failures_count"] == 3
+    assert state["tool_failures_count"] == 5
     assert state["failed_by_kind"]["cors_validator"] == 1
     assert state["stopped_reason"] == "too_many_tool_failures"
 
@@ -1318,8 +1650,8 @@ def test_stop_tool_failed_honors_legacy_fatal_mode_flag() -> None:
         "failed_by_kind": {},
         "tool_failures_count": 0,
         "tool_failure_summaries": [],
-        "max_tool_failures_total": 3,
-        "max_tool_failures_by_kind": 2,
+        "max_tool_failures_total": 5,
+        "max_tool_failures_by_kind": 3,
         "tool_failed_fatal_mode": True,
         "skipped_by_kind_cap_count": {},
         "iteration_summaries": [],
@@ -1356,8 +1688,8 @@ def test_runtime_style_failed_security_header_allows_next_cors_selection() -> No
                 "failed_by_kind": {},
                 "tool_failures_count": 0,
                 "tool_failure_summaries": [],
-                "max_tool_failures_total": 3,
-                "max_tool_failures_by_kind": 2,
+                "max_tool_failures_total": 5,
+                "max_tool_failures_by_kind": 3,
                 "tool_failed_fatal_mode": False,
                 "kind_caps": {"security_header_validator": 2, "cors_validator": 2},
                 "skipped_by_kind_cap_count": {},
@@ -1538,8 +1870,8 @@ def test_build_final_report_includes_blocked_candidate_observability_fields() ->
                 ],
                 "last_tool_error_type": "response_too_large",
                 "last_tool_error_safe_message": "HTTP response exceeded max_response_bytes.",
-                "max_tool_failures_total": 3,
-                "max_tool_failures_by_kind": 2,
+                "max_tool_failures_total": 5,
+                "max_tool_failures_by_kind": 3,
                 "last_candidate_kind": "",
                 "last_tool_run_status": "",
                 "last_selection_outcome": "no_ready_candidate",
@@ -1710,6 +2042,8 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "zap_discovery_passive" in sys_prompt
     assert "cors_validator" in sys_prompt
     assert "cookie_flag_validator" in sys_prompt
+    assert "js_endpoint_extractor трактуй строго как worker расширения поверхности и discovery" in sys_prompt
+    assert "это не уязвимость и не прямой источник finding" in sys_prompt
     assert "Ожидающие проверки не считаются подтверждёнными уязвимостями." in sys_prompt
     assert "Ошибка инструмента не является подтверждённой уязвимостью." in sys_prompt
     assert "Не используй форму \"endpoint-ах\"" in sys_prompt
@@ -1719,6 +2053,23 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "заголовок безопасности" in sys_prompt
     assert "подтверждённые уязвимости" in sys_prompt
     assert "сильные сигналы не обнаружены" in sys_prompt
+    assert "undocumented_endpoint_signal_count" in sys_prompt
+    assert "undocumented_endpoint_findings_count" in sys_prompt
+    assert "schema_mismatch_count" in sys_prompt
+    assert "js_endpoint_extraction_count" in sys_prompt
+    assert "js_route_fragments_count" in sys_prompt
+    assert "js_route_fragments_matched_count" in sys_prompt
+    assert "js_endpoints_emitted_count" in sys_prompt
+    assert "js_extraction_results" in sys_prompt
+    assert "Извлечение поверхности из JavaScript" in sys_prompt
+    assert "JS surface extraction" in sys_prompt
+    assert (
+        "JS-бандл содержит относительные маршруты; часть маршрутов сопоставлена с OpenAPI graph, поэтому они не считаются undocumented endpoints. Новых undocumented endpoint signals по JS extraction не выявлено."
+        in sys_prompt
+    )
+    assert "не называй вывод js_endpoint_extractor подтверждённой уязвимостью" in sys_prompt
+    assert "диагностическая проверка выполнена, подтверждённых уязвимостей нет" in sys_prompt
+    assert "не описывай весь раздел API3 одной фразой «не доступно»" in sys_prompt
     assert "bounded contract check against OpenAPI" not in sys_prompt
     assert "В кратком резюме не утверждай, что только N итераций завершились обнаружением" in sys_prompt
     assert "В ходе N итераций выполнены проверки несколькими worker-ами. Подтверждено M уязвимостей: ..." in sys_prompt
@@ -1744,6 +2095,7 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
         "## 4. Подтверждённые уязвимости",
         "## 5. Детали API8 Security Misconfiguration",
         "## 6. Детали API9 Improper Inventory Management",
+        "Извлечение поверхности из JavaScript",
         "## 7. Диагностика API3 BOPLA / Mass Assignment",
         "## 8. Ожидающие проверки",
         "## 9. Заблокированные и пропущенные проверки",
@@ -1753,6 +2105,11 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
         "## 13. Общие рекомендации",
     ):
         assert section in user_prompt
+    assert "js_endpoint_extraction_count" in user_prompt
+    assert "js_extraction_results" in user_prompt
+    assert "не называй js_endpoint_extractor источником уязвимостей или findings" in user_prompt
+    assert "не своди статус к «не доступно»" in user_prompt
+    assert "диагностическая проверка выполнена, подтверждённых уязвимостей нет" in user_prompt
 
 
 def test_report_markdown_branching_and_merge_fallback_edges_exist() -> None:

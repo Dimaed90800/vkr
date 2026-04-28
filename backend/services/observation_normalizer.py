@@ -122,6 +122,7 @@ class ObservationNormalizer:
                 "mass_assignment_signal",
                 "validated_cors_issue",
                 "validated_cookie_flag_issue",
+                "undocumented_endpoint_signal",
             }:
                 rec_act = str(lite_details.get("recommended_next_action") or "")
                 sec_raw = str(
@@ -129,6 +130,7 @@ class ObservationNormalizer:
                     or (
                         "medium"
                         if str(lite.observation_type) in {"validated_cors_issue", "validated_cookie_flag_issue"}
+                        or str(lite.observation_type) == "undocumented_endpoint_signal"
                         else "unknown"
                     )
                 ).lower()
@@ -155,6 +157,7 @@ class ObservationNormalizer:
                         "mass_assignment_signal",
                         "validated_cors_issue",
                         "validated_cookie_flag_issue",
+                        "undocumented_endpoint_signal",
                     }
                     else SecurityRelevance.unknown
                 ),

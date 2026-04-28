@@ -83,6 +83,8 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "capture_anonymous_traffic",
         "zap_spider",
         "zap_discovery_passive",
+        "js_endpoint_extractor",
+        "undocumented_endpoint_validator",
         "playwright_capture",
         "mitmproxy_import",
     ],

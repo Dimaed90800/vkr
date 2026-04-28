@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 from backend.models.campaign import Campaign, CampaignLimits
@@ -221,6 +222,86 @@ def test_report_context_api9_and_api3_diagnostics_with_runtime_snapshot() -> Non
     assert ctx["worker_execution_summary"]["executed_by_kind"]["schemathesis_negative_test"] == 2
 
 
+def test_report_context_api9_includes_js_extraction_counters_and_safe_samples() -> None:
+    _reset_store()
+    _create_campaign()
+    sanitized = "http://target.local/static/app.js"
+    ref = hashlib.sha256(sanitized.encode("utf-8")).hexdigest()[:16]
+    obs = Observation(
+        observation_id="obs_js_ex",
+        campaign_id="cmp_report",
+        type=ObservationType.js_endpoint_extraction_result,
+        confidence=0.0,
+        details={
+            "source": "js_endpoint_extractor",
+            "js_url_sanitized": sanitized,
+            "source_js_ref": ref,
+            "source_observation_id": "obs_src",
+            "result": "route_fragments_found",
+            "absolute_paths_count": 0,
+            "route_fragments_count": 3,
+            "route_fragments_matched_count": 0,
+            "endpoints_extracted_count": 0,
+            "endpoints_emitted_count": 0,
+            "filtered_count": 1,
+            "multi_match_skipped": 0,
+            "fragment_no_graph_match": 3,
+            "reason_codes": ["fragment_no_graph_match", "filtered_route_fragments"],
+        },
+    )
+    memory_store.store_observation("obs_js_ex", "cmp_report", "", obs.model_dump(mode="json"))
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    api9 = ctx["owasp_coverage"]["API9_IMPROPER_INVENTORY_MANAGEMENT"]
+    assert api9["js_endpoint_extraction_count"] == 1
+    assert api9["js_route_fragments_count"] == 3
+    assert api9["js_route_fragments_matched_count"] == 0
+    assert api9["js_endpoints_emitted_count"] == 0
+    assert len(api9["js_extraction_results"]) == 1
+    sample = api9["js_extraction_results"][0]
+    assert sample["js_url_sanitized"] == sanitized
+    assert sample["source_js_ref"] == ref
+    assert sample["result"] == "route_fragments_found"
+    blob = json.dumps(sample, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "bearer ", "token=abc", "headers", "request_body", "response_body"):
+        assert bad not in blob
+
+
+def test_report_context_tool_failures_maps_error_type_message_and_stays_safe() -> None:
+    _reset_store()
+    _create_campaign()
+    runtime = {
+        "tool_failure_summaries": [
+            {
+                "iteration_index": 3,
+                "candidate_kind": "undocumented_endpoint_validator",
+                "tool_name": "undocumented_endpoint_validator",
+                "tool_run_id": "toolrun_undoc_1",
+                "status": "failed",
+                "error_type": "response_too_large",
+                "message": "HTTP response exceeded max_response_bytes.",
+            }
+        ],
+        "executed_by_kind": {"undocumented_endpoint_validator": 2},
+    }
+    ctx, error = ReportContextBuilder().build("cmp_report", runtime_state_snapshot=runtime)
+    assert error is None
+    assert ctx is not None
+    failures = ctx.get("tool_failures") or []
+    assert len(failures) == 1
+    row = failures[0]
+    assert row.get("candidate_kind") == "undocumented_endpoint_validator"
+    assert row.get("tool_run_id") == "toolrun_undoc_1"
+    assert row.get("status") == "failed"
+    assert row.get("iteration_index") == 3
+    assert row.get("error_type") == "response_too_large"
+    assert row.get("safe_message") == "HTTP response exceeded max_response_bytes."
+    blob = json.dumps(row, ensure_ascii=False)
+    for bad in ("Authorization", "Cookie", "Set-Cookie", "Bearer ", "token=", "request_body", "response_body", "raw_headers"):
+        assert bad not in blob
+
+
 def test_report_context_pending_and_runtime_absence_defaults() -> None:
     _reset_store()
     _create_campaign()
@@ -332,6 +413,83 @@ def test_schema_contract_violation_normalized_to_api9() -> None:
     assert row["category_normalized"] is True
     assert ctx["owasp_coverage"]["API9_IMPROPER_INVENTORY_MANAGEMENT"]["confirmed_findings_count"] == 1
     assert ctx["owasp_coverage"]["API8_SECURITY_MISCONFIGURATION"]["confirmed_findings_count"] == 0
+
+
+def test_report_context_api9_counts_include_undocumented_endpoint_signal_and_findings() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_undoc_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_undoc_1",
+            campaign_id="cmp_report",
+            type=ObservationType.undocumented_endpoint_signal,
+            details={
+                "method": "GET",
+                "path": "/api/hidden",
+                "status_code": 200,
+                "openapi_match": False,
+                "is_static_asset": False,
+            },
+        ).model_dump(mode="json"),
+    )
+    finding = ConfirmedFinding(
+        finding_id="finding_undoc_1",
+        campaign_id="cmp_report",
+        evidence_id="evp_undoc_1",
+        decision_id="jdec_undoc_1",
+        owasp_category="API9_IMPROPER_INVENTORY_MANAGEMENT",
+        vulnerability_class="undocumented_api_endpoint",
+        endpoint="/api/hidden",
+        method="GET",
+        title="Undocumented endpoint exposed",
+        severity="low",
+        summary="Runtime discovery reached an endpoint missing from OpenAPI.",
+    )
+    memory_store.store_confirmed_finding(
+        finding.finding_id,
+        finding.campaign_id,
+        "fp_undoc_1",
+        finding.model_dump(mode="json"),
+    )
+    evidence = EvidencePack(
+        evidence_id="evp_undoc_1",
+        campaign_id="cmp_report",
+        owasp_category="API9_IMPROPER_INVENTORY_MANAGEMENT",
+        vulnerability_class="undocumented_api_endpoint",
+        hypothesis="Runtime discovery observed an undocumented endpoint.",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        derived_signals=["undocumented_endpoint_signal", "status_code:200", "openapi_match:false"],
+    )
+    memory_store.store_evidence_pack(
+        "evp_undoc_1",
+        "cmp_report",
+        "obs_undoc_1",
+        "",
+        evidence.model_dump(mode="json"),
+    )
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_undoc_1",
+        campaign_id="cmp_report",
+        evidence_id="evp_undoc_1",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(
+        decision.decision_id,
+        "cmp_report",
+        "evp_undoc_1",
+        decision.model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    api9 = ctx["owasp_coverage"]["API9_IMPROPER_INVENTORY_MANAGEMENT"]
+    assert api9["undocumented_endpoint_signal_count"] == 1
+    assert api9["undocumented_endpoint_findings_count"] == 1
 
 
 def test_confirmed_finding_contains_traceability_fields() -> None:

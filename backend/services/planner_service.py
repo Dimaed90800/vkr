@@ -20,6 +20,11 @@ try:
     from backend.models.tool_run import ToolResult, ToolRun
     from backend.models.worker_command import CommandBudget, WorkerCommand
     from backend.services.api_graph_service import ApiGraphService
+    from backend.services.api_graph_path_matcher import (
+        find_openapi_operation_match,
+        is_static_or_service_asset,
+        normalize_api_path,
+    )
     from backend.services.command_validator import CommandValidator
     from backend.services.scenario_plan_compiler import ScenarioPlanCompiler
     from backend.services.http.safe_http_client import sanitize_url_for_storage
@@ -38,6 +43,11 @@ except ModuleNotFoundError:  # pragma: no cover
     from models.tool_run import ToolResult, ToolRun
     from models.worker_command import CommandBudget, WorkerCommand
     from services.api_graph_service import ApiGraphService
+    from services.api_graph_path_matcher import (
+        find_openapi_operation_match,
+        is_static_or_service_asset,
+        normalize_api_path,
+    )
     from services.command_validator import CommandValidator
     from services.scenario_plan_compiler import ScenarioPlanCompiler
     from services.http.safe_http_client import sanitize_url_for_storage
@@ -92,6 +102,18 @@ class PlannerService:
                 campaign,
                 graph_summary.model_dump(mode="json"),
                 enable_baseline=bool(getattr(request, "enable_cookie_baseline", False)),
+            ),
+        )
+        candidates.extend(
+            self._js_endpoint_extractor_candidates(
+                campaign,
+                graph_summary.model_dump(mode="json"),
+            ),
+        )
+        candidates.extend(
+            self._undocumented_endpoint_candidates(
+                campaign,
+                graph_summary.model_dump(mode="json"),
             ),
         )
 
@@ -430,6 +452,47 @@ class PlannerService:
             )
         ]
 
+    def _undocumented_endpoint_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+    ) -> list[PlannerCandidate]:
+        candidates: list[PlannerCandidate] = []
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            if self._raw_observation_type(raw) != ObservationType.discovered_endpoint.value:
+                continue
+            candidates.append(
+                self._undocumented_endpoint_candidate(campaign, raw, graph_summary),
+            )
+        return candidates
+
+    def _js_endpoint_extractor_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+    ) -> list[PlannerCandidate]:
+        candidates: list[PlannerCandidate] = []
+        seen_js_urls: set[str] = set()
+        for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
+            obs_type = self._raw_observation_type(raw)
+            if obs_type not in {ObservationType.discovered_endpoint.value, ObservationType.zap_alert.value}:
+                continue
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            request_url = self._extract_observation_request_url(campaign, details)
+            if not self._looks_like_js_asset(request_url):
+                continue
+            normalized_js_url = _strip_query_and_fragment(
+                sanitize_url_for_storage(request_url)
+            ) if request_url else ""
+            if normalized_js_url in seen_js_urls:
+                continue
+            if normalized_js_url:
+                seen_js_urls.add(normalized_js_url)
+            candidates.append(
+                self._js_endpoint_extractor_candidate(campaign, raw, graph_summary),
+            )
+        return candidates
+
     def _select_cors_baseline_url(self, campaign: Campaign) -> tuple[str, str]:
         for raw in memory_store.list_observations_by_campaign(campaign.campaign_id):
             obs_type = self._raw_observation_type(raw)
@@ -588,6 +651,305 @@ class PlannerService:
             kind=PlannerCandidateKind.cookie_flag_validator,
             priority=36.0,
             reason="Baseline cookie flag validation candidate generated from safe campaign/passive context.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
+    def _js_endpoint_extractor_candidate(
+        self,
+        campaign: Campaign,
+        raw_observation: dict[str, Any],
+        graph_summary: dict[str, Any],
+    ) -> PlannerCandidate:
+        observation_id = str(
+            raw_observation.get("observation_id")
+            or raw_observation.get("id")
+            or ""
+        ).strip()
+        details = raw_observation.get("details") if isinstance(raw_observation.get("details"), dict) else {}
+        candidate_source = str(details.get("source") or raw_observation.get("source") or self._raw_observation_type(raw_observation)).strip() or "discovered_endpoint"
+        js_url = self._extract_observation_request_url(campaign, details)
+        safe_js_url = sanitize_url_for_storage(js_url) if js_url else ""
+        summary = {
+            "js_candidate_source": candidate_source,
+            "js_url_sanitized": _strip_query_and_fragment(safe_js_url) if safe_js_url else "",
+            "source_observation_id": observation_id,
+            "validation_mode": "static_js_endpoint_extraction",
+            "max_endpoints": 50,
+            "reason_codes": [],
+            "audit_flags": [],
+            "graph_summary": graph_summary,
+        }
+        dedup_key = "|".join([
+            campaign.campaign_id,
+            "js_endpoint_extractor",
+            _strip_query_and_fragment(safe_js_url) if safe_js_url else "",
+        ])
+        if not js_url:
+            return self._candidate(
+                kind=PlannerCandidateKind.js_endpoint_extractor,
+                status=PlannerCandidateStatus.blocked,
+                priority=34.0,
+                reason="JS endpoint extraction requires a discovered js_url.",
+                missing_inputs=["missing_js_url"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["missing_js_url"]},
+            )
+        if not self._looks_like_js_asset(js_url):
+            return self._candidate(
+                kind=PlannerCandidateKind.js_endpoint_extractor,
+                status=PlannerCandidateStatus.blocked,
+                priority=34.0,
+                reason="JS endpoint extraction only supports .js assets.",
+                missing_inputs=["not_js_asset"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["not_js_asset"]},
+            )
+        if not self._is_allowed_url(campaign, js_url):
+            return self._candidate(
+                kind=PlannerCandidateKind.js_endpoint_extractor,
+                status=PlannerCandidateStatus.blocked,
+                priority=34.0,
+                reason="Discovered js_url is outside campaign scope.",
+                missing_inputs=["host_not_allowed"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["host_not_allowed"]},
+            )
+        js_url_key = _strip_query_and_fragment(safe_js_url)
+        if self._existing_js_endpoint_extraction_observation(
+            campaign.campaign_id,
+            js_url_key,
+        ):
+            prior = PlannerService._js_marker_summary_for_skip(campaign.campaign_id, js_url_key)
+            return self._candidate(
+                kind=PlannerCandidateKind.js_endpoint_extractor,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=34.0,
+                reason="Matching js_endpoint_extractor observations already exist for this asset.",
+                dedup_key=dedup_key,
+                summary={**summary, **prior},
+            )
+        existing_run = self._existing_js_endpoint_extractor_run(
+            campaign.campaign_id,
+            dedup_key,
+        )
+        if existing_run is not None:
+            return self._candidate(
+                kind=PlannerCandidateKind.js_endpoint_extractor,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=34.0,
+                reason="Existing active/finished js_endpoint_extractor ToolRun found.",
+                dedup_key=dedup_key,
+                summary={**summary, "existing_tool_run_id": existing_run.get("tool_run_id", "")},
+            )
+
+        suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_js_endpoint_extractor_{suffix}",
+            worker_class="discovery_inventory",
+            strategy="extract_js_endpoints",
+            tool_name="js_endpoint_extractor",
+            operation_id="",
+            seed_request_id="",
+            inputs={
+                "target_url": campaign.target_url,
+                "js_url": js_url,
+                "source_observation_id": observation_id,
+                "validation_mode": "static_js_endpoint_extraction",
+                "max_js_bytes": 3000000,
+                "max_endpoints": 50,
+            },
+            budget=CommandBudget(max_requests=1, timeout_sec=15),
+            success_criteria=["js_endpoint_extraction_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.js_endpoint_extractor,
+            priority=34.0,
+            reason="Discovered in-scope JavaScript asset is eligible for safe endpoint extraction.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )
+
+    def _undocumented_endpoint_candidate(
+        self,
+        campaign: Campaign,
+        raw_observation: dict[str, Any],
+        graph_summary: dict[str, Any],
+    ) -> PlannerCandidate:
+        observation_id = str(
+            raw_observation.get("observation_id")
+            or raw_observation.get("id")
+            or ""
+        ).strip()
+        details = raw_observation.get("details") if isinstance(raw_observation.get("details"), dict) else {}
+        method = str(details.get("method") or "GET").strip().upper() or "GET"
+        request_url = self._extract_observation_request_url(campaign, details)
+        normalized_path = normalize_api_path(str(details.get("path") or request_url))
+        matched_operation_id = find_openapi_operation_match(
+            campaign.campaign_id,
+            method,
+            normalized_path,
+        )
+        safe_request_url = sanitize_url_for_storage(request_url) if request_url else ""
+        candidate_source = str(details.get("source") or raw_observation.get("source") or "discovered_endpoint").strip() or "discovered_endpoint"
+        is_static_asset = is_static_or_service_asset(normalized_path)
+        summary = {
+            "undocumented_candidate_source": candidate_source,
+            "method": method,
+            "path": normalized_path,
+            "request_url": safe_request_url,
+            "openapi_match": bool(matched_operation_id),
+            "matched_operation_id": matched_operation_id,
+            "is_static_asset": is_static_asset,
+            "source_observation_id": observation_id,
+            "reason_codes": [],
+            "audit_flags": [],
+            "graph_summary": graph_summary,
+        }
+        dedup_key = "|".join([
+            campaign.campaign_id,
+            "undocumented_endpoint_validator",
+            method,
+            normalized_path,
+        ])
+        if not request_url:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Undocumented endpoint validation requires request_url from discovery.",
+                missing_inputs=["missing_request_url"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["missing_request_url"]},
+            )
+        if not normalized_path:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Discovered endpoint is missing a usable path.",
+                missing_inputs=["missing_path"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["missing_path"]},
+            )
+        if method in {"", "OPTIONS"}:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Undocumented endpoint validator supports only GET/HEAD discovery contexts.",
+                missing_inputs=["method_not_safe"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["method_not_safe"]},
+            )
+        if method not in {"GET", "HEAD"}:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Undocumented endpoint validator supports only GET or HEAD.",
+                missing_inputs=["method_not_safe"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["method_not_safe"]},
+            )
+        if is_static_asset:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Static/service assets are excluded from undocumented endpoint validation.",
+                missing_inputs=["static_asset_ignored"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["static_asset_ignored"]},
+            )
+        if not self._is_allowed_url(campaign, request_url):
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Discovered endpoint request_url is outside campaign scope.",
+                missing_inputs=["host_not_allowed"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["host_not_allowed"]},
+            )
+        if matched_operation_id:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.blocked,
+                priority=35.0,
+                reason="Discovered endpoint matches an OpenAPI operation and is not undocumented.",
+                missing_inputs=["openapi_match_present"],
+                dedup_key=dedup_key,
+                summary={**summary, "reason_codes": ["openapi_match_present"]},
+            )
+        if self._existing_undocumented_endpoint_observation(
+            campaign.campaign_id,
+            method,
+            normalized_path,
+        ):
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=35.0,
+                reason="Matching undocumented_endpoint_signal observation already exists.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+        if self._existing_undocumented_endpoint_evidence_or_finding(
+            campaign.campaign_id,
+            method,
+            normalized_path,
+        ):
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=35.0,
+                reason="Existing undocumented endpoint evidence/finding already covers this method/path.",
+                dedup_key=dedup_key,
+                summary=summary,
+            )
+        existing_run = self._existing_undocumented_endpoint_run(
+            campaign.campaign_id,
+            dedup_key,
+        )
+        if existing_run is not None:
+            return self._candidate(
+                kind=PlannerCandidateKind.undocumented_endpoint_validator,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=35.0,
+                reason="Existing active/finished undocumented_endpoint_validator ToolRun found.",
+                dedup_key=dedup_key,
+                summary={**summary, "existing_tool_run_id": existing_run.get("tool_run_id", "")},
+            )
+
+        suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_undocumented_endpoint_validator_{suffix}",
+            worker_class="discovery_inventory",
+            strategy="validate_undocumented_endpoint",
+            tool_name="undocumented_endpoint_validator",
+            operation_id="",
+            seed_request_id="",
+            inputs={
+                "target_url": campaign.target_url,
+                "request_url": request_url,
+                "method": method,
+                "path": normalized_path,
+                "source_observation_id": observation_id,
+                "validation_mode": "one_shot_undocumented_endpoint_check",
+                "max_response_bytes": 262144,
+            },
+            budget=CommandBudget(max_requests=1, timeout_sec=15),
+            success_criteria=["undocumented_endpoint_validation_recorded"],
+        )
+        return self._validated_candidate(
+            kind=PlannerCandidateKind.undocumented_endpoint_validator,
+            priority=35.0,
+            reason="Discovered runtime endpoint is outside the OpenAPI graph and eligible for safe validation.",
             dedup_key=dedup_key,
             command=command,
             summary=summary,
@@ -923,6 +1285,8 @@ class PlannerService:
             PlannerCandidateKind.injection_test: 5,
             PlannerCandidateKind.property_mutation_test: 6,
             PlannerCandidateKind.zap_discovery_passive: 7,
+            PlannerCandidateKind.js_endpoint_extractor: 8,
+            PlannerCandidateKind.undocumented_endpoint_validator: 9,
             PlannerCandidateKind.scenario_plan_blocked: 10,
         }
         return sorted(
@@ -1407,6 +1771,171 @@ class PlannerService:
         return None
 
     @staticmethod
+    def _existing_undocumented_endpoint_observation(
+        campaign_id: str,
+        method: str,
+        path: str,
+    ) -> bool:
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "undocumented_endpoint_signal":
+                continue
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            existing_method = str(details.get("method") or raw.get("method") or "").strip().upper()
+            existing_path = normalize_api_path(str(details.get("path") or details.get("url_sanitized") or ""))
+            if existing_method == method and existing_path == path:
+                return True
+        return False
+
+    @staticmethod
+    def _existing_undocumented_endpoint_evidence_or_finding(
+        campaign_id: str,
+        method: str,
+        path: str,
+    ) -> bool:
+        for evidence in memory_store.list_evidence_packs_by_campaign(campaign_id):
+            if str(evidence.get("vulnerability_class") or "") != "undocumented_api_endpoint":
+                continue
+            existing_method = str(evidence.get("method") or "").strip().upper()
+            existing_path = normalize_api_path(str(evidence.get("endpoint") or ""))
+            if existing_method == method and existing_path == path:
+                return True
+        for finding in memory_store.list_confirmed_findings_by_campaign(campaign_id):
+            if str(finding.get("vulnerability_class") or "") != "undocumented_api_endpoint":
+                continue
+            existing_method = str(finding.get("method") or "").strip().upper()
+            existing_path = normalize_api_path(str(finding.get("endpoint") or ""))
+            if existing_method == method and existing_path == path:
+                return True
+        return False
+
+    @staticmethod
+    def _existing_undocumented_endpoint_run(
+        campaign_id: str,
+        requested_dedup_key: str,
+    ) -> dict[str, Any] | None:
+        active_or_done = {"accepted", "queued", "running", "finished", "partial"}
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "undocumented_endpoint_validator":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            if str(run.get("dedup_key") or "").strip() == requested_dedup_key:
+                return run
+            command_id = str(run.get("command_id") or "").strip()
+            if not command_id:
+                continue
+            command = memory_store.get_command(command_id) or {}
+            inputs = command.get("inputs") if isinstance(command, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            existing_key = "|".join([
+                campaign_id,
+                "undocumented_endpoint_validator",
+                str(inputs.get("method") or "").strip().upper(),
+                normalize_api_path(str(inputs.get("path") or inputs.get("request_url") or "")),
+            ])
+            if existing_key == requested_dedup_key:
+                return run
+        return None
+
+    @staticmethod
+    def _js_marker_summary_for_skip(campaign_id: str, js_url_sanitized: str) -> dict[str, Any]:
+        if not js_url_sanitized:
+            return {}
+        ref16 = hashlib.sha256(js_url_sanitized.encode("utf-8")).hexdigest()[:16]
+        latest_ts = ""
+        latest_details: dict[str, Any] | None = None
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "js_endpoint_extraction_result":
+                continue
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(details.get("source") or "").strip() != "js_endpoint_extractor":
+                continue
+            d_url = str(details.get("js_url_sanitized") or "").strip()
+            d_ref = str(details.get("source_js_ref") or "").strip()
+            if d_url != js_url_sanitized and d_ref != ref16:
+                continue
+            ts = str(raw.get("created_at") or "")
+            if ts >= latest_ts:
+                latest_ts = ts
+                latest_details = details
+        if not latest_details:
+            return {}
+        out: dict[str, Any] = {}
+        res = latest_details.get("result")
+        if res is not None and str(res).strip():
+            out["prior_result"] = res
+        rc = latest_details.get("reason_codes")
+        if isinstance(rc, list) and rc:
+            out["prior_reason_codes"] = rc
+        return out
+
+    @staticmethod
+    def _existing_js_endpoint_extraction_observation(
+        campaign_id: str,
+        js_url_sanitized: str,
+    ) -> bool:
+        if not js_url_sanitized:
+            return False
+        ref16 = hashlib.sha256(js_url_sanitized.encode("utf-8")).hexdigest()[:16]
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            otype = PlannerService._raw_observation_type(raw)
+            details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if otype == "js_endpoint_extraction_result":
+                if str(details.get("source") or "").strip() != "js_endpoint_extractor":
+                    continue
+                d_url = str(details.get("js_url_sanitized") or "").strip()
+                d_ref = str(details.get("source_js_ref") or "").strip()
+                if d_url == js_url_sanitized or d_ref == ref16:
+                    return True
+                continue
+            if otype != "discovered_endpoint":
+                continue
+            if str(details.get("source") or "").strip() != "js_endpoint_extractor":
+                continue
+            source_js_ref = str(details.get("source_js_ref") or "").strip()
+            if source_js_ref and source_js_ref == ref16:
+                return True
+        return False
+
+    @staticmethod
+    def _existing_js_endpoint_extractor_run(
+        campaign_id: str,
+        requested_dedup_key: str,
+    ) -> dict[str, Any] | None:
+        active_or_done = {"accepted", "queued", "running", "finished", "partial"}
+        for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+            if run.get("tool_name") != "js_endpoint_extractor":
+                continue
+            if str(run.get("status") or "").lower() not in active_or_done:
+                continue
+            if str(run.get("dedup_key") or "").strip() == requested_dedup_key:
+                return run
+            command_id = str(run.get("command_id") or "").strip()
+            if not command_id:
+                continue
+            command = memory_store.get_command(command_id) or {}
+            inputs = command.get("inputs") if isinstance(command, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            existing_key = "|".join([
+                campaign_id,
+                "js_endpoint_extractor",
+                _strip_query_and_fragment(
+                    sanitize_url_for_storage(str(inputs.get("js_url") or "").strip())
+                ),
+            ])
+            if existing_key == requested_dedup_key:
+                return run
+        return None
+
+    @staticmethod
+    def _looks_like_js_asset(raw_url: str) -> bool:
+        parsed = urlparse(str(raw_url or "").strip())
+        path = parsed.path if parsed.scheme or parsed.netloc else str(raw_url or "").split("?", 1)[0].split("#", 1)[0]
+        return str(path or "").strip().lower().endswith(".js")
+
+    @staticmethod
     def _redact_path_query(path_value: str) -> str:
         parsed = urlparse(str(path_value or ""))
         query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
@@ -1420,3 +1949,8 @@ class PlannerService:
         if parsed.fragment:
             out = f"{out}#{parsed.fragment}"
         return out
+
+
+def _strip_query_and_fragment(url: str) -> str:
+    parsed = urlparse(str(url or ""))
+    return parsed._replace(query="", fragment="").geturl()

@@ -918,9 +918,9 @@ workflow:
           }
           DEFAULT_PROFILE = "safe"
           PROFILE_MAX_ITERATIONS = {
-              "safe": 15,
-              "balanced": 25,
-              "aggressive": 40,
+              "safe": 25,
+              "balanced": 35,
+              "aggressive": 50,
           }
 
           def _json_list(value, default):
@@ -1406,8 +1406,8 @@ workflow:
                   "tool_failure_summaries": [],
                   "last_tool_error_type": "",
                   "last_tool_error_safe_message": "",
-                  "max_tool_failures_total": 3,
-                  "max_tool_failures_by_kind": 2,
+                  "max_tool_failures_total": 5,
+                  "max_tool_failures_by_kind": 3,
                   "tool_failed_fatal_mode": False,
                   "kind_caps": {
                       "schemathesis_negative_test": 4,
@@ -1417,6 +1417,8 @@ workflow:
                       "security_header_check": 2,
                       "cors_validator": 2,
                       "cookie_flag_validator": 2,
+                      "js_endpoint_extractor": 1,
+                      "undocumented_endpoint_validator": 2,
                       "zap_discovery_passive": 1,
                       "bola_replay_probe": 2,
                   },
@@ -2087,15 +2089,17 @@ workflow:
               MAX_BLOCKED_CANDIDATE_SAMPLE = 10
               MAX_READY_CANDIDATE_SAMPLE = 10
               KIND_PRIORITY = [
-                  "property_mutation_test",
+                  "schemathesis_negative_test",
+                  "injection_test",
+                  "zap_discovery_passive",
+                  "js_endpoint_extractor",
+                  "undocumented_endpoint_validator",
+                  "security_header_validator",
                   "cors_validator",
                   "cookie_flag_validator",
+                  "property_mutation_test",
                   "bola_replay_probe",
-                  "security_header_validator",
                   "security_header_check",
-                  "zap_discovery_passive",
-                  "injection_test",
-                  "schemathesis_negative_test",
               ]
               try:
                   payload = json.loads(body or '{}')
@@ -2111,6 +2115,7 @@ workflow:
               ready_seen = False
               ready_by_kind = {}
               ready_all = []
+              ready_candidates = []
               def _safe_blocked(candidate_obj: dict) -> dict:
                   summary = candidate_obj.get('summary') if isinstance(candidate_obj.get('summary'), dict) else {}
                   return {
@@ -2126,6 +2131,14 @@ workflow:
                       'fields_selected_count': int(summary.get('fields_selected_count') or 0),
                       'seed_request_id_present': bool(summary.get('seed_request_id_present')),
                       'reason_codes': summary.get('reason_codes') or [],
+                      'undocumented_candidate_source': str(summary.get('undocumented_candidate_source') or ''),
+                      'js_candidate_source': str(summary.get('js_candidate_source') or ''),
+                      'js_url_sanitized': str(summary.get('js_url_sanitized') or ''),
+                      'source_observation_id': str(summary.get('source_observation_id') or ''),
+                      'validation_mode': str(summary.get('validation_mode') or ''),
+                      'max_endpoints': int(summary.get('max_endpoints') or 0),
+                      'openapi_match': bool(summary.get('openapi_match')),
+                      'is_static_asset': bool(summary.get('is_static_asset')),
                   }
 
               def _safe_ready(candidate_obj: dict) -> dict:
@@ -2142,7 +2155,14 @@ workflow:
                       'strategy': str(command.get('strategy') or ''),
                       'cors_candidate_source': str(summary.get('cors_candidate_source') or ''),
                       'cookie_candidate_source': str(summary.get('cookie_candidate_source') or ''),
+                      'undocumented_candidate_source': str(summary.get('undocumented_candidate_source') or ''),
+                      'js_candidate_source': str(summary.get('js_candidate_source') or ''),
+                      'js_url_sanitized': str(summary.get('js_url_sanitized') or ''),
+                      'source_observation_id': str(summary.get('source_observation_id') or ''),
                       'validation_mode': str(summary.get('validation_mode') or ''),
+                      'max_endpoints': int(summary.get('max_endpoints') or 0),
+                      'openapi_match': bool(summary.get('openapi_match')),
+                      'is_static_asset': bool(summary.get('is_static_asset')),
                       'audit_flags': summary.get('audit_flags') or [],
                       'reason_codes': summary.get('reason_codes') or [],
                       'fields_selected_count': int(summary.get('fields_selected_count') or 0),
@@ -2158,15 +2178,20 @@ workflow:
                   kind = str(candidate.get('kind') or '')
                   ready_by_kind[kind] = int(ready_by_kind.get(kind, 0) or 0) + 1
                   ready_all.append(_safe_ready(candidate))
-                  if selected:
-                      continue
+                  ready_candidates.append(candidate)
+              priority_index = {name: idx for idx, name in enumerate(KIND_PRIORITY)}
+              for candidate in sorted(
+                  ready_candidates,
+                  key=lambda c: (priority_index.get(str(c.get('kind') or ''), 999),),
+              ):
+                  kind = str(candidate.get('kind') or '')
                   cap = kind_caps.get(kind)
                   executed = _int_value(executed_by_kind.get(kind, 0))
                   if cap is not None and executed >= _int_value(cap):
                       skipped_by_kind_cap_delta[kind] = skipped_by_kind_cap_delta.get(kind, 0) + 1
                       continue
-                  if isinstance(command, dict):
-                      selected = candidate
+                  selected = candidate
+                  break
               command = selected.get('command') if selected else {}
               missing = []
               blocked_by_kind = {}
@@ -2226,7 +2251,12 @@ workflow:
                       str(row.get('reason') or ''),
                       str(row.get('cors_candidate_source') or ''),
                       str(row.get('cookie_candidate_source') or ''),
+                      str(row.get('undocumented_candidate_source') or ''),
+                      str(row.get('js_candidate_source') or ''),
+                      str(row.get('js_url_sanitized') or ''),
                       str(row.get('validation_mode') or ''),
+                      str(row.get('openapi_match')),
+                      str(row.get('is_static_asset')),
                       str(row.get('mass_assignment_candidate_result') or ''),
                   )
                   if key in ready_seen_keys:
@@ -2871,8 +2901,8 @@ workflow:
                   },
               )
               failure_total = _int_value(state.get("tool_failures_count"), 0)
-              max_total = max(1, _int_value(state.get("max_tool_failures_total"), 3))
-              max_by_kind = max(1, _int_value(state.get("max_tool_failures_by_kind"), 2))
+              max_total = max(1, _int_value(state.get("max_tool_failures_total"), 5))
+              max_by_kind = max(1, _int_value(state.get("max_tool_failures_by_kind"), 3))
               fatal_mode = _bool_value(state.get("tool_failed_fatal_mode"), False)
               should_exit_loop = False
               if fatal_mode:
@@ -5124,12 +5154,13 @@ workflow:
             - runtime_effect_proven_count
             - confirmed_findings_count
             И добавь пояснение, что finding не создаётся без runtime_effect_proven:true.
+            Для API3 (owasp_coverage.API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION): если во входном JSON присутствуют диагностические счётчики (например candidates_considered, blocked_no_sensitive_fields_count, blocked_missing_seed_context_count, mass_assignment_signal_count, runtime_effect_proven_count) и для них заданы числовые значения или 0, не описывай весь раздел API3 одной фразой «не доступно» из‑за отсутствия подтверждённых уязвимостей — выведи фактические числа; при confirmed_findings_count = 0 и наличии таких счётчиков используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет» (близкий по смыслу эквивалент допускается).
+            Если перечисленные поля API3 действительно отсутствуют во входном JSON, для отсутствующих полей используй «не доступно».
             Раздел "Покрытие OWASP API Top 10" всегда должен содержать:
             - API8_SECURITY_MISCONFIGURATION
             - API9_IMPROPER_INVENTORY_MANAGEMENT
             - API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION
             Даже если confirmed_findings_count = 0.
-            В разделе API3, если значения отсутствуют, используй "не доступно".
             В разделе "Сводка выполнения worker-ов" выводи все worker kinds из worker_execution_summary/executed_by_kind, включая worker-ов с 0 findings.
             Для каждого worker укажи:
             - executed
@@ -5139,6 +5170,10 @@ workflow:
             - tool_failed
             - blocked и ready (если доступны)
             Не скрывай zap_discovery_passive, cors_validator, cookie_flag_validator, если они присутствуют в context.
+            js_endpoint_extractor трактуй строго как worker расширения поверхности и discovery:
+            - это не уязвимость и не прямой источник finding
+            - не называй вывод js_endpoint_extractor подтверждённой уязвимостью, finding или vulnerability
+            - он только расширяет список discovered endpoints для последующей проверки и даёт диагностические счётчики по JS
             В разделе "Ожидающие проверки" выводи для каждого item:
             - verification_plan_id или observation_id
             - status
@@ -5169,6 +5204,20 @@ workflow:
             Используй безопасную формулировку:
             "В ходе N итераций выполнены проверки несколькими worker-ами. Подтверждено M уязвимостей: ..."
             Если доступны данные покрытия, кратко укажи counts по API8/API9/API3.
+            Для API9 (owasp_coverage.API9_IMPROPER_INVENTORY_MANAGEMENT) в разделе деталей API9 всегда выведи следующие поля, если они присутствуют во входном JSON (число или not_available):
+            - schema_mismatch_count
+            - undocumented_endpoint_signal_count
+            - undocumented_endpoint_findings_count
+            - js_endpoint_extraction_count
+            - js_route_fragments_count
+            - js_route_fragments_matched_count
+            - js_endpoints_emitted_count
+            Если конкретного поля нет во входном JSON, для этого поля пиши "не доступно".
+            В разделе "## 6. Детали API9" обязательно включи подраздел с заголовком «Извлечение поверхности из JavaScript» (в скобках или отдельной строкой допустимо: JS surface extraction).
+            Для каждого элемента массива js_extraction_results выведи только безопасные поля: js_url_sanitized, source_js_ref, result, absolute_paths_count, route_fragments_count, route_fragments_matched_count, endpoints_emitted_count, reason_codes.
+            Если js_extraction_results отсутствует или пустой, в подразделе кратко укажи, что записей нет (или «не доступно» только если массив отсутствует вообще).
+            Интерпретация: если js_route_fragments_matched_count > 0 и при этом undocumented_endpoint_signal_count == 0, добавь пояснение на русском:
+            "JS-бандл содержит относительные маршруты; часть маршрутов сопоставлена с OpenAPI graph, поэтому они не считаются undocumented endpoints. Новых undocumented endpoint signals по JS extraction не выявлено."
             Markdown only.
         - id: user
           role: user
@@ -5190,7 +5239,9 @@ workflow:
             #### Рекомендации по устранению
             ## 5. Детали API8 Security Misconfiguration
             ## 6. Детали API9 Improper Inventory Management
+            В секции 6 обязательно: счётчики schema_mismatch_count, undocumented_endpoint_signal_count, undocumented_endpoint_findings_count, js_endpoint_extraction_count, js_route_fragments_count, js_route_fragments_matched_count, js_endpoints_emitted_count (если есть в JSON); подраздел «Извлечение поверхности из JavaScript» с элементами js_extraction_results (безопасные поля по system prompt); не называй js_endpoint_extractor источником уязвимостей или findings.
             ## 7. Диагностика API3 BOPLA / Mass Assignment
+            В секции 7 при наличии диагностических счётчиков API3 не своди статус к «не доступно»; при отсутствии подтверждённых уязвимостей используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет».
             ## 8. Ожидающие проверки
             ## 9. Заблокированные и пропущенные проверки
             ## 10. Сводка выполнения worker-ов

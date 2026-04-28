@@ -87,6 +87,7 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.zap_alert.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.nuclei_match.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
+    ObservationType.undocumented_endpoint_signal.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
     ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.validated_cookie_flag_issue.value: "API8_SECURITY_MISCONFIGURATION",
 }
@@ -241,6 +242,8 @@ class EvidencePackBuilder:
             self._fill_zap_or_nuclei(pack, obs, plan)
         elif obs_type == ObservationType.discovered_endpoint.value:
             self._fill_discovered_endpoint(pack, obs, plan)
+        elif obs_type == ObservationType.undocumented_endpoint_signal.value:
+            self._fill_undocumented_endpoint_signal(pack, obs, plan)
         elif obs_type == ObservationType.schema_mismatch.value:
             self._fill_schema_mismatch(pack, obs, plan)
         elif obs_type == ObservationType.injection_signal.value:
@@ -452,6 +455,12 @@ class EvidencePackBuilder:
             return "validated_cookie_flag_issue" in (pack.derived_signals or [])
         if code == "cookie_flag_context":
             return any(str(s).startswith("cookie_name_hash:") for s in (pack.derived_signals or []))
+        if code == "discovered_endpoint":
+            return "undocumented_endpoint_signal" in (pack.derived_signals or [])
+        if code == "openapi_absence":
+            return "openapi_match:false" in (pack.derived_signals or [])
+        if code == "runtime_observed_status":
+            return any(str(s).startswith("status_code:") for s in (pack.derived_signals or []))
         if code == "endpoint_context":
             return bool((pack.endpoint or "").strip())
         return False
@@ -497,6 +506,8 @@ class EvidencePackBuilder:
             return "cors_misconfiguration"
         if obs_type == ObservationType.validated_cookie_flag_issue.value:
             return "cookie_flag_misconfiguration"
+        if obs_type == ObservationType.undocumented_endpoint_signal.value:
+            return "undocumented_api_endpoint"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -908,6 +919,81 @@ class EvidencePackBuilder:
                 code="no_auth_access_result",
                 description="Unauthenticated access result for the discovered endpoint is missing.",
                 required_for="discovered_endpoint",
+            ))
+
+    def _fill_undocumented_endpoint_signal(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None,
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        method = str(details.get("method") or "").strip().upper()
+        path = str(details.get("path") or "").strip()
+        url_sanitized = str(details.get("url_sanitized") or "").strip()
+        source = str(details.get("source") or obs.source or "").strip()
+        matched_operation_id = str(details.get("matched_operation_id") or "").strip()
+        openapi_match = details.get("openapi_match") is True
+        is_static_asset = details.get("is_static_asset") is True
+        status_code_raw = details.get("status_code")
+        try:
+            status_code = int(status_code_raw)
+        except (TypeError, ValueError):
+            status_code = 0
+
+        pack.hypothesis = (
+            "Runtime discovery observed an endpoint that is not represented in the OpenAPI inventory."
+        )
+        pack.method = method
+        pack.endpoint = path
+
+        pack.derived_signals.extend([
+            "undocumented_endpoint_signal",
+            f"method:{method or 'unknown'}",
+            f"path:{path or 'unknown'}",
+            f"status_code:{status_code if status_code else 'unknown'}",
+            f"openapi_match:{str(openapi_match).lower()}",
+            f"source:{source or 'unknown'}",
+        ])
+        if url_sanitized:
+            pack.derived_signals.append(f"url_sanitized:{url_sanitized}")
+        if matched_operation_id:
+            pack.derived_signals.append(f"matched_operation_id:{matched_operation_id}")
+        if is_static_asset:
+            pack.derived_signals.append("is_static_asset:true")
+
+        if not method:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="method_missing",
+                description="undocumented_endpoint_signal evidence requires method.",
+                required_for="undocumented_endpoint_signal",
+            ))
+        if not path:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="path_missing",
+                description="undocumented_endpoint_signal evidence requires path.",
+                required_for="undocumented_endpoint_signal",
+            ))
+        if status_code <= 0:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="runtime_status_missing",
+                description="undocumented_endpoint_signal evidence requires runtime-observed status_code.",
+                required_for="undocumented_endpoint_signal",
+            ))
+        if status_code == 404:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="runtime_status_not_found",
+                description="undocumented_endpoint_signal cannot be judge-ready when runtime validation returned 404.",
+                required_for="undocumented_endpoint_signal",
+            ))
+        if openapi_match:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="openapi_absence_not_proven",
+                description="undocumented_endpoint_signal requires absence from the OpenAPI graph.",
+                required_for="undocumented_endpoint_signal",
+            ))
+        if is_static_asset:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="static_asset_ignored",
+                description="Static/service assets are not treated as undocumented API endpoints.",
+                required_for="undocumented_endpoint_signal",
             ))
 
     @staticmethod

@@ -722,6 +722,71 @@ def test_build_discovered_endpoint_missing_auth_check():
     assert pack.status == "incomplete"
 
 
+def test_build_undocumented_endpoint_signal_ready_for_judge():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="undocumented_endpoint_validator")
+    obs = _make_obs(
+        ObservationType.undocumented_endpoint_signal.value,
+        operation_id="",
+        details={
+            "method": "GET",
+            "path": "/api/hidden",
+            "url_sanitized": "http://testapp.local/api/hidden",
+            "status_code": 200,
+            "source": "zap_discovery_passive",
+            "source_observation_id": "obs_disc_1",
+            "openapi_match": False,
+            "matched_operation_id": "",
+            "is_static_asset": False,
+            "validation_mode": "one_shot_undocumented_endpoint_check",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_undocumented_endpoint_inventory",
+        required_evidence=["discovered_endpoint", "openapi_absence", "runtime_observed_status"],
+        plan_id="vplan_undoc_ready",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_undoc_ready")
+    assert pack is not None
+    assert pack.owasp_category == "API9_IMPROPER_INVENTORY_MANAGEMENT"
+    assert pack.vulnerability_class == "undocumented_api_endpoint"
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert "undocumented_endpoint_signal" in pack.derived_signals
+    blob = json.dumps(pack.model_dump(mode="json")).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
+        assert bad not in blob
+
+
+def test_build_undocumented_endpoint_signal_missing_status_not_judge_ready():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="undocumented_endpoint_validator")
+    obs = _make_obs(
+        ObservationType.undocumented_endpoint_signal.value,
+        details={
+            "method": "GET",
+            "path": "/api/hidden",
+            "url_sanitized": "http://testapp.local/api/hidden",
+            "openapi_match": False,
+            "is_static_asset": False,
+        },
+    )
+    _make_plan(
+        obs,
+        goal="validate_undocumented_endpoint_inventory",
+        required_evidence=["discovered_endpoint", "openapi_absence", "runtime_observed_status"],
+        plan_id="vplan_undoc_missing",
+    )
+    pack, _, _ = EvidencePackBuilder().build_from_verification_plan("vplan_undoc_missing")
+    assert pack is not None
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "runtime_status_missing" in missing_codes
+    assert pack.judge_ready is False
+
+
 def test_schema_mismatch_schemathesis_strong_signals_ready_for_judge():
     _reset_store()
     _create_campaign()

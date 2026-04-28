@@ -1304,6 +1304,43 @@ def test_normalize_validated_cookie_flag_issue_observation_lite_mapped():
     assert obs.judge_worthy is False
 
 
+def test_normalize_undocumented_endpoint_signal_observation_lite_mapped():
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "undocumented_endpoint_validator"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="undocumented_endpoint_signal",
+            confidence=0.8,
+            details={
+                "method": "GET",
+                "path": "/api/hidden",
+                "url_sanitized": "http://testapp.local/api/hidden",
+                "status_code": 200,
+                "source": "zap_discovery_passive",
+                "source_observation_id": "obs_disc_1",
+                "openapi_match": False,
+                "matched_operation_id": "",
+                "is_static_asset": False,
+                "validation_mode": "one_shot_undocumented_endpoint_check",
+                "security_relevance": "medium",
+                "recommended_next_action": "validate_undocumented_endpoint_inventory",
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == ObservationType.undocumented_endpoint_signal
+    assert obs.security_relevance == SecurityRelevance.medium
+    assert obs.recommended_next_action == "validate_undocumented_endpoint_inventory"
+    assert obs.judge_worthy is False
+
+
 def test_triage_validated_cookie_flag_issue_strong_creates_verification_plan():
     _reset_store()
     _create_campaign()
@@ -1358,3 +1395,52 @@ def test_triage_validated_cookie_flag_issue_weak_store_only():
         assert False, "Expected validation error for invalid VerificationPlan.status"
     except Exception:
         pass
+
+
+def test_triage_undocumented_endpoint_signal_strong_creates_verification_plan():
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "undocumented_endpoint_signal",
+        observation_id="obs_undoc_triage_ok",
+        details={
+            "method": "GET",
+            "path": "/api/hidden",
+            "url_sanitized": "http://testapp.local/api/hidden",
+            "status_code": 200,
+            "openapi_match": False,
+            "is_static_asset": False,
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "validate_undocumented_endpoint_inventory"
+    assert triaged.security_relevance == SecurityRelevance.medium
+    assert plan is not None
+    assert plan.goal == "validate_undocumented_endpoint_inventory"
+    assert plan.worker_class == "discovery_inventory"
+    assert plan.commands == []
+
+
+def test_triage_undocumented_endpoint_signal_404_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "undocumented_endpoint_signal",
+        observation_id="obs_undoc_triage_404",
+        details={
+            "method": "GET",
+            "path": "/api/hidden",
+            "url_sanitized": "http://testapp.local/api/hidden",
+            "status_code": 404,
+            "openapi_match": False,
+            "is_static_asset": False,
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.security_relevance == SecurityRelevance.informational
+    assert plan is None

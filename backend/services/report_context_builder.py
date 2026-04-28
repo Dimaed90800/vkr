@@ -40,6 +40,7 @@ _RECOMMENDATIONS_BY_CLASS = {
     "security_header_misconfiguration": "Set strict security headers server-side and validate them on all sensitive endpoints.",
     "cors_misconfiguration": "Restrict allowed origins and never combine wildcard origins with credentialed requests.",
     "cookie_flag_misconfiguration": "Set Secure, HttpOnly, and appropriate SameSite flags for session cookies.",
+    "undocumented_api_endpoint": "Synchronize runtime-discovered endpoints with the OpenAPI inventory and retire or protect undocumented routes.",
     "schema_contract_violation": "Align API behavior with schema contracts and reject malformed inputs deterministically.",
     "api_schema_contract_violation": "Align API behavior with schema contracts and reject malformed inputs deterministically.",
     "potential_mass_assignment": "Use explicit allow-lists for writable fields and enforce server-side field-level authorization.",
@@ -49,6 +50,7 @@ _IMPACT_BY_CLASS = {
     "security_header_misconfiguration": "Ослаблены клиентские защитные механизмы (например, от clickjacking и небезопасного content-sniffing), что повышает риск эксплуатации связанных уязвимостей.",
     "cors_misconfiguration": "При некорректной CORS-политике может возникнуть несанкционированное чтение данных в браузерном контексте авторизованного пользователя.",
     "cookie_flag_misconfiguration": "Сессионные cookie могут быть более подвержены перехвату или использованию в нежелательном контексте при отсутствии защитных флагов.",
+    "undocumented_api_endpoint": "Неописанный endpoint усложняет контроль поверхности атаки и может обходить ожидаемые процессы тестирования, авторизации и инвентаризации.",
     "schema_contract_violation": "Отклонение от контракта API может привести к непредсказуемой обработке входных данных и росту риска логических и валидационных дефектов.",
     "api_schema_contract_violation": "Отклонение от контракта API может привести к непредсказуемой обработке входных данных и росту риска логических и валидационных дефектов.",
     "potential_mass_assignment": "Неконтролируемая запись полей может позволить изменение чувствительных атрибутов объекта при наличии подходящего авторизованного контекста.",
@@ -58,6 +60,7 @@ _EXPLOITATION_SUMMARY_BY_CLASS = {
     "security_header_misconfiguration": "В рамках разрешённой тестовой среды можно подтвердить отсутствие или ослабление защитных заголовков на целевом endpoint.",
     "cors_misconfiguration": "В рамках разрешённой тестовой среды можно проверить, что CORS-доверие к Origin настроено слишком широко для credentialed-сценариев.",
     "cookie_flag_misconfiguration": "В рамках разрешённой тестовой среды можно подтвердить отсутствие обязательных защитных атрибутов сессионных cookie.",
+    "undocumented_api_endpoint": "В рамках разрешённой тестовой среды можно подтвердить, что runtime-обнаруженный endpoint отвечает и отсутствует в OpenAPI-инвентаре.",
     "schema_contract_violation": "В рамках разрешённой тестовой среды можно подтвердить отклонение фактического поведения API от OpenAPI-контракта.",
     "api_schema_contract_violation": "В рамках разрешённой тестовой среды можно подтвердить отклонение фактического поведения API от OpenAPI-контракта.",
     "potential_mass_assignment": "В рамках разрешённой тестовой среды можно проверить риск изменения чувствительных полей через разрешённый API-вызов.",
@@ -67,6 +70,7 @@ _NORMALIZED_OWASP_BY_CLASS = {
     "api_schema_contract_violation": "API9_IMPROPER_INVENTORY_MANAGEMENT",
     "schema_contract_violation": "API9_IMPROPER_INVENTORY_MANAGEMENT",
     "schema_mismatch": "API9_IMPROPER_INVENTORY_MANAGEMENT",
+    "undocumented_api_endpoint": "API9_IMPROPER_INVENTORY_MANAGEMENT",
     "security_header_misconfiguration": "API8_SECURITY_MISCONFIGURATION",
     "cors_misconfiguration": "API8_SECURITY_MISCONFIGURATION",
     "cookie_flag_misconfiguration": "API8_SECURITY_MISCONFIGURATION",
@@ -497,6 +501,7 @@ class ReportContextBuilder:
             "validated_security_header_issue": "validated_security_header_issue",
             "validated_cors_issue": "validated_cors_issue",
             "validated_cookie_flag_issue": "validated_cookie_flag_issue",
+            "undocumented_endpoint_signal": "undocumented_endpoint_signal",
             "schema_mismatch": "schema_mismatch",
             "mass_assignment_signal": "mass_assignment_signal",
         }
@@ -514,6 +519,7 @@ class ReportContextBuilder:
             "security_header_misconfiguration": "security_header_validator",
             "cors_misconfiguration": "cors_validator",
             "cookie_flag_misconfiguration": "cookie_flag_validator",
+            "undocumented_api_endpoint": "undocumented_endpoint_validator",
             "schema_contract_violation": "schemathesis_negative_test",
             "api_schema_contract_violation": "schemathesis_negative_test",
             "potential_mass_assignment": "property_mutation_test",
@@ -608,13 +614,16 @@ class ReportContextBuilder:
         for item in runtime.get("tool_failure_summaries") or []:
             if not isinstance(item, dict):
                 continue
+            error_type = str(item.get("tool_error_type") or item.get("error_type") or "not_available")
+            safe_message = str(item.get("tool_error_safe_message") or item.get("message") or "not_available")
             out.append({
                 "candidate_kind": str(item.get("candidate_kind") or ""),
                 "tool_name": str(item.get("tool_name") or ""),
                 "tool_run_id": str(item.get("tool_run_id") or ""),
-                "tool_result_status": str(item.get("tool_result_status") or ""),
-                "tool_error_type": str(item.get("tool_error_type") or ""),
-                "tool_error_safe_message": str(item.get("tool_error_safe_message") or ""),
+                "status": str(item.get("tool_result_status") or item.get("status") or ""),
+                "iteration_index": self._safe_int(item.get("iteration_index"), 0),
+                "error_type": error_type,
+                "safe_message": safe_message,
             })
         return out[:50]
 
@@ -640,6 +649,8 @@ class ReportContextBuilder:
                 finding_kinds["cors_validator"] += 1
             elif vc == "cookie_flag_misconfiguration":
                 finding_kinds["cookie_flag_validator"] += 1
+            elif vc == "undocumented_api_endpoint":
+                finding_kinds["undocumented_endpoint_validator"] += 1
             elif vc in {"api_schema_contract_violation", "schema_contract_violation"}:
                 finding_kinds["schemathesis_negative_test"] += 1
             elif vc == "potential_mass_assignment":
@@ -677,6 +688,49 @@ class ReportContextBuilder:
             "per_kind": per_kind,
         }
 
+    @staticmethod
+    def _js_extraction_coverage(observations: list[dict[str, Any]]) -> dict[str, Any]:
+        markers: list[dict[str, Any]] = []
+        for o in observations:
+            otype = str(o.get("type") or o.get("observation_type") or "")
+            if otype != "js_endpoint_extraction_result":
+                continue
+            det = o.get("details") if isinstance(o.get("details"), dict) else {}
+            if str(det.get("source") or "") != "js_endpoint_extractor":
+                continue
+            markers.append(det)
+        if not markers:
+            return {
+                "js_endpoint_extraction_count": 0,
+                "js_route_fragments_count": 0,
+                "js_route_fragments_matched_count": 0,
+                "js_endpoints_emitted_count": 0,
+                "js_extraction_results": [],
+            }
+        frag_total = sum(ReportContextBuilder._safe_int(m.get("route_fragments_count"), 0) for m in markers)
+        matched_total = sum(ReportContextBuilder._safe_int(m.get("route_fragments_matched_count"), 0) for m in markers)
+        emitted_total = sum(ReportContextBuilder._safe_int(m.get("endpoints_emitted_count"), 0) for m in markers)
+        samples: list[dict[str, Any]] = []
+        for det in markers[:10]:
+            rc = det.get("reason_codes")
+            samples.append({
+                "js_url_sanitized": str(det.get("js_url_sanitized") or ""),
+                "source_js_ref": str(det.get("source_js_ref") or ""),
+                "result": str(det.get("result") or ""),
+                "absolute_paths_count": ReportContextBuilder._safe_int(det.get("absolute_paths_count"), 0),
+                "route_fragments_count": ReportContextBuilder._safe_int(det.get("route_fragments_count"), 0),
+                "route_fragments_matched_count": ReportContextBuilder._safe_int(det.get("route_fragments_matched_count"), 0),
+                "endpoints_emitted_count": ReportContextBuilder._safe_int(det.get("endpoints_emitted_count"), 0),
+                "reason_codes": list(rc) if isinstance(rc, list) else [],
+            })
+        return {
+            "js_endpoint_extraction_count": len(markers),
+            "js_route_fragments_count": frag_total,
+            "js_route_fragments_matched_count": matched_total,
+            "js_endpoints_emitted_count": emitted_total,
+            "js_extraction_results": samples,
+        }
+
     def _build_owasp_coverage(
         self,
         *,
@@ -699,7 +753,17 @@ class ReportContextBuilder:
         findings_api3 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION")
 
         schema_mismatch_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "schema_mismatch")
+        undocumented_endpoint_signal_count = sum(
+            1
+            for o in observations
+            if str(o.get("type") or o.get("observation_type") or "") == "undocumented_endpoint_signal"
+        )
         mass_assignment_signal_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "mass_assignment_signal")
+        undocumented_endpoint_findings_count = sum(
+            1
+            for f in findings
+            if str(f.get("vulnerability_class") or "") == "undocumented_api_endpoint"
+        )
         runtime_effect_proven_count = 0
         for ev in evidence:
             derived = ev.get("derived_signals") if isinstance(ev.get("derived_signals"), list) else []
@@ -746,6 +810,9 @@ class ReportContextBuilder:
 
         api9_ex = self._safe_int(executed.get("schemathesis_negative_test"), 0)
         api9_ready = self._safe_int(ready_map.get("schemathesis_negative_test"), 0)
+        api9_undoc_ex = self._safe_int(executed.get("undocumented_endpoint_validator"), 0)
+        api9_undoc_ready = self._safe_int(ready_map.get("undocumented_endpoint_validator"), 0)
+        js_cov = self._js_extraction_coverage(observations)
         api3_ex = self._safe_int(executed.get("property_mutation_test"), 0)
         api3_ready = self._safe_int(ready_map.get("property_mutation_test"), 0)
         api3_blocked_total = self._safe_int(blocked_map.get("property_mutation_test"), 0) if runtime is not None else "not_available"
@@ -766,8 +833,8 @@ class ReportContextBuilder:
             },
             "API9_IMPROPER_INVENTORY_MANAGEMENT": {
                 "status": (
-                    "checked" if (runtime is not None and api9_ex > 0) else
-                    ("pending" if (runtime is not None and api9_ready > 0) else "not_available")
+                    "checked" if (runtime is not None and (api9_ex > 0 or api9_undoc_ex > 0)) else
+                    ("pending" if (runtime is not None and (api9_ready > 0 or api9_undoc_ready > 0)) else "not_available")
                 ),
                 "workers": {
                     "schemathesis_negative_test": {
@@ -777,13 +844,23 @@ class ReportContextBuilder:
                         "ready": api9_ready if runtime is not None else "not_available",
                         "blocked": self._safe_int(blocked_map.get("schemathesis_negative_test"), 0) if runtime is not None else "not_available",
                     },
+                    "undocumented_endpoint_validator": {
+                        "executed": api9_undoc_ex if runtime is not None else "not_available",
+                        "findings": self._safe_int(worker_execution_summary.get("per_kind", {}).get("undocumented_endpoint_validator", {}).get("findings_created", 0)),
+                        "no_observations": no_obs_by_kind.get("undocumented_endpoint_validator", "not_available" if runtime is None else 0),
+                        "ready": api9_undoc_ready if runtime is not None else "not_available",
+                        "blocked": self._safe_int(blocked_map.get("undocumented_endpoint_validator"), 0) if runtime is not None else "not_available",
+                    },
                 },
                 "confirmed_findings_count": findings_api9,
                 "schema_mismatch_count": schema_mismatch_count,
+                "undocumented_endpoint_signal_count": undocumented_endpoint_signal_count,
+                "undocumented_endpoint_findings_count": undocumented_endpoint_findings_count,
                 "contract_coverage": {
                     "operations_total": operations_total,
                     "operations_tested": operations_tested,
                 },
+                **js_cov,
             },
             "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION": {
                 "status": "checked" if runtime_effect_proven_count > 0 else "diagnostic",
@@ -859,6 +936,7 @@ class ReportContextBuilder:
             "security_header_misconfiguration",
             "cors_misconfiguration",
             "cookie_flag_misconfiguration",
+            "undocumented_api_endpoint",
             "api_schema_contract_violation",
             "potential_mass_assignment",
         })

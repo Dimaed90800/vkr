@@ -34,6 +34,8 @@ class ObservationType(str, Enum):
     mass_assignment_signal = "mass_assignment_signal"
     validated_cors_issue = "validated_cors_issue"
     validated_cookie_flag_issue = "validated_cookie_flag_issue"
+    undocumented_endpoint_signal = "undocumented_endpoint_signal"
+    js_endpoint_extraction_result = "js_endpoint_extraction_result"
 
 
 class SecurityRelevance(str, Enum):

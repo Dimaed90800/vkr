@@ -152,6 +152,10 @@ class CommandValidator:
             self._validate_cors_validator(command, campaign, errors)
         if (command.tool_name or "").strip() == "cookie_flag_validator":
             self._validate_cookie_flag_validator(command, campaign, errors)
+        if (command.tool_name or "").strip() == "js_endpoint_extractor":
+            self._validate_js_endpoint_extractor(command, campaign, errors)
+        if (command.tool_name or "").strip() == "undocumented_endpoint_validator":
+            self._validate_undocumented_endpoint_validator(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -756,6 +760,202 @@ class CommandValidator:
             errors.append(ValidationError(
                 code="cookie_budget_timeout",
                 message="cookie_flag_validator timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_undocumented_endpoint_validator(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "discovery_inventory":
+            errors.append(ValidationError(
+                code="undocumented_worker_class_invalid",
+                message="undocumented_endpoint_validator requires worker_class discovery_inventory.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "validate_undocumented_endpoint":
+            errors.append(ValidationError(
+                code="undocumented_strategy_invalid",
+                message="undocumented_endpoint_validator requires strategy validate_undocumented_endpoint.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "request_url",
+            "method",
+            "path",
+            "source_observation_id",
+            "validation_mode",
+            "max_response_bytes",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="undocumented_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for undocumented_endpoint_validator.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        request_url = str(inputs.get("request_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="undocumented_target_url_required",
+                message="inputs.target_url is required for undocumented_endpoint_validator.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="undocumented_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        if not request_url:
+            errors.append(ValidationError(
+                code="undocumented_request_url_required",
+                message="inputs.request_url is required for undocumented_endpoint_validator.",
+            ))
+
+        method = str(inputs.get("method") or "GET").strip().upper()
+        if method not in {"GET", "HEAD"}:
+            errors.append(ValidationError(
+                code="undocumented_method_not_allowed",
+                message="undocumented_endpoint_validator supports only GET or HEAD.",
+                details={"method": method},
+            ))
+
+        validation_mode = str(
+            inputs.get("validation_mode") or "one_shot_undocumented_endpoint_check"
+        ).strip()
+        if validation_mode and validation_mode != "one_shot_undocumented_endpoint_check":
+            errors.append(ValidationError(
+                code="undocumented_validation_mode_invalid",
+                message="validation_mode must be one_shot_undocumented_endpoint_check in MVP.",
+            ))
+
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="undocumented_budget_max_requests",
+                message="undocumented_endpoint_validator max_requests must be <= 1.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="undocumented_budget_timeout",
+                message="undocumented_endpoint_validator timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_js_endpoint_extractor(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "discovery_inventory":
+            errors.append(ValidationError(
+                code="js_extractor_worker_class_invalid",
+                message="js_endpoint_extractor requires worker_class discovery_inventory.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "extract_js_endpoints":
+            errors.append(ValidationError(
+                code="js_extractor_strategy_invalid",
+                message="js_endpoint_extractor requires strategy extract_js_endpoints.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "js_url",
+            "source_observation_id",
+            "validation_mode",
+            "max_js_bytes",
+            "max_endpoints",
+            "max_route_fragments",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="js_extractor_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for js_endpoint_extractor.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+
+        target_url = str(inputs.get("target_url") or "").strip()
+        js_url = str(inputs.get("js_url") or "").strip()
+        if not target_url:
+            errors.append(ValidationError(
+                code="js_extractor_target_url_required",
+                message="inputs.target_url is required for js_endpoint_extractor.",
+            ))
+        else:
+            trusted = str(campaign.target_url or "").rstrip("/")
+            if target_url.rstrip("/") != trusted:
+                errors.append(ValidationError(
+                    code="js_extractor_target_url_mismatch",
+                    message="inputs.target_url must equal campaign.target_url (ignoring trailing slash).",
+                ))
+        if not js_url:
+            errors.append(ValidationError(
+                code="js_extractor_js_url_required",
+                message="inputs.js_url is required for js_endpoint_extractor.",
+            ))
+        else:
+            parsed = urlparse(js_url)
+            path = (parsed.path or js_url.split("?", 1)[0].split("#", 1)[0]).lower()
+            if not path.endswith(".js"):
+                errors.append(ValidationError(
+                    code="js_extractor_url_not_js",
+                    message="js_endpoint_extractor requires js_url ending with .js.",
+                    details={"js_url": js_url},
+                ))
+
+        validation_mode = str(
+            inputs.get("validation_mode") or "static_js_endpoint_extraction"
+        ).strip()
+        if validation_mode and validation_mode != "static_js_endpoint_extraction":
+            errors.append(ValidationError(
+                code="js_extractor_validation_mode_invalid",
+                message="validation_mode must be static_js_endpoint_extraction in MVP.",
+            ))
+
+        max_js_bytes = int(inputs.get("max_js_bytes") or 3000000)
+        if max_js_bytes > 3000000:
+            errors.append(ValidationError(
+                code="js_extractor_max_js_bytes_invalid",
+                message="js_endpoint_extractor max_js_bytes must be <= 3000000.",
+                details={"max_js_bytes": max_js_bytes},
+            ))
+        max_endpoints = int(inputs.get("max_endpoints") or 50)
+        if max_endpoints > 100:
+            errors.append(ValidationError(
+                code="js_extractor_max_endpoints_invalid",
+                message="js_endpoint_extractor max_endpoints must be <= 100.",
+                details={"max_endpoints": max_endpoints},
+            ))
+        max_route_fragments = int(inputs.get("max_route_fragments") or 100)
+        if max_route_fragments > 100:
+            errors.append(ValidationError(
+                code="js_extractor_max_route_fragments_invalid",
+                message="js_endpoint_extractor max_route_fragments must be <= 100.",
+                details={"max_route_fragments": max_route_fragments},
+            ))
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="js_extractor_budget_max_requests",
+                message="js_endpoint_extractor max_requests must be <= 1.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="js_extractor_budget_timeout",
+                message="js_endpoint_extractor timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
 
