@@ -137,6 +137,9 @@ _STORE_ONLY_TYPES = {
     "data_exposure_probe_result",
     "auth_flow_signal",
     "test_account_materialization_result",
+    "resource_instance_inventory",
+    "resource_seed_result",
+    "bola_object_pair_inventory",
 }
 
 _SCHEMA_MISMATCH_STRONG_SIGNALS = {"5xx", "unexpected_2xx", "schema_violation"}
@@ -199,6 +202,8 @@ class ObservationTriage:
             return self._triage_ssrf_candidate_signal(obs)
         if obs_type == "data_exposure_signal":
             return self._triage_data_exposure_signal(obs)
+        if obs_type == "bola_replay_result":
+            return self._triage_bola_replay_result(obs)
 
         rule = _TRIAGE_RULES.get(obs_type)
         if rule is None:
@@ -416,6 +421,51 @@ class ObservationTriage:
                 required_evidence=[
                     "response_field_inventory",
                     "sensitive_field_names",
+                    "operation_context",
+                ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_bola_replay_result(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        access_granted = bool(details.get("access_granted"))
+        strength = str(details.get("evidence_strength") or "low").strip().lower()
+        op_id = str(details.get("target_operation_id") or obs.operation_id or "").strip()
+        if access_granted and strength in {"high", "medium"} and op_id:
+            obs.security_relevance = SecurityRelevance.high
+            obs.recommended_next_action = "validate_bola_replay_impact"
+            obs.judge_worthy = False
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_bola_replay_impact",
+                worker_class="access_control",
+                strategy="confirm_bola_replay",
+                required_evidence=[
+                    "bola_replay_request",
+                    "attacker_access_result",
                     "operation_context",
                 ],
                 commands=[],

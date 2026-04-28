@@ -51,6 +51,15 @@ try:
     from backend.services.adapters.test_account_materializer_adapter import (
         TestAccountMaterializerAdapter,
     )
+    from backend.services.adapters.resource_instance_extractor_adapter import (
+        ResourceInstanceExtractorAdapter,
+    )
+    from backend.services.adapters.resource_seed_worker_adapter import (
+        ResourceSeedWorkerAdapter,
+    )
+    from backend.services.adapters.bola_object_pair_builder_adapter import (
+        BolaObjectPairBuilderAdapter,
+    )
     from backend.services.artifact_store import ArtifactStore
     from backend.services.campaign_service import CampaignService
     from backend.services.command_validator import CommandValidator
@@ -93,6 +102,15 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.adapters.auth_flow_detector_adapter import AuthFlowDetectorAdapter
     from services.adapters.test_account_materializer_adapter import (
         TestAccountMaterializerAdapter,
+    )
+    from services.adapters.resource_instance_extractor_adapter import (
+        ResourceInstanceExtractorAdapter,
+    )
+    from services.adapters.resource_seed_worker_adapter import (
+        ResourceSeedWorkerAdapter,
+    )
+    from services.adapters.bola_object_pair_builder_adapter import (
+        BolaObjectPairBuilderAdapter,
     )
     from services.artifact_store import ArtifactStore
     from services.campaign_service import CampaignService
@@ -154,6 +172,9 @@ class ToolExecutor:
         self._data_exposure_validator = DataExposureValidatorAdapter(http_client=http_client)
         self._auth_flow_detector = AuthFlowDetectorAdapter()
         self._test_account_materializer = TestAccountMaterializerAdapter(http_client=http_client)
+        self._resource_instance_extractor = ResourceInstanceExtractorAdapter()
+        self._resource_seed_worker = ResourceSeedWorkerAdapter(http_client=http_client)
+        self._bola_object_pair_builder = BolaObjectPairBuilderAdapter()
 
     def execute_sync(self, command: WorkerCommand) -> ToolResult:
         validation = self._validator.validate(command)
@@ -229,6 +250,12 @@ class ToolExecutor:
             return self._auth_flow_detector.execute(command, campaign, tool_run_id)
         if command.tool_name == "test_account_materializer":
             return self._test_account_materializer.execute(command, campaign, tool_run_id)
+        if command.tool_name == "resource_instance_extractor":
+            return self._resource_instance_extractor.execute(command, campaign, tool_run_id)
+        if command.tool_name == "resource_seed_worker":
+            return self._resource_seed_worker.execute(command, campaign, tool_run_id)
+        if command.tool_name == "bola_object_pair_builder":
+            return self._bola_object_pair_builder.execute(command, campaign, tool_run_id)
         return self._noop.execute(command, campaign, tool_run_id)
 
     def start_async(self, command: WorkerCommand) -> ToolRun:

@@ -21,6 +21,7 @@ try:
     from backend.services.artifact_store import ArtifactStore
     from backend.services.auth_profile_store import AuthProfileStore
     from backend.services.http.safe_http_client import SafeHttpClient, sanitize_url_for_storage
+    from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.campaign import Campaign
     from models.tool_run import (
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.artifact_store import ArtifactStore
     from services.auth_profile_store import AuthProfileStore
     from services.http.safe_http_client import SafeHttpClient, sanitize_url_for_storage
+    from storage.memory_store import memory_store
 
 
 _SENSITIVE_NAME_PARTS: dict[str, tuple[str, ...]] = {
@@ -175,6 +177,8 @@ class DataExposureValidatorAdapter:
         max_response_bytes = max(1024, int(inputs.get("max_response_bytes") or 262144))
         max_depth = max(1, int(inputs.get("max_depth") or 6))
         max_fields = max(1, int(inputs.get("max_fields") or 200))
+        follow_same_origin_redirects = bool(inputs.get("follow_same_origin_redirects", True))
+        max_redirects = max(0, min(int(inputs.get("max_redirects") or 2), 2))
         timeout_sec = min(command.budget.timeout_sec, campaign.limits.max_duration_sec, 15)
         auth_mode = str(inputs.get("auth_mode") or "unauthenticated").strip() or "unauthenticated"
         auth_profile_id = str(inputs.get("auth_profile_id") or "").strip()
@@ -220,8 +224,38 @@ class DataExposureValidatorAdapter:
             timeout_sec=timeout_sec,
             max_response_bytes=max_response_bytes,
             follow_redirects=False,
+            follow_same_origin_redirects=follow_same_origin_redirects,
+            max_redirects=max_redirects,
         )
         status_code = int(result.status_code or 0)
+        if result.error is not None and result.error.code in {
+            "redirect_not_allowed",
+            "redirect_host_not_allowed",
+            "redirect_not_supported",
+        }:
+            reason_codes = ["redirect_response", "redirect_not_followed"]
+            if result.error.code == "redirect_host_not_allowed":
+                reason_codes.append("redirect_host_not_allowed")
+            return self._finished_empty(
+                command=command,
+                tool_run_id=tool_run_id,
+                start_ms=start_ms,
+                request_url=safe_req,
+                path_template=path_template,
+                operation_id=operation_id,
+                method=method,
+                validation_mode=validation_mode,
+                status_code=status_code,
+                probe_result="redirect_response",
+                reason_codes=reason_codes,
+                content_type_display=_display_content_type(str(result.response_content_type or "")),
+                auth_mode=auth_mode,
+                auth_profile_id=auth_profile_id,
+                role_hint=role_hint,
+                redirect_same_origin=bool(result.redirect_same_origin),
+                redirect_followed=bool(result.redirect_followed),
+                redirect_count=int(result.redirect_count or 0),
+            )
         if result.error is not None and result.error.code != "response_too_large":
             return self._failed(command, tool_run_id, start_ms, result.error.code, result.error.message)
 
@@ -332,6 +366,9 @@ class DataExposureValidatorAdapter:
                 auth_profile_id=auth_profile_id,
                 role_hint=role_hint,
             )
+
+        if auth_mode == "authenticated":
+            memory_store.store_runtime_response_json_secret(tool_run_id, parsed)
 
         fields: list[tuple[str, str]] = []
         if isinstance(parsed, dict):
@@ -489,6 +526,9 @@ class DataExposureValidatorAdapter:
         field_count: int = 0,
         sensitive_field_count: int = 0,
         sensitive_categories: list[str] | None = None,
+        redirect_same_origin: bool = False,
+        redirect_followed: bool = False,
+        redirect_count: int = 0,
     ) -> ToolResult:
         sens_cats = list(sensitive_categories or [])
         probe = _probe_observation(
@@ -506,6 +546,10 @@ class DataExposureValidatorAdapter:
             auth_profile_id=auth_profile_id,
             role_hint=role_hint,
         )
+        if probe_result == "redirect_response":
+            probe.details["redirect_same_origin"] = bool(redirect_same_origin)
+            probe.details["redirect_followed"] = bool(redirect_followed)
+            probe.details["redirect_count"] = int(redirect_count or 0)
         artifact = self._artifacts.save_artifact(
             campaign_id=command.campaign_id,
             tool_run_id=tool_run_id,
@@ -522,6 +566,9 @@ class DataExposureValidatorAdapter:
                 "auth_mode": auth_mode,
                 "auth_profile_id": auth_profile_id,
                 "role_hint": role_hint,
+                "redirect_same_origin": bool(redirect_same_origin),
+                "redirect_followed": bool(redirect_followed),
+                "redirect_count": int(redirect_count or 0),
             },
         )
         duration_ms = int(time.monotonic() * 1000) - start_ms

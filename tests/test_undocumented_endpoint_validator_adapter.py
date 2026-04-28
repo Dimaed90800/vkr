@@ -205,3 +205,94 @@ def test_undocumented_validator_response_too_large_recovers_status_from_error_me
     content = json.loads(str(artifact.get("content") or "{}"))
     assert content.get("result") == "not_found"
     assert content.get("reason_codes") == ["response_too_large_404"]
+
+
+def test_undocumented_validator_redirect_not_allowed_returns_finished_safe_artifact() -> None:
+    _reset_store()
+    adapter = UndocumentedEndpointValidatorAdapter()
+    safe_error = SafeHttpError(
+        code="redirect_not_allowed",
+        message="Redirect response was not followed because redirects are disabled.",
+        details={"status_code": 302, "location": "http://evil.local/next?token=abc"},
+    )
+
+    class _Result:
+        method = "GET"
+        url = "http://target.local/api/hidden?token=abc"
+        status_code = 0
+        error = safe_error
+
+    with patch.object(adapter._http, "request", return_value=_Result()):
+        result = adapter.execute(_command(), _campaign(), "toolrun_undoc_redirect_1")
+
+    assert result.status == "finished"
+    assert result.observations == []
+    assert result.errors == []
+    assert result.responses[0].status_code == 302
+    artifact = memory_store.get_artifact(result.artifacts[0].artifact_id)
+    assert artifact is not None
+    content = json.loads(str(artifact.get("content") or "{}"))
+    assert content.get("result") == "redirect_response"
+    assert content.get("status_code") == 302
+    assert "redirect_response" in (content.get("reason_codes") or [])
+    assert "redirect_not_followed" in (content.get("reason_codes") or [])
+    assert content.get("redirect_followed") is False
+    blob = json.dumps({"result": result.model_dump(mode="json"), "artifact": artifact}, sort_keys=True).lower()
+    for bad in ("location", "authorization", "cookie", "set-cookie", "token=abc", "request_body", "response_body", "raw_body", "headers", "bearer "):
+        assert bad not in blob
+
+
+def test_undocumented_validator_redirect_host_not_allowed_adds_reason_code_and_status_from_metadata() -> None:
+    _reset_store()
+    adapter = UndocumentedEndpointValidatorAdapter()
+    safe_error = SafeHttpError(
+        code="redirect_host_not_allowed",
+        message="redirect host not allowed",
+        details={},
+    )
+    setattr(safe_error, "metadata", {"status_code": 307})
+
+    class _Result:
+        method = "GET"
+        url = "http://target.local/api/hidden?token=abc"
+        status_code = 0
+        error = safe_error
+
+    with patch.object(adapter._http, "request", return_value=_Result()):
+        result = adapter.execute(_command(), _campaign(), "toolrun_undoc_redirect_2")
+
+    assert result.status == "finished"
+    assert result.observations == []
+    artifact = memory_store.get_artifact(result.artifacts[0].artifact_id)
+    assert artifact is not None
+    content = json.loads(str(artifact.get("content") or "{}"))
+    assert content.get("status_code") == 307
+    assert "redirect_host_not_allowed" in (content.get("reason_codes") or [])
+    assert "redirect_status_unavailable" not in (content.get("reason_codes") or [])
+
+
+def test_undocumented_validator_redirect_not_supported_without_status_is_finished_with_unavailable_reason() -> None:
+    _reset_store()
+    adapter = UndocumentedEndpointValidatorAdapter()
+    safe_error = SafeHttpError(
+        code="redirect_not_supported",
+        message="redirect not supported",
+        details={},
+    )
+
+    class _Result:
+        method = "GET"
+        url = "http://target.local/api/hidden?token=abc"
+        status_code = 0
+        error = safe_error
+
+    with patch.object(adapter._http, "request", return_value=_Result()):
+        result = adapter.execute(_command(), _campaign(), "toolrun_undoc_redirect_3")
+
+    assert result.status == "finished"
+    assert result.observations == []
+    artifact = memory_store.get_artifact(result.artifacts[0].artifact_id)
+    assert artifact is not None
+    content = json.loads(str(artifact.get("content") or "{}"))
+    assert content.get("status_code") == 0
+    assert "redirect_status_unavailable" in (content.get("reason_codes") or [])

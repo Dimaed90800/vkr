@@ -169,18 +169,28 @@ def test_init_loop_state_initializes_fair_selection_fields() -> None:
         '"max_tool_failures_total": 5',
         '"max_tool_failures_by_kind": 3',
         '"property_mutation_test": 2',
-        '"injection_test": 3',
+        '"injection_test": 2',
         '"schemathesis_negative_test": 4',
-        '"cors_validator": 2',
-        '"cookie_flag_validator": 2',
+        '"cors_validator": 1',
+        '"cookie_flag_validator": 1',
         '"js_endpoint_extractor": 1',
         '"auth_flow_detector": 1',
         '"test_account_materializer": 1',
         '"ssrf_candidate_detector": 2',
         '"undocumented_endpoint_validator": 2',
-        '"data_exposure_validator": 3',
+        '"data_exposure_validator": 8',
+        '"resource_instance_extractor": 3',
+        '"resource_seed_worker": 3',
+        '"bola_object_pair_builder": 2',
+        '"bola_replay_probe": 5',
+        '"security_header_validator": 3',
     ):
         assert field in code
+
+
+def test_init_loop_state_kind_caps_includes_bola_replay_probe() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"bola_replay_probe": 5' in code
 
 
 def test_select_ready_candidate_uses_fair_selection_state_and_caps_exhausted() -> None:
@@ -255,6 +265,7 @@ def test_extract_tool_run_exposes_safe_failure_fields() -> None:
 
 def test_loop_scenarios_preserves_evidence_capable_types() -> None:
     code = _node_data("route_by_observation_type")["code"]
+    assert "'bola_replay_result'" in code
     assert "'cross_role_access_signal'" in code
     assert "'validated_security_header_issue'" in code
     assert "'schema_mismatch'" in code
@@ -270,9 +281,28 @@ def test_loop_scenarios_preserves_pending_only_types() -> None:
 
 def test_loop_scenarios_observation_priority_includes_schema_mismatch() -> None:
     code = _node_data("summarize_observations")["code"]
+    assert "strong_bola = [" in code
+    assert "obs.get('type') == 'bola_replay_result'" in code
+    assert "owner_baseline_valid" in code
+    assert "access_granted" in code
+    assert "evidence_strength" in code
     assert "schema = [obs for obs in observations if obs.get('type') == 'schema_mismatch']" in code
+    assert "strong_bola[0] if strong_bola else (" in code
     assert "validated_headers[0] if validated_headers else (" in code
     assert "schema[0] if schema else (" in code
+
+
+def test_loop_scenarios_observation_priority_prefers_strong_bola_before_schema() -> None:
+    code = _node_data("summarize_observations")["code"]
+    idx_bola = code.find("strong_bola[0] if strong_bola else (")
+    idx_schema = code.find("schema[0] if schema else (")
+    assert idx_bola != -1 and idx_schema != -1 and idx_bola < idx_schema
+
+
+def test_loop_scenarios_summary_includes_bola_replay_counters() -> None:
+    code = _node_data("summarize_observations")["code"]
+    assert "'bola_replay_result_count'" in code
+    assert "'strong_bola_replay_count'" in code
 
 
 def test_loop_scenarios_schema_mismatch_is_evidence_capable() -> None:
@@ -303,6 +333,7 @@ def test_loop_scenarios_schema_mismatch_without_verification_plan_stays_pending(
     evidence_set = code.split("is_evidence_capable = obs_type in {", 1)[1].split(
         "} and has_plan", 1
     )[0]
+    assert "'bola_replay_result'" in evidence_set
     assert "'schema_mismatch'" in evidence_set
     assert "verification_route': 'evidence_judge_apply' if is_evidence_capable else 'pending_verification'" in code
     assert _has_edge("is_evidence_capable", "record_pending_verification", source_handle="false")
@@ -310,6 +341,15 @@ def test_loop_scenarios_schema_mismatch_without_verification_plan_stays_pending(
 
 def test_loop_scenarios_judge_prompt_has_schema_contract_guidance() -> None:
     prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
+    assert "For bola / bola_replay_result runtime evidence" in prompt
+    assert "owner_baseline_valid=true" in prompt
+    assert "access_granted=true" in prompt
+    assert "evidence_strength is medium or high" in prompt
+    assert "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION" in prompt
+    assert "vulnerability_class=bola" in prompt
+    assert "object_pair_id" in prompt
+    assert "target_path_template" in prompt
+    assert "replay_classification" in prompt
     assert "api_schema_contract_violation / schema_mismatch evidence" in prompt
     assert "tool_name:schemathesis_negative_test" in prompt
     assert "signal:5xx" in prompt
@@ -348,6 +388,15 @@ def test_loop_scenarios_schema_contract_compact_input_has_no_raw_body_headers_to
     code = _node_data("compact_evidence_for_judge")["code"]
     for bad in ("request_body", "response_body", "Authorization", "Cookie:", "Bearer "):
         assert bad not in code
+
+
+def test_loop_scenarios_judge_prompt_forbids_raw_bola_secrets_and_substituted_urls() -> None:
+    prompt = _node_data("llm_judge")["prompt_template"][0]["text"]
+    assert "raw object ids" in prompt
+    assert "raw substituted URLs" in prompt
+    assert "raw HTTP bodies" in prompt
+    assert "raw headers" in prompt
+    assert "tokens, passwords, cookies, or Authorization values" in prompt
 
 
 def test_loop_scenarios_observation_priority_includes_injection_signal() -> None:
@@ -494,7 +543,7 @@ def test_loop_seed_and_final_state_use_merged_scenario_state() -> None:
     assert seed["value_selector"] == ["merge_scenario_plan_into_planner_request", "state_json"]
 
 
-def test_normalize_inputs_safe_profile_defaults_to_30_iterations() -> None:
+def test_normalize_inputs_safe_profile_defaults_to_35_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -516,7 +565,7 @@ def test_normalize_inputs_safe_profile_defaults_to_30_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "30"
+    assert result["max_iterations"] == "35"
 
 
 def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
@@ -541,10 +590,10 @@ def test_normalize_inputs_missing_profile_uses_project_default_safe() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "safe"
-    assert result["max_iterations"] == "30"
+    assert result["max_iterations"] == "35"
 
 
-def test_normalize_inputs_balanced_profile_defaults_to_45_iterations() -> None:
+def test_normalize_inputs_balanced_profile_defaults_to_55_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -566,17 +615,17 @@ def test_normalize_inputs_balanced_profile_defaults_to_45_iterations() -> None:
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "balanced"
-    assert result["max_iterations"] == "45"
+    assert result["max_iterations"] == "55"
 
 
-def test_normalize_inputs_workflow_encodes_safe_30_balanced_45_profile_iteration_defaults() -> None:
+def test_normalize_inputs_workflow_encodes_safe_35_balanced_55_profile_iteration_defaults() -> None:
     code = _node_data("normalize_inputs")["code"]
-    assert '"safe": 30' in code
-    assert '"balanced": 45' in code
-    assert '"aggressive": 50' in code
+    assert '"safe": 35' in code
+    assert '"balanced": 55' in code
+    assert '"aggressive": 70' in code
 
 
-def test_normalize_inputs_aggressive_profile_defaults_to_50_iterations() -> None:
+def test_normalize_inputs_aggressive_profile_defaults_to_70_iterations() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -598,10 +647,10 @@ def test_normalize_inputs_aggressive_profile_defaults_to_50_iterations() -> None
         scenario_prompt_version="scenario-planner/v1",
     )
     assert result["profile"] == "aggressive"
-    assert result["max_iterations"] == "50"
+    assert result["max_iterations"] == "70"
 
 
-def test_normalize_inputs_clamps_explicit_max_iterations_to_50() -> None:
+def test_normalize_inputs_clamps_explicit_max_iterations_to_80() -> None:
     result = _run_code_node(
         "normalize_inputs",
         toolbox_url="http://toolbox.local",
@@ -622,7 +671,7 @@ def test_normalize_inputs_clamps_explicit_max_iterations_to_50() -> None:
         scenario_llm_model="",
         scenario_prompt_version="scenario-planner/v1",
     )
-    assert result["max_iterations"] == "50"
+    assert result["max_iterations"] == "80"
 
 
 def test_normalize_inputs_invalid_or_missing_max_iterations_use_profile_default() -> None:
@@ -666,8 +715,8 @@ def test_normalize_inputs_invalid_or_missing_max_iterations_use_profile_default(
         scenario_llm_model="",
         scenario_prompt_version="scenario-planner/v1",
     )
-    assert invalid["max_iterations"] == "45"
-    assert missing["max_iterations"] == "45"
+    assert invalid["max_iterations"] == "55"
+    assert missing["max_iterations"] == "55"
 
 
 def test_normalize_inputs_respects_explicit_valid_max_iterations() -> None:
@@ -769,11 +818,11 @@ def test_select_ready_candidate_skips_capped_first_ready_and_picks_next_kind() -
         state_json=json.dumps(
             {
                 "kind_caps": {
-                    "injection_test": 3,
+                    "injection_test": 2,
                     "property_mutation_test": 2,
                 },
                 "executed_by_kind": {
-                    "injection_test": 3,
+                    "injection_test": 2,
                 },
                 "skipped_by_kind_cap_count": {},
             },
@@ -823,7 +872,7 @@ def test_select_ready_candidate_extracts_blocked_candidates_sample_with_allowlis
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"injection_test": 3},
+                "kind_caps": {"injection_test": 2},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -897,13 +946,53 @@ def test_select_ready_candidate_extracts_blocked_candidates_sample_with_allowlis
         "auth_profiles_created_count",
         "signup_success_count",
         "login_success_count",
-        "owner_auth_profile_id",
-        "attacker_auth_profile_id",
-        "auth_type",
-        "token_response_detected",
-        "materialization_errors",
-        "auth_profiles",
-    }
+            "owner_auth_profile_id",
+            "attacker_auth_profile_id",
+            "auth_type",
+            "token_response_detected",
+            "resource_instance_candidate_source",
+            "resource_seed_candidate_source",
+            "bola_pair_candidate_source",
+            "seed_status",
+            "object_pairs_count",
+            "bola_replay_ready_count",
+            "bola_pair_resource_types",
+            "object_pairs",
+            "object_pair_id",
+        "bola_replay_candidate_source",
+        "target_operation_id",
+        "target_path_template",
+        "target_method",
+        "path_param_name",
+        "status_code",
+        "result",
+        "access_granted",
+        "evidence_strength",
+        "response_fingerprint_match",
+            "source_operation_id",
+            "source_path",
+            "source_auth_profile_id",
+            "source_role_hint",
+            "seed_operation_id",
+            "seed_method",
+            "seed_path",
+            "followup_operation_id",
+            "followup_method",
+            "followup_path",
+            "resource_instances_count",
+            "object_refs_count",
+            "object_refs_created_count",
+            "resource_types",
+            "object_refs",
+            "http_calls_count",
+            "object_ref_id",
+            "object_id_ref",
+            "object_id_field",
+            "resource_type",
+            "confidence",
+            "materialization_errors",
+            "auth_profiles",
+        }
 
 
 def test_select_ready_candidate_extracts_ready_candidates_sample_js_first_among_contract_and_surface_ready() -> None:
@@ -999,7 +1088,7 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_js_first_among_
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"injection_test": 3, "cors_validator": 2, "undocumented_endpoint_validator": 2, "js_endpoint_extractor": 1},
+                "kind_caps": {"injection_test": 2, "cors_validator": 1, "undocumented_endpoint_validator": 2, "js_endpoint_extractor": 1},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1072,13 +1161,53 @@ def test_select_ready_candidate_extracts_ready_candidates_sample_js_first_among_
         "auth_profiles_created_count",
         "signup_success_count",
         "login_success_count",
-        "owner_auth_profile_id",
-        "attacker_auth_profile_id",
-        "auth_type",
-        "token_response_detected",
-        "materialization_errors",
-        "auth_profiles",
-    }
+            "owner_auth_profile_id",
+            "attacker_auth_profile_id",
+            "auth_type",
+            "token_response_detected",
+            "resource_instance_candidate_source",
+            "resource_seed_candidate_source",
+            "bola_pair_candidate_source",
+            "seed_status",
+            "object_pairs_count",
+            "bola_replay_ready_count",
+            "bola_pair_resource_types",
+            "object_pairs",
+            "object_pair_id",
+        "bola_replay_candidate_source",
+        "target_operation_id",
+        "target_path_template",
+        "target_method",
+        "path_param_name",
+        "status_code",
+        "result",
+        "access_granted",
+        "evidence_strength",
+        "response_fingerprint_match",
+            "source_operation_id",
+            "source_path",
+            "source_auth_profile_id",
+            "source_role_hint",
+            "seed_operation_id",
+            "seed_method",
+            "seed_path",
+            "followup_operation_id",
+            "followup_method",
+            "followup_path",
+            "resource_instances_count",
+            "object_refs_count",
+            "object_refs_created_count",
+            "resource_types",
+            "object_refs",
+            "http_calls_count",
+            "object_ref_id",
+            "object_id_ref",
+            "object_id_field",
+            "resource_type",
+            "confidence",
+            "materialization_errors",
+            "auth_profiles",
+        }
     blob = json.dumps(sample, ensure_ascii=False).lower()
     for bad in ("authorization", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
         assert bad not in blob
@@ -1116,7 +1245,7 @@ def test_select_ready_candidate_ready_sample_includes_cookie_candidate_source() 
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"cookie_flag_validator": 2},
+                "kind_caps": {"cookie_flag_validator": 1},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1225,7 +1354,7 @@ def test_select_ready_candidate_ready_sample_includes_js_extractor_fields() -> N
 
 def test_init_loop_state_kind_caps_includes_data_exposure_validator() -> None:
     code = _node_data("init_loop_state")["code"]
-    assert '"data_exposure_validator": 3' in code
+    assert '"data_exposure_validator": 8' in code
 
 
 def test_init_loop_state_kind_caps_includes_ssrf_candidate_detector() -> None:
@@ -1243,6 +1372,21 @@ def test_init_loop_state_kind_caps_includes_test_account_materializer() -> None:
     assert '"test_account_materializer": 1' in code
 
 
+def test_init_loop_state_kind_caps_includes_resource_instance_extractor() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"resource_instance_extractor": 3' in code
+
+
+def test_init_loop_state_kind_caps_includes_resource_seed_worker() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"resource_seed_worker": 3' in code
+
+
+def test_init_loop_state_kind_caps_includes_bola_object_pair_builder() -> None:
+    code = _node_data("init_loop_state")["code"]
+    assert '"bola_object_pair_builder": 2' in code
+
+
 def test_select_ready_candidate_kind_priority_orders_data_exposure_before_api8_and_property_mutation() -> None:
     code = _node_data("select_ready_candidate")["code"]
     kpi = code.find("KIND_PRIORITY = [")
@@ -1257,7 +1401,46 @@ def test_select_ready_candidate_kind_priority_orders_data_exposure_before_api8_a
     assert dex < prio_block.index("property_mutation_test")
 
 
-def test_select_ready_candidate_kind_priority_places_ssrf_after_js_and_before_data_exposure() -> None:
+def test_select_ready_candidate_kind_priority_places_resource_instance_after_data_exposure_and_before_undocumented_and_api8() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    kpi = code.find("KIND_PRIORITY = [")
+    assert kpi != -1
+    bracket_end = code.find("]", kpi)
+    prio_block = code[kpi:bracket_end]
+    dexi = prio_block.index("data_exposure_validator")
+    resi = prio_block.index("resource_instance_extractor")
+    undi = prio_block.index("undocumented_endpoint_validator")
+    shi = prio_block.index("security_header_validator")
+    assert dexi < resi < undi
+    assert resi < shi
+
+
+def test_select_ready_candidate_kind_priority_places_resource_seed_between_resource_instance_and_undocumented() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    kpi = code.find("KIND_PRIORITY = [")
+    assert kpi != -1
+    bracket_end = code.find("]", kpi)
+    prio_block = code[kpi:bracket_end]
+    resi = prio_block.index("resource_instance_extractor")
+    seedi = prio_block.index("resource_seed_worker")
+    undi = prio_block.index("undocumented_endpoint_validator")
+    assert resi < seedi < undi
+
+
+def test_select_ready_candidate_kind_priority_places_bola_pair_builder_between_seed_and_bola_replay() -> None:
+    code = _node_data("select_ready_candidate")["code"]
+    kpi = code.find("KIND_PRIORITY = [")
+    assert kpi != -1
+    bracket_end = code.find("]", kpi)
+    prio_block = code[kpi:bracket_end]
+    seedi = prio_block.index("resource_seed_worker")
+    pairi = prio_block.index("bola_object_pair_builder")
+    bolai = prio_block.index("bola_replay_probe")
+    undi = prio_block.index("undocumented_endpoint_validator")
+    assert seedi < pairi < bolai < undi
+
+
+def test_select_ready_candidate_kind_priority_places_ssrf_after_bola_replay_and_before_undocumented() -> None:
     code = _node_data("select_ready_candidate")["code"]
     kpi = code.find("KIND_PRIORITY = [")
     assert kpi != -1
@@ -1266,9 +1449,12 @@ def test_select_ready_candidate_kind_priority_places_ssrf_after_js_and_before_da
     jsi = prio_block.index("js_endpoint_extractor")
     afi = prio_block.index("auth_flow_detector")
     tami = prio_block.index("test_account_materializer")
-    ssrfi = prio_block.index("ssrf_candidate_detector")
     dexi = prio_block.index("data_exposure_validator")
-    assert jsi < afi < tami < ssrfi < dexi
+    resi = prio_block.index("resource_seed_worker")
+    bolai = prio_block.index("bola_replay_probe")
+    ssrfi = prio_block.index("ssrf_candidate_detector")
+    undi = prio_block.index("undocumented_endpoint_validator")
+    assert jsi < afi < tami < dexi < resi < bolai < ssrfi < undi
 
 
 def test_select_ready_candidate_safe_samples_include_data_exposure_allowlist_fields() -> None:
@@ -1290,6 +1476,46 @@ def test_select_ready_candidate_safe_samples_include_data_exposure_allowlist_fie
         "'llm_candidate_reason'",
         "'llm_requires_seed'",
         "'llm_requires_auth'",
+        "'resource_instance_candidate_source'",
+        "'source_observation_id'",
+        "'source_operation_id'",
+        "'source_path'",
+        "'source_auth_profile_id'",
+        "'source_role_hint'",
+        "'resource_instances_count'",
+        "'object_refs_count'",
+        "'resource_types'",
+        "'object_ref_id'",
+        "'object_id_ref'",
+        "'object_id_field'",
+        "'resource_type'",
+        "'resource_seed_candidate_source'",
+        "'bola_pair_candidate_source'",
+        "'seed_status'",
+        "'object_pairs_count'",
+        "'bola_replay_ready_count'",
+        "'bola_pair_resource_types'",
+        "'object_pairs'",
+        "'object_pair_id'",
+        "'bola_replay_candidate_source'",
+        "'target_operation_id'",
+        "'target_path_template'",
+        "'target_method'",
+        "'path_param_name'",
+        "'status_code'",
+        "'result'",
+        "'access_granted'",
+        "'evidence_strength'",
+        "'response_fingerprint_match'",
+        "'seed_operation_id'",
+        "'seed_method'",
+        "'seed_path'",
+        "'followup_operation_id'",
+        "'followup_method'",
+        "'followup_path'",
+        "'object_refs_created_count'",
+        "'object_refs'",
+        "'http_calls_count'",
     ):
         assert needle in code
     assert "def _safe_ready" in code
@@ -1398,7 +1624,7 @@ def test_select_ready_candidate_prefers_auth_flow_detector_before_data_exposure_
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"auth_flow_detector": 1, "data_exposure_validator": 3},
+                "kind_caps": {"auth_flow_detector": 1, "data_exposure_validator": 5},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1474,7 +1700,7 @@ def test_select_ready_candidate_prefers_test_account_materializer_before_data_ex
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"test_account_materializer": 1, "data_exposure_validator": 3},
+                "kind_caps": {"test_account_materializer": 1, "data_exposure_validator": 5},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1543,7 +1769,7 @@ def test_select_ready_candidate_prefers_auth_flow_detector_over_materializer_and
                 "kind_caps": {
                     "auth_flow_detector": 1,
                     "test_account_materializer": 1,
-                    "data_exposure_validator": 3,
+                    "data_exposure_validator": 5,
                 },
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
@@ -1603,7 +1829,7 @@ def test_select_ready_candidate_prefers_data_exposure_validator_before_property_
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"property_mutation_test": 2, "data_exposure_validator": 3},
+                "kind_caps": {"property_mutation_test": 2, "data_exposure_validator": 5},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1686,7 +1912,7 @@ def test_select_ready_candidate_ready_sample_includes_ssrf_candidate_fields() ->
     assert row["candidate_fields_sample"][0]["confidence"] == "high"
 
 
-def test_select_ready_candidate_prefers_ssrf_candidate_detector_before_data_exposure_validator() -> None:
+def test_select_ready_candidate_prefers_data_exposure_validator_before_ssrf_candidate_detector() -> None:
     result = _run_code_node(
         "select_ready_candidate",
         body=json.dumps(
@@ -1722,14 +1948,14 @@ def test_select_ready_candidate_prefers_ssrf_candidate_detector_before_data_expo
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"ssrf_candidate_detector": 2, "data_exposure_validator": 3},
+                "kind_caps": {"ssrf_candidate_detector": 2, "data_exposure_validator": 5},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
             ensure_ascii=False,
         ),
     )
-    assert result["candidate_kind"] == "ssrf_candidate_detector"
+    assert result["candidate_kind"] == "data_exposure_validator"
 
 
 def test_select_ready_candidate_prefers_data_exposure_validator_before_security_header_validator_when_both_ready() -> None:
@@ -1786,7 +2012,7 @@ def test_select_ready_candidate_prefers_data_exposure_validator_before_security_
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"security_header_validator": 2, "data_exposure_validator": 3},
+                "kind_caps": {"security_header_validator": 3, "data_exposure_validator": 5},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -1795,6 +2021,81 @@ def test_select_ready_candidate_prefers_data_exposure_validator_before_security_
     )
     assert result["candidate_kind"] == "data_exposure_validator"
     assert result["selection_outcome"] == "selected_ready"
+
+
+def test_select_ready_candidate_prefers_resource_instance_extractor_before_undocumented_endpoint_validator() -> None:
+    result = _run_code_node(
+        "select_ready_candidate",
+        body=json.dumps(
+            {
+                "candidates": [
+                    {
+                        "candidate_id": "c_undoc",
+                        "kind": "undocumented_endpoint_validator",
+                        "status": "ready",
+                        "reason": "undocumented-runtime-check",
+                        "summary": {
+                            "operation_id": "op_GET_/api/hidden",
+                            "undocumented_candidate_source": "discovered_endpoint",
+                            "validation_mode": "one_shot_undocumented_endpoint_check",
+                            "audit_flags": [],
+                            "reason_codes": [],
+                        },
+                        "command": {
+                            "tool_name": "undocumented_endpoint_validator",
+                            "worker_class": "discovery_inventory",
+                            "strategy": "validate_undocumented_endpoint",
+                        },
+                    },
+                    {
+                        "candidate_id": "c_resource",
+                        "kind": "resource_instance_extractor",
+                        "status": "ready",
+                        "reason": "authenticated inventory available",
+                        "summary": {
+                            "source_observation_id": "obs_rfi_auth_1",
+                            "source_operation_id": "op_GET_/api/me",
+                            "source_path": "/api/me",
+                            "source_auth_profile_id": "authprof_owner_1",
+                            "source_role_hint": "owner",
+                            "resource_instance_candidate_source": "authenticated_inventory",
+                            "resource_instances_count": 0,
+                            "object_refs_count": 0,
+                            "resource_types": ["vehicle"],
+                            "validation_mode": "resource_instance_extraction",
+                            "audit_flags": [],
+                            "reason_codes": ["authenticated_inventory_available"],
+                        },
+                        "command": {
+                            "tool_name": "resource_instance_extractor",
+                            "worker_class": "auth_context",
+                            "strategy": "extract_resource_instances",
+                        },
+                    },
+                ],
+                "ready_count": "2",
+                "blocked_count": "0",
+                "skipped_existing_count": "0",
+            },
+            ensure_ascii=False,
+        ),
+        state_json=json.dumps(
+            {
+                "kind_caps": {"resource_instance_extractor": 2, "undocumented_endpoint_validator": 2},
+                "executed_by_kind": {},
+                "skipped_by_kind_cap_count": {},
+            },
+            ensure_ascii=False,
+        ),
+    )
+    assert result["candidate_kind"] == "resource_instance_extractor"
+    sample = json.loads(result["ready_candidates_sample_json"])
+    row = next(r for r in sample if r.get("kind") == "resource_instance_extractor")
+    assert row["source_observation_id"] == "obs_rfi_auth_1"
+    assert row["source_operation_id"] == "op_GET_/api/me"
+    assert row["source_auth_profile_id"] == "authprof_owner_1"
+    assert row["resource_instance_candidate_source"] == "authenticated_inventory"
+    assert row["resource_types"] == ["vehicle"]
 
 
 def test_select_ready_candidate_caps_blocked_candidates_sample_to_10() -> None:
@@ -1894,7 +2195,7 @@ def test_select_ready_candidate_representative_sample_includes_property_mutation
     result = _run_code_node(
         "select_ready_candidate",
         body=json.dumps({"candidates": [*noisy, mass_blocked, ready]}, ensure_ascii=False),
-        state_json=json.dumps({"kind_caps": {"injection_test": 3}, "executed_by_kind": {}, "skipped_by_kind_cap_count": {}}, ensure_ascii=False),
+        state_json=json.dumps({"kind_caps": {"injection_test": 2}, "executed_by_kind": {}, "skipped_by_kind_cap_count": {}}, ensure_ascii=False),
     )
     assert result["candidate_kind"] == "injection_test"
     assert int(result["blocked_candidates_count_total"]) == 16
@@ -1933,11 +2234,11 @@ def test_select_ready_candidate_returns_caps_exhausted_when_all_ready_are_capped
         state_json=json.dumps(
             {
                 "kind_caps": {
-                    "injection_test": 3,
+                    "injection_test": 2,
                     "schemathesis_negative_test": 4,
                 },
                 "executed_by_kind": {
-                    "injection_test": 3,
+                    "injection_test": 2,
                     "schemathesis_negative_test": 4,
                 },
                 "skipped_by_kind_cap_count": {},
@@ -1972,7 +2273,7 @@ def test_select_ready_candidate_returns_no_ready_candidate_when_none_ready() -> 
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"injection_test": 3},
+                "kind_caps": {"injection_test": 2},
                 "executed_by_kind": {},
                 "skipped_by_kind_cap_count": {},
             },
@@ -2002,7 +2303,7 @@ def test_select_ready_candidate_treats_unknown_kind_as_uncapped() -> None:
         ),
         state_json=json.dumps(
             {
-                "kind_caps": {"injection_test": 3},
+                "kind_caps": {"injection_test": 2},
                 "executed_by_kind": {"future_worker_kind": 99},
                 "skipped_by_kind_cap_count": {},
             },
@@ -2032,9 +2333,9 @@ def test_select_ready_candidate_prefers_js_extractor_over_late_validators_when_u
         state_json=json.dumps(
             {
                 "kind_caps": {
-                    "security_header_validator": 2,
-                    "cors_validator": 2,
-                    "cookie_flag_validator": 2,
+                    "security_header_validator": 3,
+                    "cors_validator": 1,
+                    "cookie_flag_validator": 1,
                     "js_endpoint_extractor": 1,
                 },
                 "executed_by_kind": {},
@@ -2062,7 +2363,7 @@ def test_select_ready_candidate_prefers_undocumented_validator_over_security_hea
         state_json=json.dumps(
             {
                 "kind_caps": {
-                    "security_header_validator": 2,
+                    "security_header_validator": 3,
                     "undocumented_endpoint_validator": 2,
                 },
                 "executed_by_kind": {},
@@ -2091,7 +2392,7 @@ def test_select_ready_candidate_falls_through_when_js_extractor_cap_exhausted() 
             {
                 "kind_caps": {
                     "js_endpoint_extractor": 1,
-                    "security_header_validator": 2,
+                    "security_header_validator": 3,
                 },
                 "executed_by_kind": {"js_endpoint_extractor": 1},
                 "skipped_by_kind_cap_count": {},
@@ -2120,7 +2421,7 @@ def test_select_ready_candidate_falls_through_when_undocumented_validator_cap_ex
             {
                 "kind_caps": {
                     "undocumented_endpoint_validator": 2,
-                    "security_header_validator": 2,
+                    "security_header_validator": 3,
                 },
                 "executed_by_kind": {"undocumented_endpoint_validator": 2},
                 "skipped_by_kind_cap_count": {},
@@ -2355,14 +2656,14 @@ def test_runtime_style_failed_security_header_allows_next_cors_selection() -> No
         state_json=json.dumps(
             {
                 "iterations_run": 9,
-                "executed_by_kind": {"security_header_validator": 1},
+                "executed_by_kind": {"security_header_validator": 2},
                 "failed_by_kind": {},
                 "tool_failures_count": 0,
                 "tool_failure_summaries": [],
                 "max_tool_failures_total": 5,
                 "max_tool_failures_by_kind": 3,
                 "tool_failed_fatal_mode": False,
-                "kind_caps": {"security_header_validator": 2, "cors_validator": 2},
+                "kind_caps": {"security_header_validator": 3, "cors_validator": 1},
                 "skipped_by_kind_cap_count": {},
                 "iteration_summaries": [],
             },
@@ -2384,7 +2685,7 @@ def test_runtime_style_failed_security_header_allows_next_cors_selection() -> No
     )
     continued_state = json.loads(failure_result["state_json"])
     assert failure_result["should_exit_loop"] is False
-    assert continued_state["executed_by_kind"]["security_header_validator"] == 2
+    assert continued_state["executed_by_kind"]["security_header_validator"] == 3
     next_pick = _run_code_node(
         "select_ready_candidate",
         body=json.dumps(
@@ -2416,7 +2717,7 @@ def test_runtime_style_failed_security_header_allows_next_cors_selection() -> No
 def test_stop_no_ready_candidate_caps_exhausted_keeps_executed_counts_and_sets_reason() -> None:
     input_state = {
         "iterations_run": 2,
-        "executed_by_kind": {"injection_test": 3},
+        "executed_by_kind": {"injection_test": 2},
         "skipped_by_kind_cap_count": {"injection_test": 1},
         "iteration_summaries": [],
     }
@@ -2437,7 +2738,7 @@ def test_stop_no_ready_candidate_caps_exhausted_keeps_executed_counts_and_sets_r
     assert result["should_exit_loop"] is True
     assert state["stopped_reason"] == "caps_exhausted"
     assert state["last_selection_outcome"] == "caps_exhausted"
-    assert state["executed_by_kind"] == {"injection_test": 3}
+    assert state["executed_by_kind"] == {"injection_test": 2}
     assert state["skipped_by_kind_cap_count"] == {"injection_test": 3}
     assert state["blocked_candidates_count_total"] == 1
     assert state["blocked_candidates_by_kind_count"] == {"property_mutation_test": 1}
@@ -2710,7 +3011,44 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "operations_with_authenticated_inventory" in sys_prompt
     assert "data_exposure_authenticated_non_200_count" in sys_prompt
     assert "data_exposure_authenticated_fields_extracted_count" in sys_prompt
+    assert "resource_instance_inventory_count" in sys_prompt
+    assert "resource_instances_count" in sys_prompt
+    assert "object_refs_count" in sys_prompt
+    assert "operations_with_resource_instances" in sys_prompt
+    assert "resource_types" in sys_prompt
+    assert "resource_instance_results" in sys_prompt
+    assert "resource_seed_result_count" in sys_prompt
+    assert "resource_seed_success_count" in sys_prompt
+    assert "resource_seed_object_refs_created_count" in sys_prompt
+    assert "resource_seed_results" in sys_prompt
+    assert "bola_object_pair_inventory_count" in sys_prompt
+    assert "bola_object_pairs_count" in sys_prompt
+    assert "bola_pair_resource_types" in sys_prompt
+    assert "bola_replay_ready_count" in sys_prompt
+    assert "bola_object_pairs" in sys_prompt
+    assert "bola_replay_result_count" in sys_prompt
+    assert "bola_replay_granted_count" in sys_prompt
+    assert "bola_replay_denied_count" in sys_prompt
+    assert "bola_replay_results" in sys_prompt
     assert "auth_profile_id — безопасная ссылка на auth profile" in sys_prompt
+    assert "Извлечение ресурсных идентификаторов" in sys_prompt
+    assert "object_id_ref — безопасная ссылка, а не raw object id" in sys_prompt
+    assert "resource_instance_inventory — диагностический и context-producing результат, а не уязвимость" in sys_prompt
+    assert "resource_seed_result — диагностический и context-producing результат, а не уязвимость" in sys_prompt
+    assert "bola_object_pair_inventory — диагностический и context-producing результат, а не уязвимость" in sys_prompt
+    assert "object_pair_id — безопасная ссылка для планирования replay" in sys_prompt
+    assert "object_id_ref/object_ref_id — безопасные ссылки" in sys_prompt
+    assert "bola_replay_result — runtime evidence" in sys_prompt
+    assert "не автоматически confirmed finding" in sys_prompt
+    assert "raw URL" in sys_prompt
+    assert "Safe Resource Seeding" in sys_prompt
+    assert "BOLA Object Pair Builder" in sys_prompt
+    assert "BOLA Replay Diagnostics" in sys_prompt
+    assert "Safe resource seeding created object references for BOLA/object-pair follow-up." in sys_prompt
+    assert "Resource seeding was attempted but did not create object references; use reason_codes as blockers." in sys_prompt
+    assert "BOLA replay can be planned using prepared object pairs." in sys_prompt
+    assert "BOLA replay remains blocked because no object pairs were prepared." in sys_prompt
+    assert "можно планировать следующий шаг BOLA/object-pair follow-up" in sys_prompt
     assert "последующие проверки API3 с аутентификацией успешно извлекли response field inventory" in sys_prompt
     assert "authenticated follow-up выполнялся, но inventory полей не извлечён" in sys_prompt
     assert "аутентификация разблокировала получение API3 field inventory" in sys_prompt
@@ -2735,7 +3073,9 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "не как подтверждение уязвимости и не как замену вердикта Judge" in sys_prompt
     assert "finding не создаётся без runtime_effect_proven:true" in sys_prompt
     assert "Раздел \"Покрытие OWASP API Top 10\" всегда должен содержать" in sys_prompt
+    assert "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION" in sys_prompt
     assert "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION" in sys_prompt
+    assert "при наличии confirmed findings класса bola выведи их в секции «Подтверждённые уязвимости»" in sys_prompt
     assert "если confirmed_findings_count = 0" in sys_prompt
     assert "finding.resource_context.is_static_asset=true" in sys_prompt
     assert "Находка относится к статическому ресурсу; влияние обычно ниже, чем для бизнес-API, но заголовки безопасности рекомендуется применять централизованно." in sys_prompt
@@ -2850,6 +3190,7 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     ):
         assert section in user_prompt
     assert "js_endpoint_extraction_count" in user_prompt
+    assert "для API1 (owasp_coverage.API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION)" in user_prompt
     assert "js_extraction_results" in user_prompt
     assert "не называй js_endpoint_extractor источником уязвимостей или findings" in user_prompt
     assert "ssrf_candidate_signal_count" in user_prompt
@@ -2882,8 +3223,46 @@ def test_llm_report_agent_prompt_has_required_factual_and_safety_constraints() -
     assert "operations_with_authenticated_inventory" in user_prompt
     assert "data_exposure_authenticated_non_200_count" in user_prompt
     assert "data_exposure_authenticated_fields_extracted_count" in user_prompt
+    assert "resource_instance_inventory_count" in user_prompt
+    assert "resource_instances_count" in user_prompt
+    assert "object_refs_count" in user_prompt
+    assert "operations_with_resource_instances" in user_prompt
+    assert "resource_types" in user_prompt
+    assert "resource_instance_results" in user_prompt
+    assert "resource_seed_result_count" in user_prompt
+    assert "resource_seed_success_count" in user_prompt
+    assert "resource_seed_object_refs_created_count" in user_prompt
+    assert "resource_seed_results" in user_prompt
+    assert "bola_object_pair_inventory_count" in user_prompt
+    assert "bola_object_pairs_count" in user_prompt
+    assert "bola_pair_resource_types" in user_prompt
+    assert "bola_replay_ready_count" in user_prompt
+    assert "bola_object_pairs" in user_prompt
+    assert "bola_replay_result_count" in user_prompt
+    assert "bola_replay_granted_count" in user_prompt
+    assert "bola_replay_denied_count" in user_prompt
+    assert "bola_replay_results" in user_prompt
     assert "auth_profile_id — безопасная ссылка" in user_prompt
+    assert "Извлечение ресурсных идентификаторов" in user_prompt
+    assert "object_id_ref — безопасная ссылка, а не raw object id" in user_prompt
+    assert "resource_instance_inventory не является уязвимостью" in user_prompt
+    assert "resource_seed_result не является уязвимостью" in user_prompt
+    assert "bola_object_pair_inventory не является уязвимостью" in user_prompt
+    assert "object_pair_id — безопасная ссылка для replay planning" in user_prompt
+    assert "object_id_ref/object_ref_id — безопасные ссылки" in user_prompt
+    assert "bola_replay_result не является автоматически confirmed vulnerability" in user_prompt
+    assert "raw URL" in user_prompt
+    assert "Safe Resource Seeding" in user_prompt
+    assert "BOLA Object Pair Builder" in user_prompt
+    assert "BOLA Replay Diagnostics" in user_prompt
+    assert "Safe resource seeding created object references for BOLA/object-pair follow-up." in user_prompt
+    assert "Resource seeding was attempted but did not create object references; use reason_codes as blockers." in user_prompt
+    assert "BOLA replay can be planned using prepared object pairs." in user_prompt
+    assert "BOLA replay remains blocked because no object pairs were prepared." in user_prompt
+    assert "Если resource_instances_count > 0, укажи, что можно планировать BOLA/object-pair follow-up." in user_prompt
     assert "не выводи raw token, password, cookie, Authorization, raw request/response body" in user_prompt
+    assert "Не выводи raw object id values, raw payloads, raw responses, raw token, password, cookie, Authorization." in user_prompt
+    assert "raw headers" in user_prompt
     assert "аутентификация разблокировала API3 field inventory" in user_prompt
     assert "Диагностика data_exposure_validator" in user_prompt
     assert "non-200" in user_prompt.lower()
@@ -2944,6 +3323,27 @@ def test_merge_report_output_prefers_markdown_else_uses_compact_fallback() -> No
     assert "Markdown report generation unavailable; returning compact fallback." in without_md["final_report"]
     assert without_md["report_generation_status"] == "context_unavailable"
     assert without_md["report_context_error"] == "invalid report context json"
+
+
+def test_llm_report_prompt_declares_compact_mode_and_artifact_path_rules() -> None:
+    prompts = _node_data("llm_report_agent")["prompt_template"]
+    sys_prompt = prompts[0]["text"]
+    user_prompt = prompts[1]["text"]
+    assert "Режим отчёта: COMPACT" in sys_prompt
+    assert "В каждой Markdown-таблице выводи максимум 5 строк данных." in sys_prompt
+    assert "Диагностические сигналы не являются подтверждёнными уязвимостями." in sys_prompt
+    assert "Пути к артефактам" in user_prompt
+    assert "logs/dast_runs/<campaign_id>/reports/report_full.md" in user_prompt
+    assert "logs/dast_runs/<campaign_id>/reports/report_confirmed_findings.md" in user_prompt
+    assert "logs/dast_runs/<campaign_id>/reports/report_context_sanitized.json" in user_prompt
+
+
+def test_build_final_report_mentions_report_artifact_paths() -> None:
+    code = _node_data("build_final_report")["code"]
+    assert "/v1/reports/{campaign_id}/write-artifacts" in code
+    assert "report_full_path" in code
+    assert "report_confirmed_findings_path" in code
+    assert "report_context_sanitized_path" in code
 
 
 def test_final_loop_state_sets_max_iterations_reached_when_reason_missing() -> None:

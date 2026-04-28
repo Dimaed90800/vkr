@@ -94,6 +94,10 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.validated_cookie_flag_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.data_exposure_signal.value: "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+    ObservationType.resource_instance_inventory.value: "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+    ObservationType.resource_seed_result.value: "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+    ObservationType.bola_object_pair_inventory.value: "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION",
+    ObservationType.bola_replay_result.value: "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
 }
 
 
@@ -103,6 +107,9 @@ _NOT_JUDGE_READY_TYPES: set[str] = {
     ObservationType.tool_error.value,
     ObservationType.sensitive_field_seen.value,
     ObservationType.auth_flow_signal.value,
+    ObservationType.resource_instance_inventory.value,
+    ObservationType.resource_seed_result.value,
+    ObservationType.bola_object_pair_inventory.value,
 }
 
 _INJECTION_STRONG_SIGNALS: frozenset[str] = frozenset({
@@ -231,6 +238,8 @@ class EvidencePackBuilder:
 
         if obs_type == ObservationType.cross_role_access_signal.value:
             self._fill_cross_role(pack, obs, plan)
+        elif obs_type == ObservationType.bola_replay_result.value:
+            self._fill_bola_replay_result(pack, obs, plan)
         elif obs_type in (
             ObservationType.unexpected_500.value,
             ObservationType.server_error_candidate.value,
@@ -533,6 +542,8 @@ class EvidencePackBuilder:
             return "sensitive_property_exposure"
         if obs_type == ObservationType.auth_flow_signal.value:
             return "auth_flow_diagnostic"
+        if obs_type == ObservationType.bola_replay_result.value:
+            return "bola"
         return obs_type
 
     # ------------------------------------------------------------------
@@ -636,6 +647,121 @@ class EvidencePackBuilder:
         pack.missing_evidence = missing
         pack.derived_signals = self._cross_role_derived_signals(
             obs, baseline_ref, attack_ref, ownership_proof
+        )
+
+    def _fill_bola_replay_result(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        op_id = str(details.get("target_operation_id") or obs.operation_id or "").strip()
+        path = str(details.get("target_path_template") or "").strip()
+        method = str(details.get("target_method") or "GET").strip().upper() or "GET"
+        status_code = int(details.get("status_code") or 0)
+        access_granted = bool(details.get("access_granted"))
+        evidence_strength = str(details.get("evidence_strength") or "low").strip().lower()
+        owner_baseline_valid = bool(details.get("owner_baseline_valid"))
+        result_label = str(details.get("result") or "").strip()
+        request_id = str(details.get("request_id") or obs.request_id or "").strip()
+        attacker_auth_profile_id = str(details.get("attacker_auth_profile_id") or "").strip()
+
+        pack.owasp_category = "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
+        pack.vulnerability_class = "bola"
+        if op_id:
+            pack.operation_id = op_id
+        if path:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(path)
+        if method:
+            pack.method = method
+        pack.hypothesis = "Attacker-authenticated replay against an owner-linked object returned an accessible response."
+        attack_ref = self._sanitize_bola_request_ref(
+            self._resolve_request_ref(obs.campaign_id, request_id),
+            safe_path_template=pack.endpoint or path,
+        )
+        if attack_ref is not None:
+            pack.attack = EvidenceAttack(
+                role=attacker_auth_profile_id,
+                request_ref=attack_ref,
+                description="Attacker-authenticated replay against prepared object pair.",
+            )
+        pack.replay_steps = [
+            EvidenceReplayStep(
+                order=1,
+                role=attacker_auth_profile_id,
+                method=pack.method or "",
+                path_template=pack.endpoint or "",
+                url="",
+                request_ref=attack_ref,
+                description="Replay prepared object pair with attacker auth profile.",
+            ),
+        ]
+        pack.derived_signals = [
+            "bola_replay_result",
+            f"object_pair_id:{str(details.get('object_pair_id') or '')}",
+            f"status_code:{status_code}",
+            f"result:{result_label}",
+            f"access_granted:{str(access_granted).lower()}",
+            f"evidence_strength:{evidence_strength or 'low'}",
+        ]
+        if not owner_baseline_valid:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="owner_baseline_invalid",
+                description="Owner baseline request did not succeed (2xx); object pair is not valid evidence for BOLA replay.",
+                required_for="bola",
+            ))
+        if result_label != "attacker_access_granted":
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="bola_replay_not_granted",
+                description="Replay did not show attacker access granted for the owner-linked object pair.",
+                required_for="bola",
+            ))
+        if not access_granted:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="attacker_access_not_granted",
+                description="Replay did not show attacker access to the prepared object pair.",
+                required_for="bola",
+            ))
+        if evidence_strength not in {"high", "medium"}:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="evidence_strength_low",
+                description="BOLA replay evidence_strength must be high or medium for judge-ready evidence.",
+                required_for="bola",
+            ))
+        if not op_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="target_operation_id is required for BOLA replay evidence.",
+                required_for="bola",
+            ))
+        if not path:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="endpoint_context_missing",
+                description="target_path_template is required for BOLA replay evidence.",
+                required_for="bola",
+            ))
+        if attack_ref is None:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="attack_request_missing",
+                description="Replay request_id is required in corpus for BOLA replay evidence.",
+                required_for="bola",
+            ))
+
+    @staticmethod
+    def _sanitize_bola_request_ref(
+        ref: EvidenceHttpExchangeRef | None,
+        *,
+        safe_path_template: str,
+    ) -> EvidenceHttpExchangeRef | None:
+        if ref is None:
+            return None
+        return EvidenceHttpExchangeRef(
+            request_id=ref.request_id,
+            role=ref.role,
+            method=ref.method,
+            path_template=safe_path_template,
+            url="",
+            status_code=ref.status_code,
+            classification=ref.classification,
+            operation_id=ref.operation_id,
         )
 
     def _fill_unexpected_500(

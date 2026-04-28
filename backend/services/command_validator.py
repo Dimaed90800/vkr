@@ -164,6 +164,14 @@ class CommandValidator:
             self._validate_auth_flow_detector(command, campaign, errors)
         if (command.tool_name or "").strip() == "test_account_materializer":
             self._validate_test_account_materializer(command, campaign, errors)
+        if (command.tool_name or "").strip() == "resource_instance_extractor":
+            self._validate_resource_instance_extractor(command, campaign, errors)
+        if (command.tool_name or "").strip() == "resource_seed_worker":
+            self._validate_resource_seed_worker(command, campaign, errors)
+        if (command.tool_name or "").strip() == "bola_object_pair_builder":
+            self._validate_bola_object_pair_builder(command, campaign, errors)
+        if (command.tool_name or "").strip() == "bola_replay_probe":
+            self._validate_bola_replay_probe(command, campaign, errors)
         self._check_fingerprint_duplicate(command, normalized_class, warnings)
 
         return self._result(command, normalized_class, errors, warnings)
@@ -1127,6 +1135,8 @@ class CommandValidator:
             "max_fields",
             "auth_profile_id",
             "auth_mode",
+            "follow_same_origin_redirects",
+            "max_redirects",
         }
         for key in inputs:
             if key not in allowed_keys:
@@ -1214,6 +1224,20 @@ class CommandValidator:
                 message="max_response_bytes must be between 1024 and 524288.",
                 details={"max_response_bytes": max_response_bytes},
             ))
+        follow_same_origin_redirects = inputs.get("follow_same_origin_redirects", True)
+        if not isinstance(follow_same_origin_redirects, bool):
+            errors.append(ValidationError(
+                code="data_exposure_follow_redirects_invalid",
+                message="follow_same_origin_redirects must be a boolean.",
+                details={"follow_same_origin_redirects": follow_same_origin_redirects},
+            ))
+        max_redirects = int(inputs.get("max_redirects") or 2)
+        if max_redirects < 0 or max_redirects > 2:
+            errors.append(ValidationError(
+                code="data_exposure_max_redirects_invalid",
+                message="max_redirects must be between 0 and 2.",
+                details={"max_redirects": max_redirects},
+            ))
 
         if command.budget.max_requests > 1:
             errors.append(ValidationError(
@@ -1227,6 +1251,177 @@ class CommandValidator:
                 message="data_exposure_validator timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
+
+    def _validate_resource_instance_extractor(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "auth_context":
+            errors.append(ValidationError(
+                code="resource_instance_worker_class_invalid",
+                message="resource_instance_extractor requires worker_class auth_context.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "extract_resource_instances":
+            errors.append(ValidationError(
+                code="resource_instance_strategy_invalid",
+                message="resource_instance_extractor requires strategy extract_resource_instances.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "source_observation_id",
+            "source_operation_id",
+            "source_path",
+            "auth_profile_id",
+            "role_hint",
+            "validation_mode",
+            "max_instances",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="resource_instance_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for resource_instance_extractor.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "password", "raw_secret", "object_id"}:
+                errors.append(ValidationError(
+                    code="resource_instance_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for resource_instance_extractor.",
+                    details={"key": key},
+                ))
+
+        source_observation_id = str(inputs.get("source_observation_id") or "").strip()
+        if not source_observation_id:
+            errors.append(ValidationError(
+                code="resource_instance_source_observation_required",
+                message="inputs.source_observation_id is required for resource_instance_extractor.",
+            ))
+
+        validation_mode = str(inputs.get("validation_mode") or "resource_instance_extraction").strip() or "resource_instance_extraction"
+        if validation_mode != "resource_instance_extraction":
+            errors.append(ValidationError(
+                code="resource_instance_validation_mode_invalid",
+                message="validation_mode must be resource_instance_extraction.",
+                details={"validation_mode": validation_mode},
+            ))
+
+        max_instances = int(inputs.get("max_instances") or 20)
+        if max_instances < 1 or max_instances > 50:
+            errors.append(ValidationError(
+                code="resource_instance_max_instances_invalid",
+                message="max_instances must be between 1 and 50.",
+                details={"max_instances": max_instances},
+            ))
+        if command.budget.max_requests > 0:
+            errors.append(ValidationError(
+                code="resource_instance_budget_max_requests",
+                message="resource_instance_extractor max_requests must be <= 0.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="resource_instance_budget_timeout",
+                message="resource_instance_extractor timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+
+    def _validate_resource_seed_worker(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "auth_context":
+            errors.append(ValidationError(
+                code="resource_seed_worker_class_invalid",
+                message="resource_seed_worker requires worker_class auth_context.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "seed_resource_instance":
+            errors.append(ValidationError(
+                code="resource_seed_strategy_invalid",
+                message="resource_seed_worker requires strategy seed_resource_instance.",
+            ))
+
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "validation_mode",
+            "owner_auth_profile_id",
+            "max_seed_attempts",
+            "max_followup_requests",
+            "seed_operation_id",
+            "followup_operation_id",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="resource_seed_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for resource_seed_worker.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "password", "raw_secret", "raw_body", "object_id"}:
+                errors.append(ValidationError(
+                    code="resource_seed_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for resource_seed_worker.",
+                    details={"key": key},
+                ))
+
+        validation_mode = str(inputs.get("validation_mode") or "resource_seed").strip() or "resource_seed"
+        if validation_mode != "resource_seed":
+            errors.append(ValidationError(
+                code="resource_seed_validation_mode_invalid",
+                message="validation_mode must be resource_seed.",
+                details={"validation_mode": validation_mode},
+            ))
+        owner_auth_profile_id = str(inputs.get("owner_auth_profile_id") or "").strip()
+        if not owner_auth_profile_id:
+            errors.append(ValidationError(
+                code="resource_seed_owner_auth_profile_required",
+                message="owner_auth_profile_id is required for resource_seed_worker.",
+            ))
+
+        try:
+            max_seed_attempts = int(inputs.get("max_seed_attempts") or 1)
+        except Exception:
+            max_seed_attempts = 999
+        if max_seed_attempts < 1 or max_seed_attempts > 3:
+            errors.append(ValidationError(
+                code="resource_seed_max_seed_attempts_invalid",
+                message="max_seed_attempts must be between 1 and 3.",
+                details={"max_seed_attempts": inputs.get("max_seed_attempts")},
+            ))
+        try:
+            max_followup = int(inputs.get("max_followup_requests") or 1)
+        except Exception:
+            max_followup = 999
+        if max_followup < 0 or max_followup > 1:
+            errors.append(ValidationError(
+                code="resource_seed_max_followup_requests_invalid",
+                message="max_followup_requests must be between 0 and 1.",
+                details={"max_followup_requests": inputs.get("max_followup_requests")},
+            ))
+
+        if command.budget.max_requests > 3:
+            errors.append(ValidationError(
+                code="resource_seed_budget_max_requests",
+                message="resource_seed_worker max_requests must be <= 3.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="resource_seed_budget_timeout",
+                message="resource_seed_worker timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        _ = campaign
 
     def _validate_js_endpoint_extractor(
         self,
@@ -1336,6 +1531,161 @@ class CommandValidator:
                 message="js_endpoint_extractor timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
+
+    def _validate_bola_object_pair_builder(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "access_control":
+            errors.append(ValidationError(
+                code="bola_object_pair_worker_class_invalid",
+                message="bola_object_pair_builder requires worker_class access_control.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "build_bola_object_pairs":
+            errors.append(ValidationError(
+                code="bola_object_pair_strategy_invalid",
+                message="bola_object_pair_builder requires strategy build_bola_object_pairs.",
+            ))
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "validation_mode",
+            "owner_auth_profile_id",
+            "attacker_auth_profile_id",
+            "resource_instances_count",
+            "object_refs_count",
+            "resource_types",
+            "max_object_pairs",
+            "object_ref_id",
+            "object_id_ref",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="bola_object_pair_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for bola_object_pair_builder.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "password", "raw_secret", "raw_body", "object_id", "raw_object_id"}:
+                errors.append(ValidationError(
+                    code="bola_object_pair_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for bola_object_pair_builder.",
+                    details={"key": key},
+                ))
+        vm = str(inputs.get("validation_mode") or "bola_object_pair_building").strip() or "bola_object_pair_building"
+        if vm != "bola_object_pair_building":
+            errors.append(ValidationError(
+                code="bola_object_pair_validation_mode_invalid",
+                message="validation_mode must be bola_object_pair_building.",
+                details={"validation_mode": vm},
+            ))
+        if not str(inputs.get("owner_auth_profile_id") or "").strip():
+            errors.append(ValidationError(
+                code="bola_object_pair_owner_auth_profile_required",
+                message="owner_auth_profile_id is required for bola_object_pair_builder.",
+            ))
+        if not str(inputs.get("attacker_auth_profile_id") or "").strip():
+            errors.append(ValidationError(
+                code="bola_object_pair_attacker_auth_profile_required",
+                message="attacker_auth_profile_id is required for bola_object_pair_builder.",
+            ))
+        try:
+            max_pairs = int(inputs.get("max_object_pairs") or 10)
+        except Exception:
+            max_pairs = 999
+        if max_pairs < 1 or max_pairs > 10:
+            errors.append(ValidationError(
+                code="bola_object_pair_max_pairs_invalid",
+                message="max_object_pairs must be between 1 and 10.",
+                details={"max_object_pairs": inputs.get("max_object_pairs")},
+            ))
+        if command.budget.max_requests > 0:
+            errors.append(ValidationError(
+                code="bola_object_pair_budget_max_requests",
+                message="bola_object_pair_builder max_requests must be <= 0.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="bola_object_pair_budget_timeout",
+                message="bola_object_pair_builder timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        _ = campaign
+
+    def _validate_bola_replay_probe(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "access_control":
+            errors.append(ValidationError(
+                code="bola_replay_worker_class_invalid",
+                message="bola_replay_probe requires worker_class access_control.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "replay_bola_object_pair":
+            errors.append(ValidationError(
+                code="bola_replay_strategy_invalid",
+                message="bola_replay_probe requires strategy replay_bola_object_pair.",
+            ))
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {"validation_mode", "object_pair_id", "max_requests"}
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="bola_replay_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for bola_replay_probe.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "password", "raw_secret", "raw_body", "object_id", "raw_object_id", "url", "path", "request_url"}:
+                errors.append(ValidationError(
+                    code="bola_replay_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for bola_replay_probe.",
+                    details={"key": key},
+                ))
+        validation_mode = str(inputs.get("validation_mode") or "bola_replay").strip() or "bola_replay"
+        if validation_mode != "bola_replay":
+            errors.append(ValidationError(
+                code="bola_replay_validation_mode_invalid",
+                message="validation_mode must be bola_replay.",
+                details={"validation_mode": validation_mode},
+            ))
+        if not str(inputs.get("object_pair_id") or "").strip():
+            errors.append(ValidationError(
+                code="bola_replay_object_pair_id_required",
+                message="object_pair_id is required for bola_replay_probe.",
+            ))
+        try:
+            max_requests_input = int(inputs.get("max_requests") or 1)
+        except Exception:
+            max_requests_input = 999
+        if max_requests_input < 1 or max_requests_input > 2:
+            errors.append(ValidationError(
+                code="bola_replay_input_max_requests_invalid",
+                message="inputs.max_requests must be <= 2.",
+                details={"max_requests": inputs.get("max_requests")},
+            ))
+        if command.budget.max_requests > 2:
+            errors.append(ValidationError(
+                code="bola_replay_budget_max_requests",
+                message="bola_replay_probe max_requests must be <= 2.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="bola_replay_budget_timeout",
+                message="bola_replay_probe timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        _ = campaign
 
     def _check_fingerprint_duplicate(
         self,

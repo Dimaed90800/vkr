@@ -38,6 +38,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "replay_http_sequence",
         "property_mutation_test",
         "data_exposure_validator",
+        "bola_object_pair_builder",
         "akto_inventory_discovery",
         "akto_authz_scan",
         "astf_top10_suite",
@@ -107,6 +108,9 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
     "auth_context": [
         "auth_flow_detector",
         "test_account_materializer",
+        "resource_instance_extractor",
+        "resource_seed_worker",
+        "bola_object_pair_builder",
     ],
     "ssrf_external": [
         "custom_ssrf_checker",

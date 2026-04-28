@@ -30,6 +30,7 @@ try:
     from backend.services.command_validator import CommandValidator
     from backend.services.scenario_plan_compiler import ScenarioPlanCompiler
     from backend.services.llm_candidate_advisor import LlmCandidateAdvisor
+    from backend.services.bola_object_pair_store import BolaObjectPairStore
     from backend.services.http.safe_http_client import sanitize_url_for_storage
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
@@ -55,6 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.command_validator import CommandValidator
     from services.scenario_plan_compiler import ScenarioPlanCompiler
     from services.llm_candidate_advisor import LlmCandidateAdvisor
+    from services.bola_object_pair_store import BolaObjectPairStore
     from services.http.safe_http_client import sanitize_url_for_storage
     from storage.memory_store import memory_store
 
@@ -72,6 +74,7 @@ class PlannerService:
         self._validator = CommandValidator()
         self._scenario_compiler = ScenarioPlanCompiler(validator=self._validator)
         self._advisor = advisor if advisor is not None else LlmCandidateAdvisor()
+        self._bola_pairs = BolaObjectPairStore()
 
     def plan(self, campaign_id: str, request: PlannerRequest) -> PlannerResponse:
         raw_campaign = memory_store.get_campaign(campaign_id)
@@ -130,6 +133,16 @@ class PlannerService:
             ),
         )
         candidates.extend(
+            self._resource_instance_extractor_candidates(
+                campaign,
+            ),
+        )
+        candidates.extend(
+            self._bola_object_pair_builder_candidates(
+                campaign,
+            ),
+        )
+        candidates.extend(
             self._ssrf_candidate_detector_candidates(
                 campaign,
                 graph_summary.model_dump(mode="json"),
@@ -145,6 +158,11 @@ class PlannerService:
             self._test_account_materializer_candidates(
                 campaign,
                 graph_summary.model_dump(mode="json"),
+            ),
+        )
+        candidates.extend(
+            self._resource_seed_worker_candidates(
+                campaign,
             ),
         )
 
@@ -292,6 +310,9 @@ class PlannerService:
         request: PlannerRequest,
         graph_summary: dict[str, Any],
     ) -> list[PlannerCandidate]:
+        pair_candidates = self._bola_object_pair_replay_candidates(campaign, graph_summary)
+        if pair_candidates:
+            return pair_candidates
         if not request.bola.object_pairs:
             return [
                 self._candidate(
@@ -309,6 +330,173 @@ class PlannerService:
         for index, hint in enumerate(request.bola.object_pairs):
             results.append(self._bola_candidate(campaign, hint, index, graph_summary))
         return results
+
+    def _bola_object_pair_replay_candidates(
+        self,
+        campaign: Campaign,
+        graph_summary: dict[str, Any],
+    ) -> list[PlannerCandidate]:
+        results: list[PlannerCandidate] = []
+        replay_results = self._bola_replay_results_by_pair(campaign.campaign_id)
+        granted_exists = any(
+            bool(v.get("access_granted") is True)
+            for v in replay_results.values()
+            if isinstance(v, dict)
+        )
+        operations_by_id = {
+            str(op.operation_id or "").strip(): op
+            for op in self._graph.list_operations(campaign.campaign_id)
+            if str(op.operation_id or "").strip()
+        }
+        eligible_rows: list[tuple[float, int, dict[str, Any]]] = []
+        for index, row in enumerate(self._bola_pairs.list_bola_object_pairs(campaign.campaign_id)):
+            if not isinstance(row, dict):
+                continue
+            object_pair_id = str(row.get("object_pair_id") or "").strip()
+            target_method = str(row.get("target_method") or "GET").strip().upper() or "GET"
+            confidence = str(row.get("confidence") or "low").strip().lower()
+            attacker_auth_profile_id = str(row.get("attacker_auth_profile_id") or "").strip()
+            owner_auth_profile_id = str(row.get("owner_auth_profile_id") or "").strip()
+            if not object_pair_id or target_method != "GET" or confidence not in {"high", "medium"} or not attacker_auth_profile_id:
+                continue
+            score = self._score_bola_object_pair_row(row, operations_by_id.get(str(row.get("target_operation_id") or "").strip()))
+            eligible_rows.append((score, index, row))
+
+        # Highest score first; stable order by original index.
+        eligible_rows.sort(key=lambda item: (-float(item[0]), int(item[1])))
+        next_ready_emitted = False
+        for score, index, row in eligible_rows:
+            object_pair_id = str(row.get("object_pair_id") or "").strip()
+            target_method = str(row.get("target_method") or "GET").strip().upper() or "GET"
+            attacker_auth_profile_id = str(row.get("attacker_auth_profile_id") or "").strip()
+            owner_auth_profile_id = str(row.get("owner_auth_profile_id") or "").strip()
+            dedup_key = "|".join([campaign.campaign_id, "bola_replay_probe", "bola_replay", object_pair_id])
+            replay_for_pair = replay_results.get(object_pair_id, {})
+            replay_result_code = str(replay_for_pair.get("result") or "").strip()
+            replay_access_granted = bool(replay_for_pair.get("access_granted") is True)
+            summary = {
+                "validation_mode": "bola_replay",
+                "object_pair_id": object_pair_id,
+                "resource_type": str(row.get("resource_type") or "unknown"),
+                "target_operation_id": str(row.get("target_operation_id") or ""),
+                "target_method": target_method,
+                "target_path_template": str(row.get("target_path_template") or ""),
+                "attacker_auth_profile_id": attacker_auth_profile_id,
+                "owner_auth_profile_id": owner_auth_profile_id,
+                "bola_replay_candidate_source": "bola_object_pair",
+                "reason_codes": ["bola_object_pair_available"],
+                "object_pair_score": float(score),
+                "graph_summary": graph_summary,
+            }
+            if replay_access_granted or granted_exists:
+                results.append(self._candidate(
+                    kind=PlannerCandidateKind.bola_replay_probe,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=50.0,
+                    reason="BOLA replay already granted on this campaign; additional replay candidates are skipped.",
+                    dedup_key=dedup_key,
+                    summary={**summary, "prior_result": replay_result_code or "attacker_access_granted"},
+                ))
+                continue
+            if replay_result_code:
+                results.append(self._candidate(
+                    kind=PlannerCandidateKind.bola_replay_probe,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=50.0,
+                    reason="Matching bola_replay_result already exists for this object pair.",
+                    dedup_key=dedup_key,
+                    summary={**summary, "prior_result": replay_result_code},
+                ))
+                continue
+            if next_ready_emitted:
+                # Rotate one pair at a time to avoid consuming budget on parallel replay probes.
+                results.append(self._candidate(
+                    kind=PlannerCandidateKind.bola_replay_probe,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=49.0,
+                    reason="Replay rotation: waiting for result of a higher-priority untried object pair.",
+                    missing_inputs=["prior_untried_object_pair_pending"],
+                    dedup_key=dedup_key,
+                    summary={**summary, "prior_result": "not_replayed"},
+                ))
+                continue
+            command = WorkerCommand(
+                campaign_id=campaign.campaign_id,
+                task_id=f"task_bola_replay_probe_{index + 1}",
+                worker_class="access_control",
+                strategy="replay_bola_object_pair",
+                tool_name="bola_replay_probe",
+                operation_id=str(row.get("target_operation_id") or ""),
+                seed_request_id="",
+                inputs={
+                    "validation_mode": "bola_replay",
+                    "object_pair_id": object_pair_id,
+                    "max_requests": 1,
+                },
+                budget=CommandBudget(max_requests=1, timeout_sec=15),
+                success_criteria=["bola_replay_result_recorded"],
+            )
+            results.append(self._validated_candidate(
+                kind=PlannerCandidateKind.bola_replay_probe,
+                priority=50.0,
+                reason="Prepared BOLA object pair is available for bounded attacker replay.",
+                dedup_key=dedup_key,
+                command=command,
+                summary=summary,
+            ))
+            next_ready_emitted = True
+        return results
+
+    @staticmethod
+    def _score_bola_object_pair_row(
+        row: dict[str, Any],
+        operation: Operation | None,
+    ) -> float:
+        score = 0.0
+        method = str(row.get("target_method") or "GET").strip().upper()
+        confidence = str(row.get("confidence") or "low").strip().lower()
+        resource_type = str(row.get("resource_type") or "").strip().lower()
+        path_param_name = str(row.get("path_param_name") or "").strip().lower()
+        object_id_field = str(row.get("object_id_field") or "").strip().lower()
+        reason_codes = {
+            str(code).strip().lower()
+            for code in (row.get("reason_codes") or [])
+            if isinstance(code, str)
+        }
+
+        if method == "GET":
+            score += 20.0
+        if confidence == "high":
+            score += 15.0
+        elif confidence == "medium":
+            score += 9.0
+
+        if "path_param_resource_match" in reason_codes:
+            score += 8.0
+        if any(token and token in path_param_name for token in (resource_type, "id")):
+            score += 4.0
+        if any(token and token in object_id_field for token in (resource_type, "id")):
+            score += 3.0
+
+        if operation is not None:
+            if bool(operation.auth_required):
+                score += 6.0
+            if operation.response_fields:
+                score += 4.0
+            op_resource = str(operation.resource_type or "").strip().lower()
+            if resource_type and op_resource and resource_type == op_resource:
+                score += 5.0
+            if operation.path_params:
+                params = {str(p or "").strip().lower() for p in operation.path_params}
+                if path_param_name and path_param_name in params:
+                    score += 3.0
+
+        # Deterministic generic preference when scores tie.
+        if resource_type == "vehicle":
+            score += 0.2
+        elif resource_type == "post":
+            score += 0.1
+        return score
 
     def _bola_candidate(
         self,
@@ -1423,7 +1611,15 @@ class PlannerService:
         object_id_ops = frozenset(
             str(x) for x in (graph_summary.get("object_id_operations") or []) if str(x).strip()
         )
-        high_resource = frozenset({"user", "vehicle", "order", "post", "mechanic", "report"})
+        high_resource = frozenset({"user", "vehicle", "order", "post", "mechanic", "report", "video"})
+        collection_aliases = (
+            "vehicle", "vehicles", "car", "cars", "vin",
+            "order", "orders", "purchase",
+            "post", "posts", "article", "message",
+            "report", "reports",
+            "video", "videos", "media",
+            "user", "users", "account", "profile",
+        )
         auth_ctx = self._latest_test_account_materialization_details(campaign.campaign_id)
         owner_auth_profile_id = ""
         owner_role_hint = "unknown"
@@ -1446,16 +1642,26 @@ class PlannerService:
             if not self._is_allowed_url(campaign, self._join_target_path(campaign, path_t)):
                 continue
             score = 20.0
+            if op.auth_required:
+                score += 12.0
+            if op.response_fields:
+                score += 10.0
             if op.operation_id in object_id_ops:
                 score += 30.0
             rt = str(op.resource_type or "").strip().lower()
             if rt in high_resource:
                 score += 15.0
             lowered = path_t.lower()
-            for hint in high_resource:
+            for hint in collection_aliases:
                 if f"/{hint}" in lowered or lowered.rstrip("/").endswith(hint):
                     score += 8.0
                     break
+            if "{" in path_t and "}" in path_t:
+                score -= 12.0
+            if any(token in lowered for token in ("/list", "/search", "/feed", "/all")):
+                score += 4.0
+            if any(token in lowered for token in ("id", "_id")):
+                score += 3.0
             scored.append((score, op))
 
         scored.sort(key=lambda x: (-x[0], x[1].operation_id))
@@ -1886,6 +2092,288 @@ class PlannerService:
                     ))
         return out
 
+    def _resource_instance_extractor_candidates(
+        self,
+        campaign: Campaign,
+    ) -> list[PlannerCandidate]:
+        out: list[PlannerCandidate] = []
+        seen_dedup: set[str] = set()
+        observations = memory_store.list_observations_by_campaign(campaign.campaign_id)
+        for raw in observations:
+            otype = self._raw_observation_type(raw)
+            if otype not in {"response_field_inventory", "data_exposure_signal"}:
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("tool_name") or "").strip() != "data_exposure_validator":
+                continue
+            if str(det.get("auth_mode") or "unauthenticated").strip() != "authenticated":
+                continue
+            auth_profile_id = str(det.get("auth_profile_id") or "").strip()
+            if not auth_profile_id:
+                continue
+            field_count = self._safe_int(det.get("field_count"), 0)
+            sensitive_field_count = self._safe_int(det.get("sensitive_field_count"), 0)
+            if otype == "response_field_inventory" and field_count <= 0:
+                continue
+            source_observation_id = str(raw.get("observation_id") or "").strip()
+            if not source_observation_id:
+                continue
+            operation_id = str(det.get("operation_id") or raw.get("operation_id") or "").strip()
+            source_path = normalize_api_path(str(det.get("path") or ""))
+            dedup_key = "|".join([
+                campaign.campaign_id,
+                "resource_instance_extractor",
+                source_observation_id or operation_id or source_path,
+                "resource_instance_extraction",
+            ])
+            if dedup_key in seen_dedup:
+                continue
+            seen_dedup.add(dedup_key)
+            summary = {
+                "validation_mode": "resource_instance_extraction",
+                "source_observation_id": source_observation_id,
+                "source_operation_id": operation_id,
+                "source_path": source_path,
+                "auth_profile_id": auth_profile_id,
+                "role_hint": str(det.get("role_hint") or "unknown"),
+                "resource_instance_candidate_source": "authenticated_inventory",
+                "field_count": field_count,
+                "sensitive_field_count": sensitive_field_count,
+                "reason_codes": ["authenticated_inventory_available"],
+            }
+            if self._existing_resource_instance_inventory_for_source(campaign.campaign_id, source_observation_id):
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.resource_instance_extractor,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=24.6,
+                    reason="Resource instance inventory already exists for this source observation.",
+                    dedup_key=dedup_key,
+                    summary=summary,
+                ))
+                continue
+            if self._existing_resource_instance_extractor_run(campaign.campaign_id, dedup_key):
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.resource_instance_extractor,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=24.6,
+                    reason="Existing resource_instance_extractor ToolRun found for this source observation.",
+                    dedup_key=dedup_key,
+                    summary=summary,
+                ))
+                continue
+            command = WorkerCommand(
+                campaign_id=campaign.campaign_id,
+                task_id=f"task_resource_instance_{hashlib.sha256(dedup_key.encode()).hexdigest()[:8]}",
+                worker_class="auth_context",
+                strategy="extract_resource_instances",
+                tool_name="resource_instance_extractor",
+                operation_id=operation_id,
+                inputs={
+                    "source_observation_id": source_observation_id,
+                    "source_operation_id": operation_id,
+                    "source_path": source_path,
+                    "auth_profile_id": auth_profile_id,
+                    "role_hint": str(det.get("role_hint") or "unknown"),
+                    "validation_mode": "resource_instance_extraction",
+                    "max_instances": 20,
+                },
+                budget=CommandBudget(max_requests=0, timeout_sec=15),
+                success_criteria=["resource_instance_inventory_recorded"],
+            )
+            out.append(self._validated_candidate(
+                kind=PlannerCandidateKind.resource_instance_extractor,
+                priority=24.75,
+                reason="Authenticated inventory can be mined for safe object-id refs.",
+                dedup_key=dedup_key,
+                command=command,
+                summary=summary,
+            ))
+        return out
+
+    def _resource_seed_worker_candidates(
+        self,
+        campaign: Campaign,
+    ) -> list[PlannerCandidate]:
+        det = self._latest_test_account_materialization_details(campaign.campaign_id)
+        if det is None:
+            return []
+        owner_auth_profile_id = str(det.get("owner_auth_profile_id") or "").strip()
+        if not owner_auth_profile_id:
+            return []
+
+        existing_refs = memory_store.list_runtime_resource_instances_by_campaign(campaign.campaign_id)
+        object_refs_count = len(existing_refs) if isinstance(existing_refs, list) else 0
+        if object_refs_count > 0:
+            return []
+
+        existing_seed = self._existing_resource_seed_result(campaign.campaign_id)
+        if existing_seed is not None:
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.resource_seed_worker,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=24.2,
+                    reason="Resource seed worker already executed for this campaign.",
+                    dedup_key=f"{campaign.campaign_id}|resource_seed_worker|resource_seed",
+                    summary={
+                        "validation_mode": "resource_seed",
+                        "resource_seed_candidate_source": "auth_profile_no_object_refs",
+                        "owner_auth_profile_id": owner_auth_profile_id,
+                        "object_refs_count": 0,
+                        "reason_codes": ["existing_resource_seed_result", f"seed_status_{existing_seed}"],
+                    },
+                )
+            ]
+
+        dedup_key = "|".join([campaign.campaign_id, "resource_seed_worker", "resource_seed", owner_auth_profile_id])
+        if self._existing_resource_seed_worker_run(campaign.campaign_id, dedup_key):
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.resource_seed_worker,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=24.2,
+                    reason="Existing resource_seed_worker ToolRun found.",
+                    dedup_key=dedup_key,
+                    summary={
+                        "validation_mode": "resource_seed",
+                        "resource_seed_candidate_source": "auth_profile_no_object_refs",
+                        "owner_auth_profile_id": owner_auth_profile_id,
+                        "object_refs_count": 0,
+                        "reason_codes": ["existing_resource_seed_worker_run"],
+                    },
+                )
+            ]
+
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_resource_seed_{hashlib.sha256(dedup_key.encode()).hexdigest()[:8]}",
+            worker_class="auth_context",
+            strategy="seed_resource_instance",
+            tool_name="resource_seed_worker",
+            operation_id="",
+            inputs={
+                "validation_mode": "resource_seed",
+                "owner_auth_profile_id": owner_auth_profile_id,
+                "max_seed_attempts": 3,
+                "max_followup_requests": 1,
+            },
+            budget=CommandBudget(max_requests=3, timeout_sec=15),
+            success_criteria=["resource_seed_result_recorded"],
+        )
+        summary = {
+            "validation_mode": "resource_seed",
+            "resource_seed_candidate_source": "auth_profile_no_object_refs",
+            "owner_auth_profile_id": owner_auth_profile_id,
+            "object_refs_count": 0,
+            "reason_codes": ["auth_profile_available", "object_refs_missing"],
+        }
+        return [
+            self._validated_candidate(
+                kind=PlannerCandidateKind.resource_seed_worker,
+                priority=24.25,
+                reason="Owner auth profile available but no object refs exist; seed one safe resource id for diagnostics.",
+                dedup_key=dedup_key,
+                command=command,
+                summary=summary,
+            )
+        ]
+
+    def _bola_object_pair_builder_candidates(
+        self,
+        campaign: Campaign,
+    ) -> list[PlannerCandidate]:
+        det = self._latest_test_account_materialization_details(campaign.campaign_id)
+        if det is None:
+            return []
+        owner_auth_profile_id = str(det.get("owner_auth_profile_id") or "").strip()
+        attacker_auth_profile_id = str(det.get("attacker_auth_profile_id") or "").strip()
+        if not owner_auth_profile_id:
+            return []
+        if not attacker_auth_profile_id:
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.bola_object_pair_builder,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=24.4,
+                    reason="BOLA object pair building requires attacker auth profile.",
+                    dedup_key=f"{campaign.campaign_id}|bola_object_pair_builder|bola_object_pair_building|missing_attacker",
+                    missing_inputs=["attacker_auth_profile_id"],
+                    summary={
+                        "validation_mode": "bola_object_pair_building",
+                        "owner_auth_profile_id": owner_auth_profile_id,
+                        "attacker_auth_profile_id": "",
+                        "resource_instances_count": 0,
+                        "object_refs_count": 0,
+                        "resource_types": [],
+                        "bola_pair_candidate_source": "resource_instances_available",
+                        "reason_codes": ["attacker_auth_profile_missing"],
+                    },
+                )
+            ]
+        resource_instances = memory_store.list_runtime_resource_instances_by_campaign(campaign.campaign_id)
+        if not isinstance(resource_instances, list) or not resource_instances:
+            return []
+        if self._existing_bola_object_pair_inventory(campaign.campaign_id):
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.bola_object_pair_builder,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=24.4,
+                    reason="BOLA object pair inventory already exists for this campaign.",
+                    dedup_key=f"{campaign.campaign_id}|bola_object_pair_builder|bola_object_pair_building|{owner_auth_profile_id}|{attacker_auth_profile_id}",
+                    summary={
+                        "validation_mode": "bola_object_pair_building",
+                        "owner_auth_profile_id": owner_auth_profile_id,
+                        "attacker_auth_profile_id": attacker_auth_profile_id,
+                        "resource_instances_count": len(resource_instances),
+                        "object_refs_count": len(resource_instances),
+                        "resource_types": sorted({str(x.get('resource_type') or 'unknown') for x in resource_instances if isinstance(x, dict)})[:20],
+                        "bola_pair_candidate_source": "resource_instances_available",
+                        "reason_codes": ["existing_bola_object_pair_inventory"],
+                    },
+                )
+            ]
+        dedup_key = f"{campaign.campaign_id}|bola_object_pair_builder|bola_object_pair_building|{owner_auth_profile_id}|{attacker_auth_profile_id}"
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_bola_pair_{hashlib.sha256(dedup_key.encode()).hexdigest()[:8]}",
+            worker_class="access_control",
+            strategy="build_bola_object_pairs",
+            tool_name="bola_object_pair_builder",
+            operation_id="",
+            inputs={
+                "validation_mode": "bola_object_pair_building",
+                "owner_auth_profile_id": owner_auth_profile_id,
+                "attacker_auth_profile_id": attacker_auth_profile_id,
+                "resource_instances_count": len(resource_instances),
+                "object_refs_count": len(resource_instances),
+                "resource_types": sorted({str(x.get('resource_type') or 'unknown') for x in resource_instances if isinstance(x, dict)})[:20],
+                "max_object_pairs": 10,
+            },
+            budget=CommandBudget(max_requests=0, timeout_sec=15),
+            success_criteria=["bola_object_pair_inventory_recorded"],
+        )
+        summary = {
+            "validation_mode": "bola_object_pair_building",
+            "owner_auth_profile_id": owner_auth_profile_id,
+            "attacker_auth_profile_id": attacker_auth_profile_id,
+            "resource_instances_count": len(resource_instances),
+            "object_refs_count": len(resource_instances),
+            "resource_types": sorted({str(x.get('resource_type') or 'unknown') for x in resource_instances if isinstance(x, dict)})[:20],
+            "bola_pair_candidate_source": "resource_instances_available",
+            "reason_codes": ["auth_profiles_available", "object_refs_available"],
+        }
+        return [
+            self._validated_candidate(
+                kind=PlannerCandidateKind.bola_object_pair_builder,
+                priority=24.45,
+                reason="Auth profiles and object refs are available for safe BOLA object-pair inventory building.",
+                dedup_key=dedup_key,
+                command=command,
+                summary=summary,
+            )
+        ]
+
     def _auth_flow_detector_candidates(
         self,
         campaign: Campaign,
@@ -2123,6 +2611,104 @@ class PlannerService:
         return None
 
     @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _existing_resource_instance_inventory_for_source(
+        campaign_id: str,
+        source_observation_id: str,
+    ) -> bool:
+        source_id = str(source_observation_id or "").strip()
+        if not source_id:
+            return False
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "resource_instance_inventory":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("source") or "").strip() != "resource_instance_extractor":
+                continue
+            if str(det.get("source_observation_id") or "").strip() == source_id:
+                return True
+        return False
+
+    @staticmethod
+    def _existing_resource_instance_extractor_run(campaign_id: str, dedup_key: str) -> bool:
+        for raw in memory_store.list_commands_by_campaign(campaign_id):
+            if str(raw.get("tool_name") or "").strip() != "resource_instance_extractor":
+                continue
+            inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
+            source_observation_id = str(inputs.get("source_observation_id") or "").strip()
+            op_id = str(raw.get("operation_id") or inputs.get("source_operation_id") or "").strip()
+            auth_profile_id = str(inputs.get("auth_profile_id") or "").strip()
+            candidate_key = "|".join([
+                campaign_id,
+                "resource_instance_extractor",
+                source_observation_id or op_id or str(inputs.get("source_path") or "").strip(),
+                str(inputs.get("validation_mode") or "resource_instance_extraction").strip() or "resource_instance_extraction",
+            ])
+            if candidate_key != dedup_key:
+                continue
+            cmd_id = str(raw.get("command_id") or "").strip()
+            for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+                if str(run.get("command_id") or "").strip() != cmd_id:
+                    continue
+                if str(run.get("status") or "").strip() in {"accepted", "queued", "running", "finished"}:
+                    return True
+        return False
+
+    @staticmethod
+    def _existing_resource_seed_result(campaign_id: str) -> str | None:
+        """Return last terminal seed_status if a diagnostic seed attempt already ran."""
+        terminal = {"seeded", "no_seedable_operation", "creation_non_2xx", "no_object_id_found", "blocked"}
+        for raw in reversed(memory_store.list_observations_by_campaign(campaign_id)):
+            if PlannerService._raw_observation_type(raw) != "resource_seed_result":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("validation_mode") or "").strip() != "resource_seed":
+                continue
+            status = str(det.get("seed_status") or "").strip()
+            if status in terminal:
+                return status
+        return None
+
+    @staticmethod
+    def _existing_resource_seed_worker_run(campaign_id: str, dedup_key: str) -> bool:
+        for raw in memory_store.list_commands_by_campaign(campaign_id):
+            if str(raw.get("tool_name") or "").strip() != "resource_seed_worker":
+                continue
+            inputs = raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {}
+            owner_auth_profile_id = str(inputs.get("owner_auth_profile_id") or "").strip()
+            candidate_key = "|".join([
+                campaign_id,
+                "resource_seed_worker",
+                str(inputs.get("validation_mode") or "resource_seed").strip() or "resource_seed",
+                owner_auth_profile_id,
+            ])
+            if candidate_key != dedup_key:
+                continue
+            cmd_id = str(raw.get("command_id") or "").strip()
+            for run in memory_store.list_tool_runs_by_campaign(campaign_id):
+                if str(run.get("command_id") or "").strip() != cmd_id:
+                    continue
+                if str(run.get("status") or "").strip() in {"accepted", "queued", "running", "finished"}:
+                    return True
+        return False
+
+    @staticmethod
+    def _existing_bola_object_pair_inventory(campaign_id: str) -> bool:
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "bola_object_pair_inventory":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("validation_mode") or "").strip() == "bola_object_pair_building":
+                return True
+        return False
+
+    @staticmethod
     def _data_exposure_dedup_key(
         *,
         campaign_id: str,
@@ -2358,14 +2944,17 @@ class PlannerService:
             PlannerCandidateKind.schemathesis_negative_test: 4,
             PlannerCandidateKind.injection_test: 5,
             PlannerCandidateKind.data_exposure_validator: 6,
-            PlannerCandidateKind.auth_flow_detector: 7,
-            PlannerCandidateKind.test_account_materializer: 8,
-            PlannerCandidateKind.ssrf_candidate_detector: 9,
-            PlannerCandidateKind.property_mutation_test: 10,
-            PlannerCandidateKind.zap_discovery_passive: 11,
-            PlannerCandidateKind.js_endpoint_extractor: 12,
-            PlannerCandidateKind.undocumented_endpoint_validator: 13,
-            PlannerCandidateKind.scenario_plan_blocked: 14,
+            PlannerCandidateKind.resource_instance_extractor: 7,
+            PlannerCandidateKind.resource_seed_worker: 7.5,
+            PlannerCandidateKind.bola_object_pair_builder: 7.7,
+            PlannerCandidateKind.auth_flow_detector: 8,
+            PlannerCandidateKind.test_account_materializer: 9,
+            PlannerCandidateKind.ssrf_candidate_detector: 10,
+            PlannerCandidateKind.property_mutation_test: 11,
+            PlannerCandidateKind.zap_discovery_passive: 12,
+            PlannerCandidateKind.js_endpoint_extractor: 13,
+            PlannerCandidateKind.undocumented_endpoint_validator: 14,
+            PlannerCandidateKind.scenario_plan_blocked: 15,
         }
         return sorted(
             candidates,
@@ -2617,6 +3206,48 @@ class PlannerService:
                 ):
                     return True
         return False
+
+    @staticmethod
+    def _existing_bola_replay_result(campaign_id: str, object_pair_id: str) -> bool:
+        target = str(object_pair_id or "").strip()
+        if not target:
+            return False
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            try:
+                obs = Observation.model_validate(raw)
+            except Exception:
+                continue
+            if obs.type != ObservationType.bola_replay_result:
+                continue
+            details = obs.details or {}
+            if (
+                str(details.get("validation_mode") or "").strip() == "bola_replay"
+                and str(details.get("object_pair_id") or "").strip() == target
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _bola_replay_results_by_pair(campaign_id: str) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            try:
+                obs = Observation.model_validate(raw)
+            except Exception:
+                continue
+            if obs.type != ObservationType.bola_replay_result:
+                continue
+            details = obs.details or {}
+            if str(details.get("validation_mode") or "").strip() != "bola_replay":
+                continue
+            object_pair_id = str(details.get("object_pair_id") or "").strip()
+            if not object_pair_id:
+                continue
+            out[object_pair_id] = {
+                "result": str(details.get("result") or "").strip(),
+                "access_granted": bool(details.get("access_granted") is True),
+            }
+        return out
 
     @staticmethod
     def _raw_observation_type(raw: dict[str, Any]) -> str:

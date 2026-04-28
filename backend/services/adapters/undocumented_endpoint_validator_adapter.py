@@ -84,6 +84,21 @@ class UndocumentedEndpointValidatorAdapter:
         )
         status_code = _get_status_code(result)
         if result.error is not None:
+            if result.error.code in {
+                "redirect_not_allowed",
+                "redirect_host_not_allowed",
+                "redirect_not_supported",
+            }:
+                return self._finished_redirect_diagnostic(
+                    command=command,
+                    tool_run_id=tool_run_id,
+                    start_ms=start_ms,
+                    method=method,
+                    path=path,
+                    safe_url=_strip_query_and_fragment(result.url),
+                    status_code=int(status_code or 0),
+                    redirect_error_code=str(result.error.code),
+                )
             if result.error.code == "response_too_large":
                 if status_code is not None and status_code != 404:
                     return self._finished_with_status_metadata(
@@ -190,6 +205,67 @@ class UndocumentedEndpointValidatorAdapter:
                 status_code=normalized_status,
             )],
             observations=observations,
+            artifacts=[artifact],
+        )
+
+    def _finished_redirect_diagnostic(
+        self,
+        *,
+        command: WorkerCommand,
+        tool_run_id: str,
+        start_ms: int,
+        method: str,
+        path: str,
+        safe_url: str,
+        status_code: int,
+        redirect_error_code: str,
+    ) -> ToolResult:
+        reason_codes = ["redirect_response", "redirect_not_followed"]
+        if status_code <= 0:
+            reason_codes.append("redirect_status_unavailable")
+        if redirect_error_code == "redirect_host_not_allowed":
+            reason_codes.append("redirect_host_not_allowed")
+
+        artifact = self._artifacts.save_artifact(
+            campaign_id=command.campaign_id,
+            tool_run_id=tool_run_id,
+            artifact_type="undocumented_endpoint_validation_summary",
+            content={
+                "method": method,
+                "path": path,
+                "status_code": status_code,
+                "result": "redirect_response",
+                "reason_codes": reason_codes,
+                "redirect_same_origin": False,
+                "redirect_followed": False,
+            },
+        )
+        duration_ms = int(time.monotonic() * 1000) - start_ms
+        summary = ToolResultSummary(
+            request_count=1,
+            duration_ms=duration_ms,
+        )
+        return ToolResult(
+            tool_run_id=tool_run_id,
+            campaign_id=command.campaign_id,
+            task_id=command.task_id,
+            command_id=command.command_id,
+            tool_name=command.tool_name,
+            status="finished",
+            summary=summary,
+            requests=[ToolResultRequest(
+                request_id="",
+                role="",
+                method=method,
+                url=safe_url,
+                path_template=path,
+            )],
+            responses=[ToolResultResponse(
+                request_id="",
+                status_code=status_code,
+            )],
+            observations=[],
+            errors=[],
             artifacts=[artifact],
         )
 

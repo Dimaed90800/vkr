@@ -107,6 +107,7 @@ _SAFE_KEY_EXCEPTIONS = {
     "validated_cookie_flag_issue",
     "blocked_missing_seed_context",
     "api3_broken_object_property_level_authorization",
+    "api1_broken_object_level_authorization",
     # Aggregate count name contains "token" but is not a secret field.
     "token_response_candidate_count",
     "token_response_detected",
@@ -131,6 +132,8 @@ _DROP_KEY_PARTS = (
     "raw_headers",
     "headers",
     "payload",
+    "object_id",
+    "raw_object",
 )
 
 
@@ -678,6 +681,12 @@ class ReportContextBuilder:
             "signup_payload_field_names": [],
             "login_payload_field_names": [],
             "materialization_reason_codes": [],
+            "owner_signup_attempts_count": 0,
+            "attacker_signup_attempts_count": 0,
+            "owner_login_attempts_count": 0,
+            "attacker_login_attempts_count": 0,
+            "signup_retry_count": 0,
+            "login_retry_count": 0,
         }
         latest: dict[str, Any] | None = None
         latest_materialization: dict[str, Any] | None = None
@@ -764,7 +773,25 @@ class ReportContextBuilder:
                 "attempted_login_operation_ids": list(latest_materialization.get("attempted_login_operation_ids") or [])[:15],
                 "signup_payload_field_names": list(latest_materialization.get("signup_payload_field_names") or [])[:20],
                 "login_payload_field_names": list(latest_materialization.get("login_payload_field_names") or [])[:20],
-                "materialization_reason_codes": list(latest_materialization.get("reason_codes") or [])[:20],
+                "materialization_reason_codes": list(
+                    latest_materialization.get("materialization_reason_codes")
+                    or latest_materialization.get("reason_codes")
+                    or []
+                )[:20],
+                "owner_signup_attempts_count": self._safe_int(
+                    latest_materialization.get("owner_signup_attempts_count"), 0
+                ),
+                "attacker_signup_attempts_count": self._safe_int(
+                    latest_materialization.get("attacker_signup_attempts_count"), 0
+                ),
+                "owner_login_attempts_count": self._safe_int(
+                    latest_materialization.get("owner_login_attempts_count"), 0
+                ),
+                "attacker_login_attempts_count": self._safe_int(
+                    latest_materialization.get("attacker_login_attempts_count"), 0
+                ),
+                "signup_retry_count": self._safe_int(latest_materialization.get("signup_retry_count"), 0),
+                "login_retry_count": self._safe_int(latest_materialization.get("login_retry_count"), 0),
             })
 
         out["auth_profiles"] = self._auth_profiles.list_auth_profiles(campaign_id)[:10]
@@ -894,6 +921,28 @@ class ReportContextBuilder:
         fields_extracted = 0
         auth_profiles_used: set[str] = set()
         auth_inventory_ops: set[str] = set()
+        resource_inventory_count = 0
+        resource_instances_count = 0
+        resource_types: set[str] = set()
+        resource_ops: set[str] = set()
+        resource_samples: list[dict[str, Any]] = []
+        seed_count = 0
+        seed_success = 0
+        seed_attempts_count = 0
+        seed_failed_count = 0
+        seed_object_refs_created = 0
+        seed_samples: list[dict[str, Any]] = []
+        bola_pair_inventory_count = 0
+        bola_pairs_count = 0
+        bola_pair_resource_types: set[str] = set()
+        bola_replay_ready_count = 0
+        bola_pairs_samples: list[dict[str, Any]] = []
+        bola_replay_result_count = 0
+        bola_replay_granted_count = 0
+        bola_replay_denied_count = 0
+        bola_replay_invalid_pair_count = 0
+        bola_replay_inconclusive_count = 0
+        bola_replay_samples: list[dict[str, Any]] = []
         probe_samples: list[dict[str, Any]] = []
         auth_probe_samples: list[dict[str, Any]] = []
         probe_results: list[str] = []
@@ -967,6 +1016,159 @@ class ReportContextBuilder:
                         "role_hint": str(det.get("role_hint") or ""),
                         "reason_codes": list(det.get("reason_codes") or []) if isinstance(det.get("reason_codes"), list) else [],
                     })
+            elif otype == "resource_instance_inventory":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("source") or "") != "resource_instance_extractor":
+                    continue
+                resource_inventory_count += 1
+                resource_instances_count += ReportContextBuilder._safe_int(det.get("resource_instances_count"), 0)
+                op_id = str(det.get("source_operation_id") or "").strip()
+                if op_id:
+                    resource_ops.add(op_id)
+                auth_profile_id = str(det.get("source_auth_profile_id") or "").strip()
+                if auth_profile_id:
+                    auth_profiles_used.add(auth_profile_id)
+                refs = det.get("object_refs") if isinstance(det.get("object_refs"), list) else []
+                for row in refs:
+                    if not isinstance(row, dict):
+                        continue
+                    rtype = str(row.get("resource_type") or "").strip()
+                    if rtype:
+                        resource_types.add(rtype)
+                    if len(resource_samples) < 20:
+                        resource_samples.append({
+                            "object_ref_id": str(row.get("object_ref_id") or ""),
+                            "resource_type": rtype,
+                            "object_id_field": str(row.get("object_id_field") or ""),
+                            "object_id_ref": str(row.get("object_id_ref") or ""),
+                            "source_operation_id": op_id,
+                            "source_path": str(det.get("source_path") or ""),
+                            "source_auth_profile_id": auth_profile_id,
+                            "source_role_hint": str(det.get("source_role_hint") or ""),
+                            "confidence": str(row.get("confidence") or ""),
+                            "reason_codes": list(det.get("reason_codes")) if isinstance(det.get("reason_codes"), list) else [],
+                        })
+            elif otype == "resource_seed_result":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("validation_mode") or "").strip() != "resource_seed":
+                    continue
+                seed_count += 1
+                seed_status = str(det.get("seed_status") or "").strip()
+                if seed_status == "seeded":
+                    seed_success += 1
+                seed_attempts_count += max(0, ReportContextBuilder._safe_int(det.get("resource_seed_attempts_count"), 0))
+                seed_failed_count += max(0, ReportContextBuilder._safe_int(det.get("resource_seed_failed_count"), 0))
+                created = ReportContextBuilder._safe_int(det.get("object_refs_created_count"), 0)
+                seed_object_refs_created += max(0, created)
+                if len(seed_samples) < 10:
+                    refs = det.get("object_refs") if isinstance(det.get("object_refs"), list) else []
+                    safe_refs: list[dict[str, Any]] = []
+                    for row in refs[:3]:
+                        if not isinstance(row, dict):
+                            continue
+                        safe_refs.append({
+                            "object_ref_id": str(row.get("object_ref_id") or ""),
+                            "object_id_ref": str(row.get("object_id_ref") or ""),
+                            "object_id_field": str(row.get("object_id_field") or ""),
+                            "resource_type": str(row.get("resource_type") or ""),
+                            "confidence": str(row.get("confidence") or ""),
+                        })
+                    rc = det.get("reason_codes")
+                    seed_samples.append({
+                        "seed_status": seed_status,
+                        "resource_type": str(det.get("resource_type") or ""),
+                        "owner_auth_profile_id": str(det.get("owner_auth_profile_id") or ""),
+                        "seed_operation_id": str(det.get("seed_operation_id") or ""),
+                        "seed_method": str(det.get("seed_method") or ""),
+                        "seed_path": str(det.get("seed_path") or ""),
+                        "followup_operation_id": str(det.get("followup_operation_id") or ""),
+                        "followup_method": str(det.get("followup_method") or ""),
+                        "followup_path": str(det.get("followup_path") or ""),
+                        "object_refs_created_count": created,
+                        "object_refs": safe_refs,
+                        "http_calls_count": ReportContextBuilder._safe_int(det.get("http_calls_count"), 0),
+                        "resource_seed_attempts_count": ReportContextBuilder._safe_int(det.get("resource_seed_attempts_count"), 0),
+                        "resource_seed_failed_count": ReportContextBuilder._safe_int(det.get("resource_seed_failed_count"), 0),
+                        "reason_codes": list(rc) if isinstance(rc, list) else [],
+                    })
+            elif otype == "bola_object_pair_inventory":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("validation_mode") or "").strip() != "bola_object_pair_building":
+                    continue
+                bola_pair_inventory_count += 1
+                pairs = det.get("object_pairs") if isinstance(det.get("object_pairs"), list) else []
+                count = ReportContextBuilder._safe_int(det.get("object_pairs_count"), len(pairs))
+                bola_pairs_count += max(0, count)
+                if count > 0:
+                    bola_replay_ready_count += 1
+                rtypes = det.get("resource_types")
+                if isinstance(rtypes, list):
+                    for rt in rtypes:
+                        t = str(rt).strip()
+                        if t:
+                            bola_pair_resource_types.add(t)
+                for row in pairs:
+                    if not isinstance(row, dict) or len(bola_pairs_samples) >= 20:
+                        continue
+                    rt = str(row.get("resource_type") or "").strip()
+                    if rt:
+                        bola_pair_resource_types.add(rt)
+                    rc = row.get("reason_codes")
+                    bola_pairs_samples.append({
+                        "object_pair_id": str(row.get("object_pair_id") or ""),
+                        "resource_type": rt,
+                        "object_ref_id": str(row.get("object_ref_id") or ""),
+                        "object_id_ref": str(row.get("object_id_ref") or ""),
+                        "owner_auth_profile_id": str(row.get("owner_auth_profile_id") or ""),
+                        "attacker_auth_profile_id": str(row.get("attacker_auth_profile_id") or ""),
+                        "target_operation_id": str(row.get("target_operation_id") or ""),
+                        "target_path_template": str(row.get("target_path_template") or ""),
+                        "target_method": str(row.get("target_method") or ""),
+                        "path_param_name": str(row.get("path_param_name") or ""),
+                        "confidence": str(row.get("confidence") or ""),
+                        "reason_codes": list(rc) if isinstance(rc, list) else [],
+                    })
+            elif otype == "bola_replay_result":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("validation_mode") or "").strip() != "bola_replay":
+                    continue
+                bola_replay_result_count += 1
+                if bool(det.get("access_granted")):
+                    bola_replay_granted_count += 1
+                result_label = str(det.get("result") or "")
+                replay_classification = str(det.get("replay_classification") or "")
+                if replay_classification in {"access_denied", "access_denied_or_not_found"} or result_label in {
+                    "attacker_access_denied",
+                    "attacker_access_denied_or_not_found",
+                }:
+                    bola_replay_denied_count += 1
+                if replay_classification == "invalid_object_pair" or result_label == "invalid_object_pair":
+                    bola_replay_invalid_pair_count += 1
+                if replay_classification == "inconclusive" or result_label == "replay_error":
+                    bola_replay_inconclusive_count += 1
+                if len(bola_replay_samples) < 20:
+                    rc = det.get("reason_codes")
+                    bola_replay_samples.append({
+                        "object_pair_id": str(det.get("object_pair_id") or ""),
+                        "resource_type": str(det.get("resource_type") or ""),
+                        "target_operation_id": str(det.get("target_operation_id") or ""),
+                        "target_path_template": str(det.get("target_path_template") or ""),
+                        "target_method": str(det.get("target_method") or ""),
+                        "path_param_name": str(det.get("path_param_name") or ""),
+                        "attacker_auth_profile_id": str(det.get("attacker_auth_profile_id") or ""),
+                        "owner_auth_profile_id": str(det.get("owner_auth_profile_id") or ""),
+                        "status_code": ReportContextBuilder._safe_int(det.get("status_code"), 0),
+                        "owner_status_code": ReportContextBuilder._safe_int(det.get("owner_status_code"), 0),
+                        "owner_result": str(det.get("owner_result") or ""),
+                        "attacker_status_code": ReportContextBuilder._safe_int(det.get("attacker_status_code"), 0),
+                        "attacker_result": str(det.get("attacker_result") or ""),
+                        "result": result_label,
+                        "replay_classification": replay_classification,
+                        "owner_baseline_valid": bool(det.get("owner_baseline_valid")),
+                        "access_granted": bool(det.get("access_granted")),
+                        "evidence_strength": str(det.get("evidence_strength") or ""),
+                        "reason_codes": list(rc) if isinstance(rc, list) else [],
+                    })
         sens_findings = sum(
             1 for f in findings
             if str(f.get("vulnerability_class") or "") == "sensitive_property_exposure"
@@ -1038,6 +1240,29 @@ class ReportContextBuilder:
             "data_exposure_authenticated_fields_extracted_count": auth_fields_extracted,
             "auth_profiles_used_count": len(auth_profiles_used),
             "operations_with_authenticated_inventory": len(auth_inventory_ops),
+            "resource_instance_inventory_count": resource_inventory_count,
+            "resource_instances_count": resource_instances_count,
+            "object_refs_count": resource_instances_count,
+            "operations_with_resource_instances": len(resource_ops),
+            "resource_types": sorted(resource_types)[:20],
+            "resource_instance_results": resource_samples,
+            "resource_seed_result_count": seed_count,
+            "resource_seed_success_count": seed_success,
+            "resource_seed_attempts_count": seed_attempts_count,
+            "resource_seed_failed_count": seed_failed_count,
+            "resource_seed_object_refs_created_count": seed_object_refs_created,
+            "resource_seed_results": seed_samples,
+            "bola_object_pair_inventory_count": bola_pair_inventory_count,
+            "bola_object_pairs_count": bola_pairs_count,
+            "bola_pair_resource_types": sorted(bola_pair_resource_types)[:20],
+            "bola_replay_ready_count": bola_replay_ready_count,
+            "bola_object_pairs": bola_pairs_samples,
+            "bola_replay_result_count": bola_replay_result_count,
+            "bola_replay_granted_count": bola_replay_granted_count,
+            "bola_replay_denied_count": bola_replay_denied_count,
+            "bola_replay_invalid_pair_count": bola_replay_invalid_pair_count,
+            "bola_replay_inconclusive_count": bola_replay_inconclusive_count,
+            "bola_replay_results": bola_replay_samples,
             "data_exposure_probe_results": probe_samples,
             "authenticated_data_exposure_results": auth_probe_samples,
             "sensitive_property_exposure_findings_count": sens_findings,
@@ -1066,6 +1291,7 @@ class ReportContextBuilder:
         findings_api8 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API8_SECURITY_MISCONFIGURATION")
         findings_api9 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API9_IMPROPER_INVENTORY_MANAGEMENT")
         findings_api3 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION")
+        findings_api1 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION")
         findings_api7 = sum(1 for f in findings if str(f.get("owasp_category") or "") == "API7_SERVER_SIDE_REQUEST_FORGERY")
 
         schema_mismatch_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "schema_mismatch")
@@ -1165,6 +1391,15 @@ class ReportContextBuilder:
                 })
 
         return {
+            "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION": {
+                "status": "diagnostic",
+                "confirmed_findings_count": findings_api1,
+                "bola_replay_result_count": self._safe_int(api3_de_cov.get("bola_replay_result_count"), 0),
+                "bola_replay_granted_count": self._safe_int(api3_de_cov.get("bola_replay_granted_count"), 0),
+                "bola_replay_denied_count": self._safe_int(api3_de_cov.get("bola_replay_denied_count"), 0),
+                "bola_replay_invalid_pair_count": self._safe_int(api3_de_cov.get("bola_replay_invalid_pair_count"), 0),
+                "bola_replay_inconclusive_count": self._safe_int(api3_de_cov.get("bola_replay_inconclusive_count"), 0),
+            },
             "API7_SERVER_SIDE_REQUEST_FORGERY": {
                 "status": "diagnostic" if (ssrf_candidate_signal_count > 0 or findings_api7 > 0) else ("not_available" if runtime is None else "pending"),
                 "workers": {
@@ -1351,7 +1586,7 @@ class ReportContextBuilder:
     @staticmethod
     def _sanitize_string(value: str) -> str:
         lowered = value.lower()
-        patterns = ("bearer ", "token=", "authorization:", "set-cookie:")
+        patterns = ("bearer ", "token=", "authorization:", "set-cookie:", "cookie:", "password=")
         if any(pat in lowered for pat in patterns):
             return "[redacted]"
         return value

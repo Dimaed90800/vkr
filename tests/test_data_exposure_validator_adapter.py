@@ -20,6 +20,7 @@ def _reset() -> None:
     memory_store.auth_profiles_by_campaign.clear()
     memory_store.runtime_token_secrets.clear()
     memory_store.runtime_credential_secrets.clear()
+    memory_store.runtime_response_json_secrets.clear()
 
 
 def _campaign() -> Campaign:
@@ -253,3 +254,105 @@ def test_authenticated_data_exposure_missing_auth_profile_returns_safe_failure()
     )
     assert r.status == "failed"
     assert r.errors[0].error_type == "auth_profile_missing"
+
+
+def test_data_exposure_redirect_not_allowed_returns_finished_probe_not_failed() -> None:
+    _reset()
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_dex",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token-123",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"Location": "/api/profile-final", "Content-Type": "text/plain"})
+
+    adapter = DataExposureValidatorAdapter(http_client=SafeHttpClient(transport=httpx.MockTransport(handler)))
+    r = adapter.execute(
+        _cmd(auth_mode="authenticated", auth_profile_id=profile.auth_profile_id, follow_same_origin_redirects=False, max_redirects=0),
+        _campaign(),
+        "tr_redirect_probe",
+    )
+    assert r.status == "finished"
+    assert [o.observation_type for o in r.observations] == ["data_exposure_probe_result"]
+    det = r.observations[0].details
+    assert det.get("result") == "redirect_response"
+    assert det.get("status_code") == 302
+    assert det.get("auth_mode") == "authenticated"
+    assert det.get("auth_profile_id") == profile.auth_profile_id
+    assert "redirect_response" in (det.get("reason_codes") or [])
+    assert "redirect_not_followed" in (det.get("reason_codes") or [])
+
+
+def test_data_exposure_same_origin_redirect_followed_to_json_inventory() -> None:
+    _reset()
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_dex",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token-123",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/profile":
+            return httpx.Response(302, headers={"Location": "/api/profile-final"})
+        assert request.headers.get("Authorization") == "Bearer owner-token-123"
+        return httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            text=json.dumps({"email": "x@y.z", "vehicleid": "veh-123"}),
+        )
+
+    adapter = DataExposureValidatorAdapter(http_client=SafeHttpClient(transport=httpx.MockTransport(handler)))
+    r = adapter.execute(
+        _cmd(auth_mode="authenticated", auth_profile_id=profile.auth_profile_id, follow_same_origin_redirects=True, max_redirects=2),
+        _campaign(),
+        "tr_redirect_follow",
+    )
+    assert r.status == "finished"
+    assert [o.observation_type for o in r.observations] == [
+        "response_field_inventory",
+        "data_exposure_signal",
+        "data_exposure_probe_result",
+    ]
+    probe = r.observations[-1].details
+    assert probe.get("result") == "sensitive_fields_found"
+
+
+def test_data_exposure_cross_host_redirect_returns_safe_probe_not_failed() -> None:
+    _reset()
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_dex",
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token-123",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"Location": "http://evil.local/next?token=secret"})
+
+    adapter = DataExposureValidatorAdapter(http_client=SafeHttpClient(transport=httpx.MockTransport(handler)))
+    r = adapter.execute(
+        _cmd(auth_mode="authenticated", auth_profile_id=profile.auth_profile_id, follow_same_origin_redirects=True, max_redirects=2),
+        _campaign(),
+        "tr_redirect_cross_host",
+    )
+    assert r.status == "finished"
+    assert [o.observation_type for o in r.observations] == ["data_exposure_probe_result"]
+    det = r.observations[0].details
+    assert det.get("result") == "redirect_response"
+    assert det.get("auth_profile_id") == profile.auth_profile_id
+    assert "redirect_host_not_allowed" in (det.get("reason_codes") or [])
+    blob = json.dumps(r.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("owner-token-123", "bearer ", "evil.local/next?token=secret", "\"authorization\":", "\"cookie\":"):
+        assert bad not in blob

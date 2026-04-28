@@ -17,7 +17,7 @@ class CampaignStatus(str, Enum):
 class CampaignLimits(BaseModel):
     max_requests: int = 1000
     max_duration_sec: int = 1800
-    max_iterations: int = 50
+    max_iterations: int = 80
     max_retries_per_task: int = 2
 
 

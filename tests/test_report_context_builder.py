@@ -25,6 +25,9 @@ def _reset_store() -> None:
         "judge_decisions_by_evidence", "confirmed_findings", "confirmed_findings_by_campaign",
         "findings_by_fingerprint", "evidence_pack_apply_meta", "observation_apply_meta",
         "auth_profiles", "auth_profiles_by_campaign", "runtime_token_secrets", "runtime_credential_secrets",
+        "runtime_response_json_secrets", "runtime_object_id_secrets",
+        "runtime_resource_instances", "runtime_resource_instances_by_campaign",
+        "runtime_bola_object_pairs", "runtime_bola_object_pairs_by_campaign",
     ]:
         getattr(memory_store, name).clear()
 
@@ -677,6 +680,13 @@ def test_report_context_auth_flow_diagnostics_include_materialization_metadata_s
                 "token_response_detected": True,
                 "materialization_errors": [{"stage": "login", "user_label": "attacker_user", "error_type": "token_not_found"}],
                 "reason_codes": ["materialization_partial"],
+                "materialization_reason_codes": ["materialization_partial", "possible_jwt_token_too_long"],
+                "owner_signup_attempts_count": 2,
+                "attacker_signup_attempts_count": 1,
+                "owner_login_attempts_count": 2,
+                "attacker_login_attempts_count": 0,
+                "signup_retry_count": 1,
+                "login_retry_count": 0,
             },
         ).model_dump(mode="json"),
     )
@@ -691,6 +701,9 @@ def test_report_context_auth_flow_diagnostics_include_materialization_metadata_s
     assert diag.get("auth_type") == "bearer"
     assert diag.get("token_response_detected") is True
     assert len(diag.get("auth_profiles") or []) == 1
+    assert diag.get("owner_signup_attempts_count") == 2
+    assert diag.get("signup_retry_count") == 1
+    assert "possible_jwt_token_too_long" in (diag.get("materialization_reason_codes") or [])
     blob = json.dumps(diag, sort_keys=True).lower()
     for bad in ("secret-runtime-token", "strongpass!9", "authorization", "cookie", "set-cookie", "bearer ", "response_body", "request_body"):
         assert bad not in blob
@@ -1027,6 +1040,326 @@ def test_report_context_api3_authenticated_sensitive_fields_found_counts_as_extr
     assert api3["authenticated_data_exposure_results"][0]["result"] == "sensitive_fields_found"
     blob = json.dumps(api3, sort_keys=True).lower()
     assert "secretvalue" not in blob
+
+
+def test_report_context_api3_includes_resource_instance_inventory_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_resource_inventory_report",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_resource_inventory_report",
+            campaign_id="cmp_report",
+            type=ObservationType.resource_instance_inventory,
+            details={
+                "source": "resource_instance_extractor",
+                "validation_mode": "resource_instance_extraction",
+                "source_observation_id": "obs_rfi_auth",
+                "source_operation_id": "op_GET_/api/v1/me",
+                "source_path": "/api/v1/me",
+                "source_auth_profile_id": "authprof_owner_1",
+                "source_role_hint": "owner",
+                "resource_instances_count": 2,
+                "resource_types": ["vehicle", "user"],
+                "object_refs": [
+                    {
+                        "object_ref_id": "objref_vehicle_1",
+                        "resource_type": "vehicle",
+                        "object_id_field": "vehicleid",
+                        "object_id_ref": "objidref_vehicle_1",
+                        "confidence": "high",
+                    },
+                    {
+                        "object_ref_id": "objref_user_1",
+                        "resource_type": "user",
+                        "object_id_field": "userId",
+                        "object_id_ref": "objidref_user_1",
+                        "confidence": "medium",
+                    },
+                ],
+                "reason_codes": ["resource_ids_extracted"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["resource_instance_inventory_count"] == 1
+    assert api3["resource_instances_count"] == 2
+    assert api3["object_refs_count"] == 2
+    assert api3["operations_with_resource_instances"] == 1
+    assert "vehicle" in api3["resource_types"]
+    assert len(api3["resource_instance_results"]) == 2
+    aggregate_like = {"count", "total", "amount", "quantity", "price", "status", "page", "limit"}
+    assert all(str(r.get("object_id_field") or "") not in aggregate_like for r in api3["resource_instance_results"])
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("veh-123", "user-7", "authorization", "cookie", "set-cookie", "token="):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_resource_seed_results_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_seed_report",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_seed_report",
+            campaign_id="cmp_report",
+            type=ObservationType.resource_seed_result,
+            details={
+                "validation_mode": "resource_seed",
+                "seed_status": "seeded",
+                "resource_type": "order",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "seed_operation_id": "op_POST_/api/orders",
+                "seed_method": "POST",
+                "seed_path": "/api/orders",
+                "followup_operation_id": "",
+                "followup_method": "",
+                "followup_path": "",
+                "object_refs_created_count": 1,
+                "object_refs": [{
+                    "object_ref_id": "objref_order_1",
+                    "object_id_ref": "objidref_order_1",
+                    "object_id_field": "order_id",
+                    "resource_type": "order",
+                    "confidence": "high",
+                }],
+                "http_calls_count": 1,
+                "reason_codes": ["resource_ids_extracted"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["resource_seed_result_count"] == 1
+    assert api3["resource_seed_success_count"] == 1
+    assert api3["resource_seed_object_refs_created_count"] == 1
+    assert len(api3["resource_seed_results"]) == 1
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("ord-1", "authorization", "cookie", "set-cookie", "token="):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_bola_object_pair_inventory_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_bola_pair_inventory_report",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_bola_pair_inventory_report",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_object_pair_inventory,
+            details={
+                "validation_mode": "bola_object_pair_building",
+                "object_pairs_count": 1,
+                "resource_types": ["vehicle"],
+                "object_pairs": [{
+                    "object_pair_id": "objpair_1",
+                    "resource_type": "vehicle",
+                    "object_ref_id": "objref_vehicle_1",
+                    "object_id_ref": "objidref_vehicle_1",
+                    "owner_auth_profile_id": "authprof_owner_1",
+                    "attacker_auth_profile_id": "authprof_attacker_1",
+                    "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                    "target_path_template": "/api/v1/vehicles/{vehicleId}",
+                    "target_method": "GET",
+                    "path_param_name": "vehicleId",
+                    "confidence": "high",
+                    "reason_codes": ["path_param_resource_match"],
+                }],
+                "reason_codes": ["object_pairs_built"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["bola_object_pair_inventory_count"] == 1
+    assert api3["bola_object_pairs_count"] == 1
+    assert api3["bola_replay_ready_count"] == 1
+    assert "vehicle" in api3["bola_pair_resource_types"]
+    assert len(api3["bola_object_pairs"]) == 1
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("veh-raw", "authorization", "cookie", "set-cookie", "token=", "password", "raw_body"):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_redirect_probe_result_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_probe_redirect_auth",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_probe_redirect_auth",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_probe_result,
+            details={
+                "source": "data_exposure_validator",
+                "operation_id": "op_GET_/api/v1/me",
+                "method": "GET",
+                "path": "/api/v1/me",
+                "status_code": 302,
+                "content_type": "text/plain",
+                "result": "redirect_response",
+                "field_count": 0,
+                "sensitive_field_count": 0,
+                "sensitive_categories": [],
+                "reason_codes": ["redirect_response", "redirect_not_followed", "redirect_host_not_allowed"],
+                "auth_mode": "authenticated",
+                "auth_profile_id": "authprof_owner_1",
+                "role_hint": "owner",
+                "redirect_same_origin": False,
+                "redirect_followed": False,
+                "redirect_count": 1,
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["authenticated_data_exposure_probe_result_count"] == 1
+    assert len(api3["authenticated_data_exposure_results"]) == 1
+    assert api3["authenticated_data_exposure_results"][0]["result"] == "redirect_response"
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "token=", "owner-token-secret"):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_bola_replay_results_safely() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_bola_replay_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_bola_replay_1",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_replay_result,
+            details={
+                "validation_mode": "bola_replay",
+                "object_pair_id": "objpair_1",
+                "resource_type": "post",
+                "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+                "target_path_template": "/community/api/v2/community/posts/{postId}",
+                "target_method": "GET",
+                "path_param_name": "postId",
+                "attacker_auth_profile_id": "authprof_attacker_1",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "status_code": 200,
+                "result": "attacker_access_granted",
+                "access_granted": True,
+                "evidence_strength": "high",
+                "reason_codes": ["owner_baseline_valid", "attacker_access_granted"],
+                "owner_status_code": 200,
+                "owner_result": "attacker_access_granted",
+                "attacker_status_code": 200,
+                "attacker_result": "attacker_access_granted",
+                "replay_classification": "possible_bola",
+                "owner_baseline_valid": True,
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_bola_replay_2",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_bola_replay_2",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_replay_result,
+            details={
+                "validation_mode": "bola_replay",
+                "object_pair_id": "objpair_2",
+                "resource_type": "vehicle",
+                "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                "target_path_template": "/api/v1/vehicles/{vehicleId}",
+                "target_method": "GET",
+                "path_param_name": "vehicleId",
+                "attacker_auth_profile_id": "authprof_attacker_1",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "status_code": 403,
+                "result": "attacker_access_denied",
+                "access_granted": False,
+                "evidence_strength": "low",
+                "reason_codes": ["owner_baseline_valid", "attacker_denied"],
+                "owner_status_code": 200,
+                "owner_result": "attacker_access_granted",
+                "attacker_status_code": 403,
+                "attacker_result": "attacker_access_denied",
+                "replay_classification": "access_denied",
+                "owner_baseline_valid": True,
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["bola_replay_result_count"] == 2
+    assert api3["bola_replay_granted_count"] == 1
+    assert api3["bola_replay_denied_count"] == 1
+    assert api3["bola_replay_invalid_pair_count"] == 0
+    assert api3["bola_replay_inconclusive_count"] == 0
+    assert len(api3["bola_replay_results"]) == 2
+    blob = json.dumps(api3, sort_keys=True).lower()
+    for bad in ("post-123", "authorization", "cookie", "set-cookie", "token=", "password", "raw_body", "raw_headers"):
+        assert bad not in blob
+
+
+def test_report_context_api3_includes_resource_seed_attempt_counters() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_seed_attempts_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_seed_attempts_1",
+            campaign_id="cmp_report",
+            type=ObservationType.resource_seed_result,
+            details={
+                "validation_mode": "resource_seed",
+                "seed_status": "seeded",
+                "resource_seed_attempts_count": 3,
+                "resource_seed_failed_count": 2,
+                "resource_type": "vehicle",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "seed_operation_id": "op_POST_/identity/api/v2/vehicle/add",
+                "seed_method": "POST",
+                "seed_path": "/identity/api/v2/vehicle/add",
+                "object_refs_created_count": 1,
+                "object_refs": [{"object_ref_id": "objref_1", "object_id_ref": "objidref_1", "object_id_field": "vehicleId", "resource_type": "vehicle", "confidence": "high"}],
+                "http_calls_count": 2,
+                "reason_codes": ["resource_ids_extracted"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["resource_seed_attempts_count"] == 3
+    assert api3["resource_seed_failed_count"] == 2
+
+
+def test_report_context_owasp_coverage_includes_api1_default_diagnostic() -> None:
+    _reset_store()
+    _create_campaign()
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api1 = ctx["owasp_coverage"]["API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"]
+    assert api1["status"] == "diagnostic"
+    assert api1["confirmed_findings_count"] == 0
+    assert api1["bola_replay_result_count"] == 0
 
 
 def test_static_asset_context_and_security_header_grouping_fields() -> None:

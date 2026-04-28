@@ -919,9 +919,9 @@ workflow:
           }
           DEFAULT_PROFILE = "safe"
           PROFILE_MAX_ITERATIONS = {
-              "safe": 30,
-              "balanced": 45,
-              "aggressive": 50,
+              "safe": 35,
+              "balanced": 55,
+              "aggressive": 70,
           }
 
           def _json_list(value, default):
@@ -973,9 +973,9 @@ workflow:
                       parsed = None
                   if parsed is not None:
                       if parsed < 1:
-                          return PROFILE_MAX_ITERATIONS.get(profile, PROFILE_MAX_ITERATIONS[DEFAULT_PROFILE])
-                      if parsed > 50:
-                          return 50
+                          return 1
+                      if parsed > 80:
+                          return 80
                       return parsed
               return PROFILE_MAX_ITERATIONS.get(profile, PROFILE_MAX_ITERATIONS[DEFAULT_PROFILE])
 
@@ -1202,7 +1202,7 @@ workflow:
               "openapi_url": "{{#normalize_inputs.openapi_url#}}",
               "allowed_hosts": {{#normalize_inputs.allowed_hosts_json#}},
               "profile": "{{#normalize_inputs.profile#}}",
-              "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 50, "max_retries_per_task": 2},
+              "limits": {"max_requests": 1000, "max_duration_sec": 1800, "max_iterations": 80, "max_retries_per_task": 2},
               "roles_json": {{#normalize_inputs.roles_json#}}
             }
           type: json
@@ -1379,13 +1379,13 @@ workflow:
               include_scenario_compiler: str = 'true',
           ) -> dict:
               try:
-                  max_iters = int(str(max_iterations or '').strip() or '3')
+                  max_iters = int(str(max_iterations or "").strip() or "0")
               except Exception:
-                  max_iters = 15
+                  max_iters = 0
               if max_iters < 1:
                   max_iters = 15
-              if max_iters > 50:
-                  max_iters = 50
+              if max_iters > 60:
+                  max_iters = 60
               state = {
                   "campaign_id": str(campaign_id or ''),
                   "iterations_run": 0,
@@ -1412,20 +1412,23 @@ workflow:
                   "tool_failed_fatal_mode": False,
                   "kind_caps": {
                       "schemathesis_negative_test": 4,
-                      "injection_test": 3,
+                      "injection_test": 2,
                       "property_mutation_test": 2,
-                      "security_header_validator": 2,
+                      "security_header_validator": 3,
                       "security_header_check": 2,
-                      "cors_validator": 2,
-                      "cookie_flag_validator": 2,
+                      "cors_validator": 1,
+                      "cookie_flag_validator": 1,
                       "js_endpoint_extractor": 1,
                       "auth_flow_detector": 1,
                       "test_account_materializer": 1,
                       "ssrf_candidate_detector": 2,
                       "undocumented_endpoint_validator": 2,
-                      "data_exposure_validator": 3,
+                      "data_exposure_validator": 8,
+                      "resource_instance_extractor": 3,
+                      "resource_seed_worker": 3,
+                      "bola_object_pair_builder": 2,
                       "zap_discovery_passive": 1,
-                      "bola_replay_probe": 2,
+                      "bola_replay_probe": 5,
                   },
                   "executed_by_kind": {},
                   "skipped_by_kind_cap_count": {},
@@ -2095,20 +2098,23 @@ workflow:
               MAX_BLOCKED_CANDIDATE_SAMPLE = 10
               MAX_READY_CANDIDATE_SAMPLE = 10
               KIND_PRIORITY = [
-                  "schemathesis_negative_test",
                   "zap_discovery_passive",
                   "js_endpoint_extractor",
                   "auth_flow_detector",
                   "test_account_materializer",
-                  "ssrf_candidate_detector",
                   "data_exposure_validator",
+                  "resource_instance_extractor",
+                  "resource_seed_worker",
+                  "bola_object_pair_builder",
+                  "bola_replay_probe",
+                  "ssrf_candidate_detector",
                   "undocumented_endpoint_validator",
                   "injection_test",
                   "security_header_validator",
                   "cors_validator",
                   "cookie_flag_validator",
                   "property_mutation_test",
-                  "bola_replay_probe",
+                  "schemathesis_negative_test",
                   "security_header_check",
               ]
               try:
@@ -2196,6 +2202,58 @@ workflow:
                       'attacker_auth_profile_id': str(summary.get('attacker_auth_profile_id') or ''),
                       'auth_type': str(summary.get('auth_type') or ''),
                       'token_response_detected': bool(summary.get('token_response_detected')),
+                      'resource_instance_candidate_source': str(summary.get('resource_instance_candidate_source') or ''),
+                      'resource_seed_candidate_source': str(summary.get('resource_seed_candidate_source') or ''),
+                      'bola_pair_candidate_source': str(summary.get('bola_pair_candidate_source') or ''),
+                      'seed_status': str(summary.get('seed_status') or ''),
+                      'object_pairs_count': int(summary.get('object_pairs_count') or 0),
+                      'bola_replay_ready_count': int(summary.get('bola_replay_ready_count') or 0),
+                      'bola_pair_resource_types': (
+                          summary.get('bola_pair_resource_types')
+                          if isinstance(summary.get('bola_pair_resource_types'), list) else []
+                      ),
+                      'object_pairs': (
+                          summary.get('object_pairs')
+                          if isinstance(summary.get('object_pairs'), list) else []
+                      ),
+                      'object_pair_id': str(summary.get('object_pair_id') or ''),
+                      'bola_replay_candidate_source': str(summary.get('bola_replay_candidate_source') or ''),
+                      'target_operation_id': str(summary.get('target_operation_id') or ''),
+                      'target_path_template': str(summary.get('target_path_template') or ''),
+                      'target_method': str(summary.get('target_method') or ''),
+                      'path_param_name': str(summary.get('path_param_name') or ''),
+                      'status_code': int(summary.get('status_code') or 0),
+                      'result': str(summary.get('result') or ''),
+                      'access_granted': bool(summary.get('access_granted')),
+                      'evidence_strength': str(summary.get('evidence_strength') or ''),
+                      'response_fingerprint_match': bool(summary.get('response_fingerprint_match')),
+                      'source_operation_id': str(summary.get('source_operation_id') or ''),
+                      'source_path': str(summary.get('source_path') or ''),
+                      'source_auth_profile_id': str(summary.get('source_auth_profile_id') or ''),
+                      'source_role_hint': str(summary.get('source_role_hint') or ''),
+                      'seed_operation_id': str(summary.get('seed_operation_id') or ''),
+                      'seed_method': str(summary.get('seed_method') or ''),
+                      'seed_path': str(summary.get('seed_path') or ''),
+                      'followup_operation_id': str(summary.get('followup_operation_id') or ''),
+                      'followup_method': str(summary.get('followup_method') or ''),
+                      'followup_path': str(summary.get('followup_path') or ''),
+                      'resource_instances_count': int(summary.get('resource_instances_count') or 0),
+                      'object_refs_count': int(summary.get('object_refs_count') or 0),
+                      'object_refs_created_count': int(summary.get('object_refs_created_count') or 0),
+                      'resource_types': (
+                          summary.get('resource_types')
+                          if isinstance(summary.get('resource_types'), list) else []
+                      ),
+                      'object_refs': (
+                          summary.get('object_refs')
+                          if isinstance(summary.get('object_refs'), list) else []
+                      ),
+                      'http_calls_count': int(summary.get('http_calls_count') or 0),
+                      'object_ref_id': str(summary.get('object_ref_id') or ''),
+                      'object_id_ref': str(summary.get('object_id_ref') or ''),
+                      'object_id_field': str(summary.get('object_id_field') or ''),
+                      'resource_type': str(summary.get('resource_type') or ''),
+                      'confidence': str(summary.get('confidence') or ''),
                       'materialization_errors': (
                           summary.get('materialization_errors')
                           if isinstance(summary.get('materialization_errors'), list) else []
@@ -2280,6 +2338,58 @@ workflow:
                       'attacker_auth_profile_id': str(summary.get('attacker_auth_profile_id') or ''),
                       'auth_type': str(summary.get('auth_type') or ''),
                       'token_response_detected': bool(summary.get('token_response_detected')),
+                      'resource_instance_candidate_source': str(summary.get('resource_instance_candidate_source') or ''),
+                      'resource_seed_candidate_source': str(summary.get('resource_seed_candidate_source') or ''),
+                      'bola_pair_candidate_source': str(summary.get('bola_pair_candidate_source') or ''),
+                      'seed_status': str(summary.get('seed_status') or ''),
+                      'object_pairs_count': int(summary.get('object_pairs_count') or 0),
+                      'bola_replay_ready_count': int(summary.get('bola_replay_ready_count') or 0),
+                      'bola_pair_resource_types': (
+                          summary.get('bola_pair_resource_types')
+                          if isinstance(summary.get('bola_pair_resource_types'), list) else []
+                      ),
+                      'object_pairs': (
+                          summary.get('object_pairs')
+                          if isinstance(summary.get('object_pairs'), list) else []
+                      ),
+                      'object_pair_id': str(summary.get('object_pair_id') or ''),
+                      'bola_replay_candidate_source': str(summary.get('bola_replay_candidate_source') or ''),
+                      'target_operation_id': str(summary.get('target_operation_id') or ''),
+                      'target_path_template': str(summary.get('target_path_template') or ''),
+                      'target_method': str(summary.get('target_method') or ''),
+                      'path_param_name': str(summary.get('path_param_name') or ''),
+                      'status_code': int(summary.get('status_code') or 0),
+                      'result': str(summary.get('result') or ''),
+                      'access_granted': bool(summary.get('access_granted')),
+                      'evidence_strength': str(summary.get('evidence_strength') or ''),
+                      'response_fingerprint_match': bool(summary.get('response_fingerprint_match')),
+                      'source_operation_id': str(summary.get('source_operation_id') or ''),
+                      'source_path': str(summary.get('source_path') or ''),
+                      'source_auth_profile_id': str(summary.get('source_auth_profile_id') or ''),
+                      'source_role_hint': str(summary.get('source_role_hint') or ''),
+                      'seed_operation_id': str(summary.get('seed_operation_id') or ''),
+                      'seed_method': str(summary.get('seed_method') or ''),
+                      'seed_path': str(summary.get('seed_path') or ''),
+                      'followup_operation_id': str(summary.get('followup_operation_id') or ''),
+                      'followup_method': str(summary.get('followup_method') or ''),
+                      'followup_path': str(summary.get('followup_path') or ''),
+                      'resource_instances_count': int(summary.get('resource_instances_count') or 0),
+                      'object_refs_count': int(summary.get('object_refs_count') or 0),
+                      'object_refs_created_count': int(summary.get('object_refs_created_count') or 0),
+                      'resource_types': (
+                          summary.get('resource_types')
+                          if isinstance(summary.get('resource_types'), list) else []
+                      ),
+                      'object_refs': (
+                          summary.get('object_refs')
+                          if isinstance(summary.get('object_refs'), list) else []
+                      ),
+                      'http_calls_count': int(summary.get('http_calls_count') or 0),
+                      'object_ref_id': str(summary.get('object_ref_id') or ''),
+                      'object_id_ref': str(summary.get('object_id_ref') or ''),
+                      'object_id_field': str(summary.get('object_id_field') or ''),
+                      'resource_type': str(summary.get('resource_type') or ''),
+                      'confidence': str(summary.get('confidence') or ''),
                       'materialization_errors': (
                           summary.get('materialization_errors')
                           if isinstance(summary.get('materialization_errors'), list) else []
@@ -2376,6 +2486,19 @@ workflow:
                       str(row.get('ssrf_candidate_source') or ''),
                       str(row.get('js_url_sanitized') or ''),
                       str(row.get('validation_mode') or ''),
+                      str(row.get('resource_instance_candidate_source') or ''),
+                      str(row.get('source_observation_id') or ''),
+                      str(row.get('source_operation_id') or ''),
+                      str(row.get('source_path') or ''),
+                      str(row.get('source_auth_profile_id') or ''),
+                      str(row.get('source_role_hint') or ''),
+                      str(row.get('resource_instances_count') or ''),
+                      str(row.get('object_refs_count') or ''),
+                      json.dumps(row.get('resource_types') or [], ensure_ascii=False, sort_keys=True),
+                      str(row.get('object_ref_id') or ''),
+                      str(row.get('object_id_ref') or ''),
+                      str(row.get('object_id_field') or ''),
+                      str(row.get('resource_type') or ''),
                       str(row.get('candidate_field_count') or ''),
                       json.dumps(row.get('candidate_fields_sample') or [], ensure_ascii=False, sort_keys=True),
                       str(row.get('confidence') or ''),
@@ -3167,18 +3290,27 @@ workflow:
               except Exception:
                   payload = {}
               observations = payload.get('observations') or []
+              strong_bola = [
+                  obs for obs in observations
+                  if obs.get('type') == 'bola_replay_result'
+                  and bool(((obs.get('details') or {}).get('access_granted')) is True)
+                  and bool(((obs.get('details') or {}).get('owner_baseline_valid')) is True)
+                  and str(((obs.get('details') or {}).get('evidence_strength') or '')).lower() in {'medium', 'high'}
+              ]
               cross = [obs for obs in observations if obs.get('type') == 'cross_role_access_signal']
               validated_headers = [obs for obs in observations if obs.get('type') == 'validated_security_header_issue']
               schema = [obs for obs in observations if obs.get('type') == 'schema_mismatch']
               injection = [obs for obs in observations if obs.get('type') == 'injection_signal']
               alerts = [obs for obs in observations if obs.get('type') == 'zap_alert']
               discovered = [obs for obs in observations if obs.get('type') == 'discovered_endpoint']
-              selected = cross[0] if cross else (
-                  validated_headers[0] if validated_headers else (
-                      schema[0] if schema else (
-                          injection[0] if injection else (
-                              alerts[0] if alerts else (
-                                  discovered[0] if discovered else {}
+              selected = strong_bola[0] if strong_bola else (
+                  cross[0] if cross else (
+                      validated_headers[0] if validated_headers else (
+                          schema[0] if schema else (
+                              injection[0] if injection else (
+                                  alerts[0] if alerts else (
+                                      discovered[0] if discovered else {}
+                                  )
                               )
                           )
                       )
@@ -3190,17 +3322,22 @@ workflow:
                   'first_observation_id': first_observation_id,
                   'first_observation_type': str(selected.get('type') or ''),
                   'observations_count': str(len(observations)),
+                  'bola_replay_result_count': str(len([obs for obs in observations if obs.get('type') == 'bola_replay_result'])),
+                  'strong_bola_replay_count': str(len(strong_bola)),
                   'cross_role_access_count': str(len(cross)),
                   'zap_alerts_count': str(len(alerts)),
                   'discovered_endpoints_count': str(len(discovered)),
               }
         code_language: python3
         dependencies: []
-        desc: Prefer cross_role, validated headers, schema_mismatch, injection_signal, zap_alert, discovered_endpoint.
+        desc: Prefer strong BOLA replay, then cross_role, validated headers, schema_mismatch, injection_signal, zap_alert, discovered_endpoint.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
         outputs:
+          bola_replay_result_count:
+            children: null
+            type: string
           cross_role_access_count:
             children: null
             type: string
@@ -3217,6 +3354,9 @@ workflow:
             children: null
             type: string
           observations_count:
+            children: null
+            type: string
+          strong_bola_replay_count:
             children: null
             type: string
           zap_alerts_count:
@@ -3537,6 +3677,7 @@ workflow:
               obs_type = str(first_observation_type or '')
               has_plan = bool(str(verification_plan_id or '').strip())
               is_evidence_capable = obs_type in {
+                  'bola_replay_result',
                   'cross_role_access_signal',
                   'validated_security_header_issue',
                   'schema_mismatch',
@@ -3553,7 +3694,7 @@ workflow:
               }
         code_language: python3
         dependencies: []
-        desc: cross_role_access_signal, validated_security_header_issue, and schema_mismatch enter Evidence/JudgeApply when verification_plan_id exists. zap_alert and discovered_endpoint stay pending-only.
+        desc: bola_replay_result, cross_role_access_signal, validated_security_header_issue, and schema_mismatch enter Evidence/JudgeApply when verification_plan_id exists. zap_alert and discovered_endpoint stay pending-only.
         isInIteration: false
         isInLoop: true
         loop_id: main_loop_v1
@@ -3850,6 +3991,7 @@ workflow:
             Do not invent evidence.
             Use only request refs, status values, booleans, counts, and compact evidence metadata.
             Do not require secret-bearing metadata, payload contents, session secrets, or stored blob contents.
+            Never output or require raw object ids, raw substituted URLs, raw HTTP bodies, raw headers, tokens, passwords, cookies, or Authorization values.
             Validated security header misconfiguration evidence follows the same JudgeVerdictPayload contract.
             Return JSON only, no markdown/prose/code fences.
 
@@ -3876,6 +4018,14 @@ workflow:
             If judge_ready=false, do not confirm.
             If missing_evidence non-empty, return rework or inconclusive.
             Type-aware judging:
+            - For bola / bola_replay_result runtime evidence:
+              treat this as runtime BOLA evidence, not automatically confirmed.
+              confirmed is allowed only when access_granted=true, owner_baseline_valid=true,
+              evidence_strength is medium or high, status=ready_for_judge, judge_ready=true,
+              missing_evidence is empty, and compact summary is consistent with API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION.
+              Use OWASP category API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION and vulnerability_class=bola.
+              Use only safe fields: object_pair_id, target_operation_id, target_path_template, target_method, path_param_name,
+              owner_status_code, attacker_status_code, replay_classification, evidence_strength.
             - For BOLA / cross_role_access_signal evidence: confirmed requires baseline, attack, ownership proof, negative control/control, diff, and replay steps.
             - For security_header_misconfiguration / validated_security_header_issue evidence:
               do not require BOLA baseline, attack, ownership_proof, or diff.
@@ -4875,7 +5025,7 @@ workflow:
               except Exception:
                   state = {}
               text = (
-                  "Full backend planner DAST loop completed.\n\n"
+                  "Compact backend planner DAST report.\n\n"
                   f"campaign_id: {state.get('campaign_id', '')}\n"
                   f"iterations_run: {state.get('iterations_run', 0)}\n"
                   f"max_iterations: {state.get('max_iterations', 0)}\n"
@@ -4913,6 +5063,10 @@ workflow:
                   f"blocked_candidates_count_total: {state.get('blocked_candidates_count_total', 0)}\n"
                   f"blocked_candidates_by_kind_count: {json.dumps(state.get('blocked_candidates_by_kind_count') or {}, ensure_ascii=False)}\n"
                   f"blocked_candidates_sample: {json.dumps(state.get('blocked_candidates_sample') or [], ensure_ascii=False)}\n"
+                  "\nReport artifacts (saved by backend endpoint /v1/reports/{campaign_id}/write-artifacts):\n"
+                  f"report_full_path: logs/dast_runs/{state.get('campaign_id', '')}/reports/report_full.md\n"
+                  f"report_confirmed_findings_path: logs/dast_runs/{state.get('campaign_id', '')}/reports/report_confirmed_findings.md\n"
+                  f"report_context_sanitized_path: logs/dast_runs/{state.get('campaign_id', '')}/reports/report_context_sanitized.json\n"
               )
               return {"answer_text": text}
         code_language: python3
@@ -5214,6 +5368,7 @@ workflow:
             Ты форматтер отчётов по безопасности.
             Вход: ReportContext JSON со schema_version report-context/v1.
             Пиши отчёт на русском языке.
+            Режим отчёта: COMPACT.
             Используй только факты из входного JSON.
             Не придумывай уязвимости, конечные точки API, severity, evidence, рекомендации и количества.
             Только элементы confirmed_findings являются подтверждёнными уязвимостями.
@@ -5237,6 +5392,10 @@ workflow:
             - Judge verdict
             Если данных нет или значение not_available, пиши "не доступно".
             Не выводи raw request/response bodies, raw HTTP headers, Authorization, Cookie, Set-Cookie, tokens, bearer, payload values.
+            Не выводи raw token/password/cookie/Authorization/raw body/raw object id/raw object value.
+            В каждой Markdown-таблице выводи максимум 5 строк данных.
+            Включай только подтверждённые находки из confirmed_findings как уязвимости.
+            Диагностические сигналы не являются подтверждёнными уязвимостями.
             В разделе "Как воспроизвести / подтвердить" не используй формулировку "авторизованный запрос", если это явно не указано в ReportContext.
             Используй формулировки:
             - "В рамках разрешённой тестовой среды..."
@@ -5300,13 +5459,46 @@ workflow:
             - operations_with_authenticated_inventory
             - data_exposure_authenticated_non_200_count
             - data_exposure_authenticated_fields_extracted_count
+            - resource_instance_inventory_count
+            - resource_instances_count
+            - object_refs_count
+            - operations_with_resource_instances
+            - resource_types
+            - resource_instance_results
+            - resource_seed_result_count
+            - resource_seed_success_count
+            - resource_seed_object_refs_created_count
+            - resource_seed_results
+            - bola_object_pair_inventory_count
+            - bola_object_pairs_count
+            - bola_pair_resource_types
+            - bola_replay_ready_count
+            - bola_object_pairs
+            - bola_replay_result_count
+            - bola_replay_granted_count
+            - bola_replay_denied_count
+            - bola_replay_results
             Worker data_exposure_validator не хранит raw values, raw body, raw HTTP headers, cookies, tokens.
             auth_profile_id — безопасная ссылка на auth profile; token_ref не выводи, кроме явно санитизированного безопасного поля из входного JSON; не выводи raw token, password, cookie, Authorization, raw request body, raw response body.
             response_field_inventory — диагностический inventory имён полей ответа, это не уязвимость до подтверждения Judge; data_exposure_signal — сигнал, не confirmed vulnerability.
             data_exposure_probe_result не является уязвимостью; response_field_inventory не является уязвимостью; data_exposure_signal — сигнал, но не confirmed vulnerability; подтверждённые уязвимости только в confirmed_findings; не выводи raw values, raw body, raw headers, cookies, tokens.
+            resource_instance_inventory — диагностический и context-producing результат, а не уязвимость; object_id_ref — безопасная ссылка, а не raw object id; не выводи raw object id values, raw token, password, cookie, Authorization, raw request body, raw response body.
+            resource_seed_result — диагностический и context-producing результат, а не уязвимость; object_id_ref/object_ref_id — безопасные ссылки, а не raw object id values; не выводи raw payloads, raw responses, raw token, password, cookie, Authorization.
+            bola_object_pair_inventory — диагностический и context-producing результат, а не уязвимость; object_pair_id — безопасная ссылка для планирования replay; object_id_ref/object_ref_id — безопасные ссылки, а не raw object id values.
+            bola_replay_result — runtime evidence (ограниченный replay), но не автоматически confirmed finding; только confirmed_findings — подтверждённые уязвимости. Не выводи raw object id, raw URL с подставленным id, raw body, raw headers, token, password, cookie, Authorization.
             И добавь пояснение, что finding не создаётся без runtime_effect_proven:true.
             Если data_exposure_signal_count > 0 и при этом confirmed_findings_count = 0, обязательно укажи формулировку близкую по смыслу: «обнаружены сигналы потенциального раскрытия чувствительных свойств, но подтверждённые уязвимости не созданы без вердикта Judge».
             Обязательная подсекция в разделе API3 (секция 7): «Диагностика data_exposure_validator». Выведи счётчики data_exposure_probe_result_count, data_exposure_non_200_count, data_exposure_non_json_count, data_exposure_no_fields_count, data_exposure_fields_extracted_count и для каждого элемента data_exposure_probe_results только безопасные поля: operation_id, method, path, status_code, content_type, result, field_count, sensitive_field_count, sensitive_categories, reason_codes.
+            Обязательная подсекция в разделе API3: «Извлечение ресурсных идентификаторов». Выведи resource_instance_inventory_count, resource_instances_count, object_refs_count, operations_with_resource_instances, resource_types и resource_instance_results. Для каждого элемента resource_instance_results выводи только безопасные поля: object_ref_id, resource_type, object_id_field, object_id_ref, source_operation_id, source_path, source_auth_profile_id, source_role_hint, confidence, reason_codes.
+            Обязательная подсекция в разделе API3: «Safe Resource Seeding». Выведи resource_seed_result_count, resource_seed_success_count, resource_seed_object_refs_created_count и resource_seed_results. Для каждого элемента resource_seed_results выводи только безопасные поля: resource_seed_candidate_source, seed_status, owner_auth_profile_id, resource_type, seed_operation_id, seed_method, seed_path, followup_operation_id, followup_method, followup_path, object_refs_created_count, object_refs, http_calls_count, validation_mode, reason_codes, audit_flags, object_ref_id, object_id_ref, object_id_field, confidence.
+            Обязательная подсекция в разделе API3: «BOLA Object Pair Builder». Выведи bola_object_pair_inventory_count, bola_object_pairs_count, bola_pair_resource_types, bola_replay_ready_count и bola_object_pairs. Для каждого элемента bola_object_pairs выводи только безопасные поля: object_pair_id, resource_type, object_ref_id, object_id_ref, owner_auth_profile_id, attacker_auth_profile_id, target_operation_id, target_path_template, target_method, path_param_name, confidence, reason_codes.
+            Обязательная подсекция в разделе API3: «BOLA Replay Diagnostics». Выведи bola_replay_result_count, bola_replay_granted_count, bola_replay_denied_count и bola_replay_results. Для каждого элемента bola_replay_results выводи только безопасные поля: object_pair_id, bola_replay_candidate_source, resource_type, target_operation_id, target_path_template, target_method, path_param_name, owner_auth_profile_id, attacker_auth_profile_id, status_code, result, access_granted, evidence_strength, response_fingerprint_match, validation_mode, reason_codes, audit_flags.
+            Интерпретация: если access_granted=true и evidence_strength в {medium, high}, укажи, что сформировано BOLA runtime-evidence и его следует передать на Judge/верификацию; если access_granted=false, укажи, что replay был denied/не эксплуатируем в этой bounded проверке.
+            Если resource_instances_count > 0, обязательно укажи формулировку близкую по смыслу: «можно планировать следующий шаг BOLA/object-pair follow-up на основе безопасных object refs».
+            Если resource_seed_success_count > 0, обязательно укажи формулировку близкую по смыслу: «Safe resource seeding created object references for BOLA/object-pair follow-up.»
+            Если resource_seed_result_count > 0 и resource_seed_success_count == 0, обязательно укажи формулировку близкую по смыслу: «Resource seeding was attempted but did not create object references; use reason_codes as blockers.»
+            Если bola_replay_ready_count > 0, обязательно укажи формулировку: «BOLA replay can be planned using prepared object pairs.»
+            Если bola_object_pairs_count == 0, обязательно укажи формулировку: «BOLA replay remains blocked because no object pairs were prepared.»
             Если data_exposure_probe_result_count > 0 и response_field_inventory_count == 0, обязательно укажи формулировку близкую по смыслу: «data_exposure_validator был выполнен, но не создал response_field_inventory. Причина указана в data_exposure_probe_results. Эти диагностические результаты не являются подтверждёнными уязвимостями.»
             Если data_exposure_non_200_count > 0, обязательно укажи формулировку близкую по смыслу: «Часть проверок не дала inventory из-за non-200 ответов; endpoint-ы могут требовать авторизацию, seed context, параметры или предварительное состояние.»
             Если во входном JSON auth_profiles_created_count >= 2 (в т.ч. auth_flow_diagnostics) и authenticated_response_field_inventory_count > 0, обязательно укажи формулировку близкую по смыслу: «последующие проверки API3 с аутентификацией успешно извлекли response field inventory».
@@ -5315,11 +5507,13 @@ workflow:
             Для API3 (owasp_coverage.API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION): если во входном JSON присутствуют диагностические счётчики (например candidates_considered, blocked_no_sensitive_fields_count, blocked_missing_seed_context_count, mass_assignment_signal_count, runtime_effect_proven_count) и для них заданы числовые значения или 0, не описывай весь раздел API3 одной фразой «не доступно» из‑за отсутствия подтверждённых уязвимостей — выведи фактические числа; при confirmed_findings_count = 0 и наличии таких счётчиков используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет» (близкий по смыслу эквивалент допускается).
             Если перечисленные поля API3 действительно отсутствуют во входном JSON, для отсутствующих полей используй «не доступно».
             Раздел "Покрытие OWASP API Top 10" всегда должен содержать:
+            - API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION
             - API7_SERVER_SIDE_REQUEST_FORGERY
             - API8_SECURITY_MISCONFIGURATION
             - API9_IMPROPER_INVENTORY_MANAGEMENT
             - API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION
             Даже если confirmed_findings_count = 0.
+            Если во входном JSON присутствует объект owasp_coverage.API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION, обязательно выведи status и confirmed_findings_count для API1; при наличии confirmed findings класса bola выведи их в секции «Подтверждённые уязвимости», а не только в диагностике API3.
             Если во входном JSON присутствует объект owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY, запрещено описывать покрытие API7 одной фразой «не доступно» целиком или утверждать, что API7 отсутствует, только из‑за confirmed_findings_count = 0: обязательно выведи status из этого объекта (например diagnostic, checked, pending) и confirmed_findings_count.
             В разделе «Покрытие OWASP API Top 10» для API7 при наличии объекта API7 во входном JSON обязательно выведи status и confirmed_findings_count; если ssrf_candidate_signal_count > 0, добавь формулировку: «диагностические SSRF-кандидаты обнаружены, подтверждённых SSRF-уязвимостей нет».
             В разделе "Сводка выполнения worker-ов" выводи все worker kinds из worker_execution_summary/executed_by_kind, включая worker-ов с 0 findings.
@@ -5413,6 +5607,11 @@ workflow:
           role: user
           text: |
             Сформируй Markdown-отчёт по безопасности REST API на русском языке по ReportContext JSON ниже.
+            Вывод должен быть compact: только confirmed_findings + ключевые diagnostic counters + пути к сохранённым артефактам.
+            Добавь секцию "Пути к артефактам" и укажи:
+            - logs/dast_runs/<campaign_id>/reports/report_full.md
+            - logs/dast_runs/<campaign_id>/reports/report_confirmed_findings.md
+            - logs/dast_runs/<campaign_id>/reports/report_context_sanitized.json
             Используй секции строго в этом порядке:
 
             # Отчёт по безопасности REST API
@@ -5426,6 +5625,7 @@ workflow:
             auth_flow_signal — диагностика, не уязвимость; auth_flow_detector не выполняет login/signup; token_response_candidate_count — безопасный счётчик, не значение токена; не выводи raw tokens, passwords, cookies, Authorization, Set-Cookie.
             Если auth_flow_diagnostics отсутствует во входном JSON, секцию ## 2a пропусти (не выдумывай данные).
             ## 3. Покрытие OWASP API Top 10
+            В секции 3 для API1 (owasp_coverage.API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION): если объект API1 присутствует во входном JSON, обязательно выведи status и confirmed_findings_count; при наличии подтверждённых findings класса bola включи их в секцию 4 «Подтверждённые уязвимости», а не только в диагностику API3.
             В секции 3 для API7 (owasp_coverage.API7_SERVER_SIDE_REQUEST_FORGERY): если объект API7 присутствует во входном JSON, запрещено писать, что API7 целиком «не доступно»; выведи status и confirmed_findings_count из JSON; при ssrf_candidate_signal_count > 0 добавь «диагностические SSRF-кандидаты обнаружены, подтверждённых SSRF-уязвимостей нет».
             ## 4. Подтверждённые уязвимости
             Для каждой уязвимости в секции 4 используй:
@@ -5446,13 +5646,31 @@ workflow:
             В секции 8 при наличии диагностических счётчиков API3 не своди статус к «не доступно»; при отсутствии подтверждённых уязвимостей используй формулировку вроде «диагностическая проверка выполнена, подтверждённых уязвимостей нет».
             В секции 8, если во входном JSON (owasp_coverage.API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION) присутствуют поля response_field_inventory_count, data_exposure_signal_count, sensitive_property_exposure_findings_count, sensitive_field_categories, sensitive_fields_sample, data_exposure_results, data_exposure_probe_result_count, data_exposure_non_200_count, data_exposure_non_json_count, data_exposure_no_fields_count, data_exposure_fields_extracted_count, data_exposure_probe_results, обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
             В секции 8 при наличии во входном JSON (API3 или auth_flow_diagnostics) полей authenticated_response_field_inventory_count, authenticated_data_exposure_signal_count, authenticated_data_exposure_probe_result_count, authenticated_data_exposure_results, auth_profiles_used_count, operations_with_authenticated_inventory, data_exposure_authenticated_non_200_count, data_exposure_authenticated_fields_extracted_count — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            В секции 8 при наличии во входном JSON полей resource_instance_inventory_count, resource_instances_count, object_refs_count, operations_with_resource_instances, resource_types, resource_instance_results — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            В секции 8 при наличии во входном JSON полей resource_seed_result_count, resource_seed_success_count, resource_seed_object_refs_created_count, resource_seed_results — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            В секции 8 при наличии во входном JSON полей bola_object_pair_inventory_count, bola_object_pairs_count, bola_pair_resource_types, bola_replay_ready_count, bola_object_pairs — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
+            В секции 8 при наличии во входном JSON полей bola_replay_result_count, bola_replay_granted_count, bola_replay_denied_count, bola_replay_results — обязательно выведи их фактические значения (или «не доступно» только если поле отсутствует в JSON).
             auth_profile_id — безопасная ссылка; token_ref не выводи без явного безопасного санитизированного поля; не выводи raw token, password, cookie, Authorization, raw request/response body.
             Если auth_profiles_created_count >= 2 и authenticated_response_field_inventory_count > 0 — добавь интерпретацию успешного authenticated API3 inventory из system prompt.
             Если authenticated_data_exposure_probe_result_count > 0 и authenticated_response_field_inventory_count == 0 — добавь интерпретацию неуспешного authenticated inventory из system prompt.
             Если неаутентифицированные probes дали 401/403 и authenticated извлёк поля — добавь интерпретацию «аутентификация разблокировала API3 field inventory» из system prompt.
             В секции 8 обязательно включи подраздел с заголовком «Диагностика data_exposure_validator»: счётчики probe и перечисление элементов data_exposure_probe_results только по полям operation_id, method, path, status_code, content_type, result, field_count, sensitive_field_count, sensitive_categories, reason_codes.
+            В секции 8 обязательно включи подраздел с заголовком «Извлечение ресурсных идентификаторов»: resource_instance_inventory_count, resource_instances_count, object_refs_count, operations_with_resource_instances, resource_types и элементы resource_instance_results только по полям object_ref_id, resource_type, object_id_field, object_id_ref, source_operation_id, source_path, source_auth_profile_id, source_role_hint, confidence, reason_codes.
+            В секции 8 обязательно включи подраздел с заголовком «Safe Resource Seeding»: resource_seed_result_count, resource_seed_success_count, resource_seed_object_refs_created_count и элементы resource_seed_results только по полям resource_seed_candidate_source, seed_status, owner_auth_profile_id, resource_type, seed_operation_id, seed_method, seed_path, followup_operation_id, followup_method, followup_path, object_refs_created_count, object_refs, http_calls_count, validation_mode, reason_codes, audit_flags, object_ref_id, object_id_ref, object_id_field, confidence.
+            В секции 8 обязательно включи подраздел с заголовком «BOLA Object Pair Builder»: bola_object_pair_inventory_count, bola_object_pairs_count, bola_pair_resource_types, bola_replay_ready_count и элементы bola_object_pairs только по полям object_pair_id, resource_type, object_ref_id, object_id_ref, owner_auth_profile_id, attacker_auth_profile_id, target_operation_id, target_path_template, target_method, path_param_name, confidence, reason_codes.
+            В секции 8 обязательно включи подраздел с заголовком «BOLA Replay Diagnostics»: bola_replay_result_count, bola_replay_granted_count, bola_replay_denied_count и элементы bola_replay_results только по полям object_pair_id, bola_replay_candidate_source, resource_type, target_operation_id, target_path_template, target_method, path_param_name, owner_auth_profile_id, attacker_auth_profile_id, status_code, result, access_granted, evidence_strength, response_fingerprint_match, validation_mode, reason_codes, audit_flags.
             Если data_exposure_probe_result_count > 0 и response_field_inventory_count == 0, добавь пояснение: data_exposure_validator был выполнен, но не создал response_field_inventory; причина в data_exposure_probe_results; это не подтверждённые уязвимости.
             Если data_exposure_non_200_count > 0, добавь пояснение про non-200, авторизацию, seed context и параметры (как в system prompt).
+            resource_instance_inventory не является уязвимостью. object_id_ref — безопасная ссылка, а не raw object id. Не выводи raw object id values, raw token, password, cookie, Authorization, raw request/response body.
+            resource_seed_result не является уязвимостью. object_id_ref/object_ref_id — безопасные ссылки. Не выводи raw object id values, raw payloads, raw responses, raw token, password, cookie, Authorization.
+            bola_object_pair_inventory не является уязвимостью. object_pair_id — безопасная ссылка для replay planning. object_id_ref/object_ref_id — безопасные ссылки. Не выводи raw object id values, raw payloads, raw responses, raw token, password, cookie, Authorization, raw request/response body, raw headers.
+            bola_replay_result не является автоматически confirmed vulnerability. Это runtime replay evidence и требует Judge/верификации. Не выводи raw object id, raw URL с подставленным id, raw payloads, raw responses, raw headers, token, password, cookie, Authorization.
+            Если resource_instances_count > 0, укажи, что можно планировать BOLA/object-pair follow-up.
+            Если resource_seed_success_count > 0, укажи: «Safe resource seeding created object references for BOLA/object-pair follow-up.»
+            Если resource_seed_result_count > 0 и resource_seed_success_count == 0, укажи: «Resource seeding was attempted but did not create object references; use reason_codes as blockers.»
+            Если bola_replay_ready_count > 0, укажи: «BOLA replay can be planned using prepared object pairs.»
+            Если bola_object_pairs_count == 0, укажи: «BOLA replay remains blocked because no object pairs were prepared.»
+            Если bola_replay_results присутствуют: если access_granted=true и evidence_strength в medium/high — укажи, что сформировано BOLA evidence и его следует передать на Judge/верификацию; если access_granted=false — укажи, что replay был denied/не эксплуатируем в bounded проверке.
             Не называй data_exposure_probe_result, response_field_inventory или data_exposure_signal подтверждённой уязвимостью.
             Только элементы confirmed_findings — подтверждённые уязвимости.
             ## 9. Ожидающие проверки

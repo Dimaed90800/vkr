@@ -1,235 +1,254 @@
-"""Phase 9A — strict BOLA replay probe adapter tests."""
 from __future__ import annotations
+
+import json
 
 import httpx
 
 from backend.models.campaign import Campaign, CampaignLimits
-from backend.models.observation import Observation
 from backend.models.worker_command import CommandBudget, WorkerCommand
-from backend.services.evidence_pack_builder import EvidencePackBuilder
+from backend.services.adapters.bola_replay_probe_adapter import BolaReplayProbeAdapter
+from backend.services.auth_profile_store import AuthProfileStore
+from backend.services.bola_object_pair_store import BolaObjectPairStore
 from backend.services.http.safe_http_client import SafeHttpClient
-from backend.services.observation_normalizer import NormalizeError, ObservationNormalizer
-from backend.services.observation_triage import ObservationTriage
-from backend.services.tool_executor import ToolExecutor
+from backend.services.resource_instance_store import ResourceInstanceStore
 from backend.storage.memory_store import memory_store
-
-
-VEHICLE_PATH = "/api/v1/vehicles/{vehicleId}"
-VEHICLE_COLLECTION_PATH = "/api/v1/vehicles"
-OPERATION_ID = f"op_GET_{VEHICLE_PATH}"
 
 
 def _reset_store() -> None:
     for name in [
-        "campaigns", "campaign_by_run_id", "campaign_by_session_id",
-        "corpus_items", "corpus_by_campaign", "resource_instances",
-        "resources_by_campaign", "graphs_by_campaign", "commands",
-        "commands_by_campaign", "command_fingerprints", "tool_runs",
-        "tool_runs_by_campaign", "tool_results", "artifacts",
-        "artifacts_by_run", "observations", "observations_by_campaign",
-        "observations_by_tool_run", "verification_plans",
-        "verification_plans_by_campaign", "evidence_packs",
-        "evidence_packs_by_campaign", "evidence_packs_by_observation",
-        "evidence_packs_by_verification_plan",
+        "campaigns",
+        "auth_profiles",
+        "auth_profiles_by_campaign",
+        "runtime_token_secrets",
+        "runtime_object_id_secrets",
+        "runtime_resource_instances",
+        "runtime_resource_instances_by_campaign",
+        "runtime_bola_object_pairs",
+        "runtime_bola_object_pairs_by_campaign",
+        "corpus_items",
+        "corpus_by_campaign",
     ]:
         getattr(memory_store, name).clear()
-    memory_store.evidence_records.clear()
-    memory_store.findings.clear()
 
 
-def _campaign(campaign_id: str = "cmp_bola_replay") -> Campaign:
+def _campaign() -> Campaign:
     campaign = Campaign(
-        campaign_id=campaign_id,
-        target_url="http://crapi.local",
-        allowed_hosts=["crapi.local"],
+        campaign_id="cmp_bola_replay",
+        target_url="http://target.local",
+        allowed_hosts=["target.local"],
         limits=CampaignLimits(max_requests=100, max_duration_sec=60),
-        roles_json=[
-            {"name": "owner", "bearer_token": "owner-token"},
-            {"name": "attacker", "bearer_token": "attacker-token"},
-        ],
     )
     memory_store.store_campaign(campaign.campaign_id, campaign.model_dump(mode="json"))
     return campaign
 
 
-def _command(**input_overrides) -> WorkerCommand:
-    inputs = {
-        "operation_id": OPERATION_ID,
-        "method": "GET",
-        "object_url": "http://crapi.local/api/v1/vehicles/veh_123",
-        "attacker_own_object_url": "http://crapi.local/api/v1/vehicles/veh_456",
-        "collection_url": "http://crapi.local/api/v1/vehicles",
-        "path_template": VEHICLE_PATH,
-        "collection_path_template": VEHICLE_COLLECTION_PATH,
-        "object_id": "veh_123",
-        "attacker_own_object_id": "veh_456",
-        "owner_role": "owner",
-        "attacker_role": "attacker",
-    }
-    inputs.update(input_overrides)
+def _setup_pair(*, method: str = "GET", raw_object_id: str = "post/123") -> tuple[str, str, str]:
+    owner = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_bola_replay",
+        role_hint="owner",
+        user_label="owner",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test",
+    )
+    attacker = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_bola_replay",
+        role_hint="attacker",
+        user_label="attacker",
+        auth_type="bearer",
+        raw_token="attacker-token",
+        created_by="test",
+    )
+    instance = ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_bola_replay",
+        resource_type="post",
+        object_id_field="postId",
+        raw_object_id=raw_object_id,
+        source_operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        source_path="/community/api/v2/community/posts/{postId}",
+        source_auth_profile_id=owner.auth_profile_id,
+        source_role_hint="owner",
+        confidence="high",
+        created_by="resource_instance_extractor",
+    )
+    pair = BolaObjectPairStore().create_bola_object_pair(
+        campaign_id="cmp_bola_replay",
+        resource_type="post",
+        object_ref_id=instance.object_ref_id,
+        object_id_ref=instance.object_id_ref,
+        owner_auth_profile_id=owner.auth_profile_id,
+        attacker_auth_profile_id=attacker.auth_profile_id,
+        target_operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        target_path_template="/community/api/v2/community/posts/{postId}",
+        target_method=method,
+        path_param_name="postId",
+        confidence="high",
+        created_by="bola_object_pair_builder",
+        reason_codes=["path_param_resource_match"],
+    )
+    return pair.object_pair_id, owner.auth_profile_id, attacker.auth_profile_id
+
+
+def _cmd(object_pair_id: str) -> WorkerCommand:
     return WorkerCommand(
         campaign_id="cmp_bola_replay",
         worker_class="access_control",
-        strategy="prove_bola",
+        strategy="replay_bola_object_pair",
         tool_name="bola_replay_probe",
-        operation_id=OPERATION_ID,
-        inputs=inputs,
-        budget=CommandBudget(max_requests=5, timeout_sec=30),
+        inputs={
+            "validation_mode": "bola_replay",
+            "object_pair_id": object_pair_id,
+            "max_requests": 2,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
     )
 
 
-def _transport(
-    *,
-    attacker_blocked: bool = False,
-    negative_control_missing: bool = False,
-    owner_collection_missing: bool = False,
-    attacker_collection_contains_owner: bool = False,
-) -> httpx.MockTransport:
+def test_owner_baseline_200_then_attacker_200_emits_possible_bola_without_raw_leakage() -> None:
+    _reset_store()
+    campaign = _campaign()
+    object_pair_id, _owner, attacker = _setup_pair()
+
+    calls: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
-        auth = request.headers.get("authorization", "")
-        path = request.url.path
-        if path.endswith("/veh_123") and auth == "Bearer owner-token":
-            return httpx.Response(200, json={"id": "veh_123", "owner": "owner", "secret": "hidden"})
-        if path.endswith("/veh_123") and auth == "Bearer attacker-token":
-            if attacker_blocked:
-                return httpx.Response(403, json={"error": "forbidden"})
-            return httpx.Response(200, json={"id": "veh_123", "owner": "owner"})
-        if path.endswith("/veh_456") and auth == "Bearer attacker-token":
-            if negative_control_missing:
-                return httpx.Response(404, json={"error": "missing"})
-            return httpx.Response(200, json={"id": "veh_456", "owner": "attacker"})
-        if path == "/api/v1/vehicles" and auth == "Bearer owner-token":
-            if owner_collection_missing:
-                return httpx.Response(200, json={"id": "veh_456"})
-            return httpx.Response(200, json={"id": "veh_123"})
-        if path == "/api/v1/vehicles" and auth == "Bearer attacker-token":
-            if attacker_collection_contains_owner:
-                return httpx.Response(200, json={"id": "veh_123"})
-            return httpx.Response(200, json={"id": "veh_456"})
-        return httpx.Response(404, json={"error": "not found"})
+        calls.append(request.headers.get("authorization") or "")
+        if len(calls) == 1:
+            assert request.headers.get("authorization") == "Bearer owner-token"
+            assert str(request.url).endswith("/post%2F123")
+            return httpx.Response(200, json={"id": "post/123", "title": "hello"})
+        assert request.headers.get("authorization") == "Bearer attacker-token"
+        assert str(request.url).endswith("/post%2F123")
+        return httpx.Response(200, json={"id": "post/123", "title": "hello"})
 
-    return httpx.MockTransport(handler)
-
-
-def _execute_with_transport(transport: httpx.MockTransport):
-    return ToolExecutor(
-        http_client=SafeHttpClient(transport=transport)
-    ).execute_sync(_command())
-
-
-def test_bola_replay_probe_valid_proof_creates_cross_role_access_signal():
-    _reset_store()
-    _campaign()
-
-    result = _execute_with_transport(_transport())
-
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_1")
     assert result.status == "finished"
-    assert len(result.requests) == 5
-    assert len(memory_store.list_corpus_by_campaign("cmp_bola_replay")) == 5
-    signals = [o for o in result.observations if o.observation_type == "cross_role_access_signal"]
-    assert len(signals) == 1
-    details = signals[0].details
-    assert details["object_id"] == "veh_123"
-    assert details["owner_role"] == "owner"
-    assert details["attacker_role"] == "attacker"
-    assert details["owner_request_id"]
-    assert details["attack_request_id"]
-    assert details["attacker_own_request_id"]
-    assert details["owner_collection_request_id"]
-    assert details["attacker_collection_request_id"]
+    assert result.observations[0].observation_type == "bola_replay_result"
+    det = result.observations[0].details
+    assert det["result"] == "attacker_access_granted"
+    assert det["replay_classification"] == "possible_bola"
+    assert det["owner_baseline_valid"] is True
+    assert det["owner_status_code"] == 200
+    assert det["attacker_status_code"] == 200
+    assert det["access_granted"] is True
+    assert det["evidence_strength"] == "high"
+    assert len(calls) == 2
+    blob = json.dumps(result.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("post/123", "post%2f123", "owner-token", "attacker-token", "authorization", "cookie", "password", "response_body"):
+        assert bad not in blob
 
 
-def test_bola_replay_probe_no_signal_when_attacker_blocked():
+def test_owner_200_then_attacker_403_marks_attacker_access_denied() -> None:
     _reset_store()
-    _campaign()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="abc")
 
-    result = _execute_with_transport(_transport(attacker_blocked=True))
+    calls: list[str] = []
 
-    assert result.observations == []
-    assert any(e.error_type == "bola_proof_incomplete" for e in result.errors)
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls.append("x")
+        if len(calls) == 1:
+            return httpx.Response(200, json={"id": "abc"})
+        return httpx.Response(403, json={"error": "forbidden"})
+
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_2")
+    det = result.observations[0].details
+    assert det["result"] == "attacker_access_denied"
+    assert det["access_granted"] is False
+    assert det["owner_baseline_valid"] is True
+    assert det["replay_classification"] == "access_denied"
+    assert len(calls) == 2
 
 
-def test_bola_replay_probe_requires_negative_control():
+def test_owner_200_then_attacker_404_marks_access_denied_or_not_found() -> None:
     _reset_store()
-    _campaign()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="abc")
 
-    result = _execute_with_transport(_transport(negative_control_missing=True))
+    calls: list[str] = []
 
-    assert result.observations == []
-    assert any(e.error_type == "bola_proof_incomplete" for e in result.errors)
+    def handler(_: httpx.Request) -> httpx.Response:
+        calls.append("x")
+        if len(calls) == 1:
+            return httpx.Response(200, json={"id": "abc"})
+        return httpx.Response(404, json={"error": "missing"})
+
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_2b")
+    det = result.observations[0].details
+    assert det["result"] == "attacker_access_denied_or_not_found"
+    assert det["access_granted"] is False
+    assert det["owner_baseline_valid"] is True
+    assert det["replay_classification"] == "access_denied_or_not_found"
+    assert len(calls) == 2
 
 
-def test_bola_replay_probe_requires_owner_collection_contains_object():
+def test_owner_non_2xx_marks_invalid_object_pair_and_skips_attacker() -> None:
     _reset_store()
-    _campaign()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="abc")
 
-    result = _execute_with_transport(_transport(owner_collection_missing=True))
+    calls: list[str] = []
 
-    assert result.observations == []
-    assert any(e.error_type == "bola_proof_incomplete" for e in result.errors)
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("authorization") or "")
+        return httpx.Response(400, json={"error": "bad"})
+
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_2c")
+    det = result.observations[0].details
+    assert det["result"] == "invalid_object_pair"
+    assert det["replay_classification"] == "invalid_object_pair"
+    assert det["owner_baseline_valid"] is False
+    assert det["attacker_result"] == "skipped"
+    assert len(calls) == 1
 
 
-def test_bola_replay_probe_requires_attacker_collection_excludes_object():
+def test_missing_raw_object_id_returns_finished_diagnostic() -> None:
     _reset_store()
-    _campaign()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="gone")
+    pair = memory_store.get_runtime_bola_object_pair(object_pair_id)
+    assert pair is not None
+    memory_store.runtime_object_id_secrets.clear()
 
-    result = _execute_with_transport(_transport(attacker_collection_contains_owner=True))
-
-    assert result.observations == []
-    assert any(e.error_type == "bola_proof_incomplete" for e in result.errors)
-
-
-def test_bola_replay_probe_stores_corpus_redacted():
-    _reset_store()
-    _campaign()
-
-    result = _execute_with_transport(_transport())
-    items = memory_store.list_corpus_by_campaign("cmp_bola_replay")
-
-    assert len(items) == 5
-    assert all(i["source"] == "tool:bola_replay_probe" for i in items)
-    assert all(i["source_tool_run_id"] == result.tool_run_id for i in items)
-    assert all(i["headers_redacted"].get("Authorization") == "<redacted>" for i in items)
-    assert items[0]["response_body_redacted"]["secret"] == "<redacted>"
-
-
-def test_bola_replay_probe_observation_normalizes_and_builds_ready_evidence():
-    _reset_store()
-    _campaign()
-    result = _execute_with_transport(_transport())
-
-    normalized = ObservationNormalizer().normalize(result.tool_run_id)
-    assert not isinstance(normalized, NormalizeError)
-    observations = [
-        obs for obs in normalized
-        if getattr(obs.type, "value", obs.type) == "cross_role_access_signal"
-    ]
-    assert len(observations) == 1
-    observation: Observation = observations[0]
-
-    _, plan, error = ObservationTriage().triage(observation.observation_id)
-    assert error is None
-    assert plan is not None
-
-    pack, build_error, _ = EvidencePackBuilder().build_from_verification_plan(
-        plan.verification_plan_id
-    )
-    assert build_error is None
-    assert pack is not None
-    assert pack.status == "ready_for_judge"
-    assert pack.judge_ready is True
-    assert pack.missing_evidence == []
-
-
-def test_bola_probe_id_matching_not_substring():
-    _reset_store()
-    _campaign()
-    cmd = _command(object_id="veh_12")
-
-    result = ToolExecutor(
-        http_client=SafeHttpClient(transport=_transport())
-    ).execute_sync(cmd)
-
+    result = BolaReplayProbeAdapter().execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_3")
     assert result.status == "finished"
-    assert result.observations == []
-    assert any(e.error_type == "bola_proof_incomplete" for e in result.errors)
+    det = result.observations[0].details
+    assert det["result"] == "error"
+    assert "raw_object_id_unavailable" in det["reason_codes"]
+
+
+def test_non_get_pair_returns_finished_diagnostic_for_mvp() -> None:
+    _reset_store()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(method="DELETE")
+    result = BolaReplayProbeAdapter().execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_4")
+    det = result.observations[0].details
+    assert det["result"] == "error"
+    assert "target_method_not_supported_mvp" in det["reason_codes"]
+
+
+def test_path_substitution_url_encodes_id_and_observation_does_not_expose_raw_id() -> None:
+    _reset_store()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="a/b c")
+
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(404, json={"error": "missing"})
+
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_5")
+    assert captured["url"].endswith("/a%2Fb%20c")
+    blob = json.dumps(result.observations[0].details, sort_keys=True).lower()
+    assert "a/b c" not in blob

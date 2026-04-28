@@ -7,6 +7,8 @@ runtime secret refs plus sanitized auth profile metadata.
 from __future__ import annotations
 
 import hashlib
+import json
+import secrets
 import time
 from typing import Any
 from urllib.parse import urljoin
@@ -61,6 +63,33 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 _TOKEN_KEYS = ("token", "access_token", "jwt", "session", "refresh_token")
+
+
+def _append_reason_code(reason_codes: list[str], code: str) -> None:
+    if not code:
+        return
+    if code == "credentials_regenerated":
+        reason_codes.append(code)
+        return
+    if code not in reason_codes:
+        reason_codes.append(code)
+
+
+def _maybe_jwt_column_length_hint(result: Any, reason_codes: list[str]) -> None:
+    """Detect crAPI-style DB errors from parsed response only in-process; never persist raw body."""
+    try:
+        raw = result.get_raw_response_body()
+    except Exception:  # pragma: no cover
+        return
+    if raw is None:
+        return
+    if isinstance(raw, (dict, list)):
+        snippet = json.dumps(raw, ensure_ascii=True)[:2048]
+    else:
+        snippet = str(raw)[:2048]
+    low = snippet.lower()
+    if "value too long" in low or "jwt_token" in low:
+        _append_reason_code(reason_codes, "possible_jwt_token_too_long")
 
 
 def _common_prefix_bonus(path_a: str, path_b: str) -> int:
@@ -227,9 +256,9 @@ class TestAccountMaterializerAdapter:
 
         if signup_op is None or login_op is None:
             if signup_op is None:
-                reason_codes.append("signup_operation_missing")
+                _append_reason_code(reason_codes, "signup_operation_missing")
             if login_op is None:
-                reason_codes.append("login_operation_missing")
+                _append_reason_code(reason_codes, "login_operation_missing")
             return self._finished_result(
                 command=command,
                 tool_run_id=tool_run_id,
@@ -264,123 +293,37 @@ class TestAccountMaterializerAdapter:
                 ),
             )
 
-        identities = [
-            _identity_bundle(campaign.campaign_id, "owner"),
-            _identity_bundle(campaign.campaign_id, "attacker"),
-        ]
-        for ident in identities:
-            signup_payload = _build_signup_payload(signup_op, ident)
-            signup_url = _operation_url(campaign.target_url, signup_op.path_template)
-            signup_req_id = f"req_signup_{ident['role_hint']}"
-            signup_result = self._http.request(
-                campaign,
-                method=str(signup_op.method or "POST").upper(),
-                url=signup_url,
-                body=signup_payload,
+        counters: dict[str, int] = {
+            "owner_signup_attempts_count": 0,
+            "attacker_signup_attempts_count": 0,
+            "owner_login_attempts_count": 0,
+            "attacker_login_attempts_count": 0,
+            "signup_retry_count": 0,
+            "login_retry_count": 0,
+        }
+        for role_hint in ("owner", "attacker"):
+            profile_row, had_signup_2xx, had_login_2xx = self._materialize_identity_with_retries(
+                campaign=campaign,
+                tool_run_id=tool_run_id,
+                role_hint=role_hint,
+                signup_op=signup_op,
+                login_op=login_op,
                 timeout_sec=timeout_sec,
                 max_response_bytes=max_response_bytes,
-                follow_redirects=False,
+                requests=requests,
+                responses=responses,
+                signup_response_status_codes=signup_response_status_codes,
+                login_response_status_codes=login_response_status_codes,
+                reason_codes=reason_codes,
+                errors=errors,
+                counters=counters,
             )
-            requests.append(
-                ToolResultRequest(
-                    request_id=signup_req_id,
-                    role=ident["role_hint"],
-                    method=str(signup_op.method or "POST").upper(),
-                    url=sanitize_url_for_storage(signup_url),
-                    path_template=normalize_api_path(signup_op.path_template),
-                )
-            )
-            sc_signup = int(signup_result.status_code or 0)
-            responses.append(ToolResultResponse(request_id=signup_req_id, status_code=sc_signup))
-            signup_response_status_codes.append(sc_signup)
-            if signup_result.error is None and _is_success_status(sc_signup):
+            if had_signup_2xx:
                 signup_success_count += 1
-            else:
-                reason_codes.append(f"signup_{ident['role_hint']}_failed")
-                errors.append(_safe_error("signup", ident["role_hint"], signup_result))
-                continue
-
-            login_payload = _build_login_payload(login_op, ident)
-            login_url = _operation_url(campaign.target_url, login_op.path_template)
-            login_req_id = f"req_login_{ident['role_hint']}"
-            login_result = self._http.request(
-                campaign,
-                method=str(login_op.method or "POST").upper(),
-                url=login_url,
-                body=login_payload,
-                timeout_sec=timeout_sec,
-                max_response_bytes=max_response_bytes,
-                follow_redirects=False,
-            )
-            requests.append(
-                ToolResultRequest(
-                    request_id=login_req_id,
-                    role=ident["role_hint"],
-                    method=str(login_op.method or "POST").upper(),
-                    url=sanitize_url_for_storage(login_url),
-                    path_template=normalize_api_path(login_op.path_template),
-                )
-            )
-            sc_login = int(login_result.status_code or 0)
-            responses.append(ToolResultResponse(request_id=login_req_id, status_code=sc_login))
-            login_response_status_codes.append(sc_login)
-            if login_result.error is not None or not _is_success_status(sc_login):
-                reason_codes.append(f"login_{ident['role_hint']}_failed")
-                if sc_login == 403:
-                    if "login_http_403" not in reason_codes:
-                        reason_codes.append("login_http_403")
-                    if "possible_invalid_credentials_or_wrong_login_endpoint" not in reason_codes:
-                        reason_codes.append("possible_invalid_credentials_or_wrong_login_endpoint")
-                errors.append(_safe_error("login", ident["role_hint"], login_result))
-                continue
-
-            login_success_count += 1
-            raw_body = login_result.get_raw_response_body()
-            token_value, token_field_path = _extract_token_candidate(raw_body)
-            auth_type = "unknown"
-            raw_secret: Any = None
-            if token_value:
-                auth_type = "bearer"
-                raw_secret = token_value
-            else:
-                raw_cookies = login_result.get_raw_response_cookies()
-                if raw_cookies:
-                    auth_type = "cookie"
-                    raw_secret = raw_cookies
-
-            if raw_secret in (None, "", {}):
-                reason_codes.append(f"token_missing_{ident['role_hint']}")
-                errors.append({
-                    "stage": "login",
-                    "user_label": ident["user_label"],
-                    "error_type": "token_not_found",
-                    "status_code": int(login_result.status_code or 0),
-                })
-                continue
-
-            profile = self._profiles.create_auth_profile(
-                campaign_id=campaign.campaign_id,
-                role_hint=ident["role_hint"],
-                user_label=ident["user_label"],
-                auth_type=auth_type,
-                raw_token=raw_secret,
-                raw_credentials={
-                    "email": ident["email"],
-                    "username": ident["username"],
-                    "password": ident["password"],
-                },
-                created_by="test_account_materializer",
-                metadata={
-                    "signup_operation_id": signup_op.operation_id,
-                    "login_operation_id": login_op.operation_id,
-                    "token_field_path": token_field_path,
-                },
-            )
-            auth_profiles_created.append({
-                "role_hint": ident["role_hint"],
-                "auth_profile_id": profile.auth_profile_id,
-                "auth_type": auth_type,
-            })
+            if had_login_2xx:
+                login_success_count += 1
+            if profile_row is not None:
+                auth_profiles_created.append(profile_row)
 
         created_count = len(auth_profiles_created)
         owner_profile_id = next((x["auth_profile_id"] for x in auth_profiles_created if x["role_hint"] == "owner"), "")
@@ -388,17 +331,19 @@ class TestAccountMaterializerAdapter:
         auth_type = _aggregate_auth_type(auth_profiles_created)
         token_detected = created_count > 0
         if created_count >= 2:
-            reason_codes.append("materialization_succeeded")
+            _append_reason_code(reason_codes, "materialization_succeeded")
             result_name = "materialization_succeeded"
         elif created_count > 0:
-            reason_codes.append("materialization_partial")
+            _append_reason_code(reason_codes, "materialization_partial")
             result_name = "materialization_partial"
         else:
-            reason_codes.append("materialization_failed")
+            _append_reason_code(reason_codes, "materialization_failed")
             result_name = "materialization_failed"
 
         pair_diag["signup_response_status_codes"] = signup_response_status_codes
         pair_diag["login_response_status_codes"] = login_response_status_codes
+        pair_diag.update(counters)
+        pair_diag["materialization_reason_codes"] = list(reason_codes[:20])
         safe_extras = dict(pair_diag)
 
         return self._finished_result(
@@ -434,6 +379,186 @@ class TestAccountMaterializerAdapter:
                 safe_extras=safe_extras,
             ),
         )
+
+    def _materialize_identity_with_retries(
+        self,
+        *,
+        campaign: Campaign,
+        tool_run_id: str,
+        role_hint: str,
+        signup_op: Operation,
+        login_op: Operation,
+        timeout_sec: int,
+        max_response_bytes: int,
+        requests: list[ToolResultRequest],
+        responses: list[ToolResultResponse],
+        signup_response_status_codes: list[int],
+        login_response_status_codes: list[int],
+        reason_codes: list[str],
+        errors: list[dict[str, Any]],
+        counters: dict[str, int],
+    ) -> tuple[dict[str, Any] | None, bool, bool]:
+        """Returns (auth_profile_row_or_none, had_any_signup_2xx, had_any_login_2xx)."""
+        had_signup_2xx = False
+        had_login_2xx = False
+        profile_row: dict[str, Any] | None = None
+
+        for round_idx in range(2):
+            if round_idx > 0:
+                _append_reason_code(reason_codes, "credentials_regenerated")
+            ident = _identity_bundle(
+                campaign.campaign_id,
+                role_hint,
+                f"{tool_run_id}|{role_hint}|r{round_idx}|{time.time_ns()}|{secrets.token_hex(4)}",
+            )
+
+            signup_payload = _build_signup_payload(signup_op, ident)
+            signup_url = _operation_url(campaign.target_url, signup_op.path_template)
+            signup_req_id = f"req_signup_{role_hint}_r{round_idx}"
+            signup_result = self._http.request(
+                campaign,
+                method=str(signup_op.method or "POST").upper(),
+                url=signup_url,
+                body=signup_payload,
+                timeout_sec=timeout_sec,
+                max_response_bytes=max_response_bytes,
+                follow_redirects=False,
+            )
+            requests.append(
+                ToolResultRequest(
+                    request_id=signup_req_id,
+                    role=role_hint,
+                    method=str(signup_op.method or "POST").upper(),
+                    url=sanitize_url_for_storage(signup_url),
+                    path_template=normalize_api_path(signup_op.path_template),
+                )
+            )
+            sc_signup = int(signup_result.status_code or 0)
+            responses.append(ToolResultResponse(request_id=signup_req_id, status_code=sc_signup))
+            signup_response_status_codes.append(sc_signup)
+            su_key = "owner_signup_attempts_count" if role_hint == "owner" else "attacker_signup_attempts_count"
+            counters[su_key] += 1
+
+            if sc_signup == 500:
+                _maybe_jwt_column_length_hint(signup_result, reason_codes)
+                if round_idx == 0:
+                    _append_reason_code(reason_codes, "signup_http_500")
+                    _append_reason_code(reason_codes, "signup_retry_after_5xx")
+                    counters["signup_retry_count"] += 1
+                    continue
+                _append_reason_code(reason_codes, f"signup_{role_hint}_failed")
+                errors.append(_safe_error("signup", role_hint, signup_result))
+                break
+
+            if signup_result.error is not None or not _is_success_status(sc_signup):
+                _append_reason_code(reason_codes, f"signup_{role_hint}_failed")
+                errors.append(_safe_error("signup", role_hint, signup_result))
+                break
+
+            had_signup_2xx = True
+
+            login_payload = _build_login_payload(login_op, ident)
+            login_url = _operation_url(campaign.target_url, login_op.path_template)
+            login_req_id = f"req_login_{role_hint}_r{round_idx}"
+            login_result = self._http.request(
+                campaign,
+                method=str(login_op.method or "POST").upper(),
+                url=login_url,
+                body=login_payload,
+                timeout_sec=timeout_sec,
+                max_response_bytes=max_response_bytes,
+                follow_redirects=False,
+            )
+            requests.append(
+                ToolResultRequest(
+                    request_id=login_req_id,
+                    role=role_hint,
+                    method=str(login_op.method or "POST").upper(),
+                    url=sanitize_url_for_storage(login_url),
+                    path_template=normalize_api_path(login_op.path_template),
+                )
+            )
+            sc_login = int(login_result.status_code or 0)
+            responses.append(ToolResultResponse(request_id=login_req_id, status_code=sc_login))
+            login_response_status_codes.append(sc_login)
+            lo_key = "owner_login_attempts_count" if role_hint == "owner" else "attacker_login_attempts_count"
+            counters[lo_key] += 1
+
+            if login_result.error is not None:
+                _append_reason_code(reason_codes, f"login_{role_hint}_failed")
+                errors.append(_safe_error("login", role_hint, login_result))
+                break
+
+            if 500 <= sc_login <= 599:
+                _maybe_jwt_column_length_hint(login_result, reason_codes)
+                if round_idx == 0:
+                    _append_reason_code(reason_codes, "login_http_5xx")
+                    _append_reason_code(reason_codes, "login_retry_with_regenerated_credentials")
+                    counters["login_retry_count"] += 1
+                    continue
+                _append_reason_code(reason_codes, f"login_{role_hint}_failed")
+                errors.append(_safe_error("login", role_hint, login_result))
+                break
+
+            if not _is_success_status(sc_login):
+                _append_reason_code(reason_codes, f"login_{role_hint}_failed")
+                if sc_login == 403:
+                    _append_reason_code(reason_codes, "login_http_403")
+                    _append_reason_code(reason_codes, "possible_invalid_credentials_or_wrong_login_endpoint")
+                errors.append(_safe_error("login", role_hint, login_result))
+                break
+
+            had_login_2xx = True
+
+            raw_body = login_result.get_raw_response_body()
+            token_value, token_field_path = _extract_token_candidate(raw_body)
+            auth_type = "unknown"
+            raw_secret: Any = None
+            if token_value:
+                auth_type = "bearer"
+                raw_secret = token_value
+            else:
+                raw_cookies = login_result.get_raw_response_cookies()
+                if raw_cookies:
+                    auth_type = "cookie"
+                    raw_secret = raw_cookies
+
+            if raw_secret in (None, "", {}):
+                _append_reason_code(reason_codes, f"token_missing_{role_hint}")
+                errors.append({
+                    "stage": "login",
+                    "user_label": ident["user_label"],
+                    "error_type": "token_not_found",
+                    "status_code": int(login_result.status_code or 0),
+                })
+                break
+
+            profile = self._profiles.create_auth_profile(
+                campaign_id=campaign.campaign_id,
+                role_hint=ident["role_hint"],
+                user_label=ident["user_label"],
+                auth_type=auth_type,
+                raw_token=raw_secret,
+                raw_credentials={
+                    "email": ident["email"],
+                    "username": ident["username"],
+                    "password": ident["password"],
+                },
+                created_by="test_account_materializer",
+                metadata={
+                    "signup_operation_id": signup_op.operation_id,
+                    "login_operation_id": login_op.operation_id,
+                    "token_field_path": token_field_path,
+                },
+            )
+            profile_row = {
+                "role_hint": ident["role_hint"],
+                "auth_profile_id": profile.auth_profile_id,
+                "auth_type": auth_type,
+            }
+            break
+
+        return profile_row, had_signup_2xx, had_login_2xx
 
     def _find_operation(self, campaign_id: str, operation_id: str) -> Operation | None:
         wanted = str(operation_id or "").strip()
@@ -559,18 +684,30 @@ class TestAccountMaterializerAdapter:
         return out
 
 
-def _identity_bundle(campaign_id: str, role_hint: str) -> dict[str, str]:
-    suffix = hashlib.sha256(f"{campaign_id}:{role_hint}:v1material".encode("utf-8")).hexdigest()[:8]
-    short = (campaign_id or "cmp").replace("cmp_", "")[:8] or "cmp"
-    local = f"vkr_{role_hint}_{short}_{suffix}"
-    digits = "".join(ch for ch in suffix if ch.isdigit()) or "31415926"
+def _identity_bundle(campaign_id: str, role_hint: str, attempt_seed: str) -> dict[str, str]:
+    """Runtime-only credentials; short email for crAPI varchar limits (<=32 chars)."""
+    digest = hashlib.sha256(f"{campaign_id}|{role_hint}|{attempt_seed}".encode("utf-8")).hexdigest()
+    prefix = "o" if role_hint == "owner" else "a"
+    short = digest[:6]
+    email = f"{prefix}{short}@e.io"
+    if len(email) > 32:
+        email = f"{prefix}{digest[:4]}@e.io"
+    digits_raw = hashlib.sha256(f"{digest}|num|{attempt_seed}".encode("utf-8")).hexdigest()
+    digits = "".join(ch for ch in digits_raw if ch.isdigit())
+    while len(digits) < 10:
+        digits_raw = hashlib.sha256(digits_raw.encode()).hexdigest()
+        digits += "".join(ch for ch in digits_raw if ch.isdigit())
+    number = digits[:10]
+    pw = secrets.token_urlsafe(18)
+    password = f"Vk{pw}9!"[:28]
+    username = f"{prefix}{short}"[:32]
     return {
         "role_hint": role_hint,
         "user_label": f"{role_hint}_user",
-        "email": f"{local}@example.test",
-        "username": local[:32],
-        "password": f"Vkr!{suffix}Pass9",
-        "number": (digits * 3)[:10],
+        "email": email,
+        "username": username,
+        "password": password,
+        "number": number,
         "name": "VKR Owner" if role_hint == "owner" else "VKR Attacker",
     }
 

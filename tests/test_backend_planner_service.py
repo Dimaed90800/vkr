@@ -23,6 +23,7 @@ from backend.services.auth_profile_store import AuthProfileStore
 from backend.services.injection_scenario_parameter_candidates import INJECTION_COMPILER_PAYLOAD_FAMILIES
 from backend.services.llm_candidate_advisor import LlmCandidateAdvisor
 from backend.services.planner_service import PlannerService
+from backend.services.resource_instance_store import ResourceInstanceStore
 from backend.storage.memory_store import memory_store
 
 
@@ -43,6 +44,9 @@ def _reset_store() -> None:
         "findings_by_fingerprint", "evidence_pack_apply_meta",
         "observation_apply_meta", "auth_profiles", "auth_profiles_by_campaign",
         "runtime_token_secrets", "runtime_credential_secrets",
+        "runtime_response_json_secrets", "runtime_object_id_secrets",
+        "runtime_resource_instances", "runtime_resource_instances_by_campaign",
+        "runtime_bola_object_pairs", "runtime_bola_object_pairs_by_campaign",
     ]:
         getattr(memory_store, name).clear()
     memory_store.evidence_records.clear()
@@ -300,6 +304,39 @@ def _request_with_bola(**overrides) -> PlannerRequest:
     return PlannerRequest.model_validate(data)
 
 
+def _store_runtime_bola_pair(
+    *,
+    campaign_id: str = "cmp_plan",
+    object_pair_id: str = "objpair_veh_1",
+    target_operation_id: str = "op_GET_/api/v1/vehicles/{vehicleId}",
+    target_path_template: str = "/api/v1/vehicles/{vehicleId}",
+    target_method: str = "GET",
+    path_param_name: str = "vehicleId",
+    confidence: str = "high",
+    resource_type: str = "vehicle",
+) -> None:
+    memory_store.store_runtime_bola_object_pair(
+        object_pair_id,
+        campaign_id,
+        {
+            "object_pair_id": object_pair_id,
+            "campaign_id": campaign_id,
+            "resource_type": resource_type,
+            "object_ref_id": "objref_veh_1",
+            "object_id_ref": "objidref_veh_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": target_operation_id,
+            "target_path_template": target_path_template,
+            "target_method": target_method,
+            "path_param_name": path_param_name,
+            "confidence": confidence,
+            "created_by": "bola_object_pair_builder",
+            "reason_codes": ["path_param_resource_match"],
+        },
+    )
+
+
 def _store_tool_run(
     *,
     tool_run_id: str = "toolrun_existing",
@@ -494,8 +531,12 @@ def test_planner_returns_blocked_bola_when_no_object_pairs():
 def test_planner_returns_bola_candidate_from_complete_hints():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
 
-    response = PlannerService().plan("cmp_plan", _request_with_bola())
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}}),
+    )
 
     assert response.ready_count == 1
     candidate = response.candidates[0]
@@ -503,8 +544,8 @@ def test_planner_returns_bola_candidate_from_complete_hints():
     assert candidate.status == "ready"
     assert candidate.command is not None
     assert candidate.command.worker_class == "access_control"
-    assert candidate.command.strategy == "prove_bola"
-    assert candidate.command.inputs["object_id"] == "veh_123"
+    assert candidate.command.strategy == "replay_bola_object_pair"
+    assert candidate.command.inputs["object_pair_id"] == "objpair_veh_1"
 
 
 def test_planner_blocks_bola_candidate_for_missing_required_hint():
@@ -599,8 +640,12 @@ def test_planner_skips_bola_candidate_when_tool_result_signal_exists():
 def test_planner_returned_ready_command_validates():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
 
-    response = PlannerService().plan("cmp_plan", _request_with_bola())
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}}),
+    )
     command = response.candidates[0].command
 
     assert command is not None
@@ -647,9 +692,10 @@ def test_planner_does_not_mutate_legacy_scheduler_state():
 def test_planner_orders_bola_before_zap():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
     request = PlannerRequest.model_validate({
         "zap": {"enabled": True},
-        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+        "bola": {"enabled": True},
     })
 
     response = PlannerService().plan("cmp_plan", request)
@@ -696,13 +742,14 @@ def test_planner_blocks_ready_candidates_when_allowed_hosts_empty():
 def test_planner_route_returns_planner_response():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
     client = TestClient(app)
 
     response = client.post(
         "/v1/planner/cmp_plan/candidates",
         json={
             "zap": {"enabled": False},
-            "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+            "bola": {"enabled": True},
         },
     )
 
@@ -880,6 +927,7 @@ def test_planner_zap_skip_does_not_suppress_different_target_if_target_can_be_di
 def test_planner_bola_dedup_respects_attacker_own_object_id():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
     obs = Observation(
         observation_id="obs_existing",
         campaign_id="cmp_plan",
@@ -897,7 +945,10 @@ def test_planner_bola_dedup_respects_attacker_own_object_id():
     )
     memory_store.store_observation(obs.observation_id, "cmp_plan", "", obs.model_dump(mode="json"))
 
-    response = PlannerService().plan("cmp_plan", _request_with_bola())
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}}),
+    )
 
     assert response.candidates[0].status == "ready"
     assert response.candidates[0].command is not None
@@ -907,6 +958,7 @@ def test_planner_cross_campaign_existing_signal_does_not_suppress_candidate():
     _reset_store()
     _campaign(campaign_id="cmp_plan")
     _campaign(campaign_id="cmp_other")
+    _store_runtime_bola_pair()
     obs = Observation(
         observation_id="obs_other",
         campaign_id="cmp_other",
@@ -924,7 +976,10 @@ def test_planner_cross_campaign_existing_signal_does_not_suppress_candidate():
     )
     memory_store.store_observation(obs.observation_id, "cmp_other", "", obs.model_dump(mode="json"))
 
-    response = PlannerService().plan("cmp_plan", _request_with_bola())
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}}),
+    )
 
     assert response.candidates[0].status == "ready"
     assert response.candidates[0].command is not None
@@ -1192,10 +1247,11 @@ def test_planner_security_header_cross_campaign_existing_issue_does_not_suppress
 def test_planner_orders_security_header_after_bola_ready_before_blocked():
     _reset_store()
     _campaign()
+    _store_runtime_bola_pair()
     _store_zap_alert_observation()
     request = PlannerRequest.model_validate({
         "zap": {"enabled": False},
-        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+        "bola": {"enabled": True},
     })
 
     response = PlannerService().plan("cmp_plan", request)
@@ -2108,11 +2164,12 @@ def test_planner_scenario_duplicate_schema_ops_deduped():
 def test_planner_scenario_ordering_bola_header_schemathesis_zap_blocked():
     _reset_store()
     _campaign(openapi_url="http://target.local/openapi.json")
+    _store_runtime_bola_pair()
     _store_graph_vehicle_op()
     _store_zap_alert_observation()
     body = {
         "zap": {"enabled": True},
-        "bola": {"enabled": True, "object_pairs": [_bola_pair()]},
+        "bola": {"enabled": True},
         "max_candidates": 30,
         "scenario_plan": {"source": "t", "scenarios": [_schema_scenario_payload()]},
     }
@@ -3884,6 +3941,552 @@ def test_planner_no_authenticated_data_exposure_candidate_when_owner_profile_mis
         and c.summary.get("auth_mode") == "authenticated"
     ]
     assert auth_rows == []
+
+
+def test_planner_authenticated_inventory_creates_resource_instance_extractor_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_rfi_resource_source",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.response_field_inventory.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "field_count": 13,
+            "sensitive_field_count": 2,
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_instance_extractor"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].summary.get("source_observation_id") == "obs_rfi_resource_source"
+    assert rows[0].summary.get("auth_profile_id") == "authprof_owner_1"
+    assert rows[0].summary.get("resource_instance_candidate_source") == "authenticated_inventory"
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "resource_instance_extractor"
+
+
+def test_planner_successful_materialization_and_no_object_refs_creates_resource_seed_worker_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_seed_ready",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_seed_worker"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].summary.get("owner_auth_profile_id") == "authprof_owner_1"
+    assert rows[0].summary.get("object_refs_count") == 0
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "resource_seed_worker"
+    assert rows[0].command.inputs.get("validation_mode") == "resource_seed"
+    assert rows[0].command.inputs.get("owner_auth_profile_id") == "authprof_owner_1"
+    blob = json.dumps(rows[0].summary, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "token", "password", "bearer"):
+        assert bad not in blob
+
+
+def test_planner_resource_seed_worker_dedups_existing_seeded_result() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_seeded_ok",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_seeded_done",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.resource_seed_result.value,
+        details={
+            "validation_mode": "resource_seed",
+            "seed_status": "seeded",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "object_refs_created_count": 1,
+            "object_refs": [],
+            "http_calls_count": 1,
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_seed_worker"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_missing_owner_auth_profile_id_means_no_seed_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_no_owner",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_seed_worker"]
+    assert rows == []
+
+
+def test_planner_materialized_profiles_and_resource_instances_create_bola_object_pair_builder_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_bola_pair_ready",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+        },
+    )
+    ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_plan",
+        resource_type="vehicle",
+        object_id_field="vehicleId",
+        raw_object_id="veh-1",
+        source_operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+        source_path="/api/v1/vehicles/{vehicleId}",
+        source_auth_profile_id="authprof_owner_1",
+        source_role_hint="owner",
+        confidence="high",
+        created_by="resource_instance_extractor",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_object_pair_builder"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].command is not None
+    assert rows[0].command.tool_name == "bola_object_pair_builder"
+    assert rows[0].command.inputs.get("validation_mode") == "bola_object_pair_building"
+    assert rows[0].summary.get("owner_auth_profile_id") == "authprof_owner_1"
+    assert rows[0].summary.get("attacker_auth_profile_id") == "authprof_attacker_1"
+
+
+def test_planner_missing_attacker_profile_blocks_bola_object_pair_builder_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_no_attacker",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "",
+        },
+    )
+    ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_plan",
+        resource_type="vehicle",
+        object_id_field="vehicleId",
+        raw_object_id="veh-1",
+        source_operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+        source_path="/api/v1/vehicles/{vehicleId}",
+        source_auth_profile_id="authprof_owner_1",
+        source_role_hint="owner",
+        confidence="high",
+        created_by="resource_instance_extractor",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_object_pair_builder"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "blocked"
+
+
+def test_planner_bola_object_pair_builder_dedups_existing_inventory_observation() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_bola_pair_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+        },
+    )
+    ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_plan",
+        resource_type="vehicle",
+        object_id_field="vehicleId",
+        raw_object_id="veh-1",
+        source_operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+        source_path="/api/v1/vehicles/{vehicleId}",
+        source_auth_profile_id="authprof_owner_1",
+        source_role_hint="owner",
+        confidence="high",
+        created_by="resource_instance_extractor",
+    )
+    _store_raw_observation(
+        observation_id="obs_bola_pairs_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_object_pair_inventory.value,
+        details={"validation_mode": "bola_object_pair_building", "object_pairs_count": 1, "object_pairs": []},
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_object_pair_builder"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_no_resource_instances_means_no_bola_object_pair_builder_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_bola_pair_no_resources",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_object_pair_builder"]
+    assert rows == []
+
+
+def test_planner_creates_bola_replay_probe_candidate_from_object_pair() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_authmat_replay_ready",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+        },
+    )
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_1",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_1",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_ref_id": "objref_1",
+            "object_id_ref": "objidref_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "confidence": "high",
+            "created_by": "bola_object_pair_builder",
+            "reason_codes": ["path_param_resource_match"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "ready"
+    assert rows[0].command is not None
+    assert rows[0].command.strategy == "replay_bola_object_pair"
+    assert rows[0].command.inputs.get("object_pair_id") == "objpair_1"
+    assert rows[0].command.inputs.get("validation_mode") == "bola_replay"
+
+
+def test_planner_dedups_existing_bola_replay_result_by_object_pair_id() -> None:
+    _reset_store()
+    _campaign()
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_1",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_1",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_ref_id": "objref_1",
+            "object_id_ref": "objidref_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "confidence": "high",
+            "created_by": "bola_object_pair_builder",
+            "reason_codes": ["path_param_resource_match"],
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_bola_replay_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "result": "attacker_access_granted",
+            "access_granted": True,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_rotates_to_next_object_pair_when_first_invalid_object_pair() -> None:
+    _reset_store()
+    _campaign()
+    _store_runtime_bola_pair(
+        object_pair_id="objpair_a",
+        target_operation_id="op_GET_/api/v1/posts/{postId}",
+        target_path_template="/api/v1/posts/{postId}",
+        path_param_name="postId",
+        confidence="high",
+    )
+    _store_runtime_bola_pair(
+        object_pair_id="objpair_b",
+        target_operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+        target_path_template="/api/v1/vehicles/{vehicleId}",
+        path_param_name="vehicleId",
+        confidence="high",
+    )
+    _store_raw_observation(
+        observation_id="obs_bola_invalid_a",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_a",
+            "result": "invalid_object_pair",
+            "access_granted": False,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    ready = [c for c in rows if c.status.value == "ready"]
+    assert len(ready) == 1
+    assert ready[0].command is not None
+    assert ready[0].command.inputs.get("object_pair_id") == "objpair_b"
+    assert "objpair_b" in (ready[0].dedup_key or "")
+
+
+def test_planner_stops_replay_when_all_object_pairs_have_results() -> None:
+    _reset_store()
+    _campaign()
+    _store_runtime_bola_pair(object_pair_id="objpair_a")
+    _store_runtime_bola_pair(object_pair_id="objpair_b")
+    _store_raw_observation(
+        observation_id="obs_bola_a_done",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={"validation_mode": "bola_replay", "object_pair_id": "objpair_a", "result": "invalid_object_pair", "access_granted": False},
+    )
+    _store_raw_observation(
+        observation_id="obs_bola_b_done",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={"validation_mode": "bola_replay", "object_pair_id": "objpair_b", "result": "attacker_access_denied", "access_granted": False},
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    assert rows
+    assert all(c.status.value != "ready" for c in rows)
+
+
+def test_planner_stops_replay_candidates_after_granted_result_exists() -> None:
+    _reset_store()
+    _campaign()
+    _store_runtime_bola_pair(object_pair_id="objpair_a")
+    _store_runtime_bola_pair(object_pair_id="objpair_b")
+    _store_raw_observation(
+        observation_id="obs_bola_granted_a",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={"validation_mode": "bola_replay", "object_pair_id": "objpair_a", "result": "attacker_access_granted", "access_granted": True},
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    assert rows
+    assert all(c.status.value != "ready" for c in rows)
+
+
+def test_planner_bola_replay_ordering_prefers_vehicle_high_over_post_medium() -> None:
+    _reset_store()
+    _campaign()
+    _store_runtime_bola_pair(
+        object_pair_id="objpair_post_medium",
+        target_operation_id="op_GET_/api/v1/posts/{postId}",
+        target_path_template="/api/v1/posts/{postId}",
+        path_param_name="postId",
+        confidence="medium",
+        resource_type="post",
+    )
+    _store_runtime_bola_pair(
+        object_pair_id="objpair_vehicle_high",
+        target_operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+        target_path_template="/api/v1/vehicles/{vehicleId}",
+        path_param_name="vehicleId",
+        confidence="high",
+        resource_type="vehicle",
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe" and c.status.value == "ready"]
+    assert len(rows) == 1
+    assert rows[0].command is not None
+    assert rows[0].command.inputs.get("object_pair_id") == "objpair_vehicle_high"
+    assert "objpair_vehicle_high" in (rows[0].dedup_key or "")
+
+
+def test_planner_resource_instance_inventory_dedups_existing_source_observation() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_rfi_resource_source_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.response_field_inventory.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "field_count": 13,
+            "sensitive_field_count": 1,
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_resource_inventory_existing",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.resource_instance_inventory.value,
+        details={
+            "source": "resource_instance_extractor",
+            "validation_mode": "resource_instance_extraction",
+            "source_observation_id": "obs_rfi_resource_source_existing",
+            "source_operation_id": "op_GET_/api/v1/me",
+            "source_path": "/api/v1/me",
+            "source_auth_profile_id": "authprof_owner_1",
+            "resource_instances_count": 1,
+            "object_refs": [],
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_instance_extractor"]
+    assert len(rows) == 1
+    assert rows[0].status.value == "skipped_existing"
+
+
+def test_planner_unauthenticated_inventory_does_not_create_resource_instance_candidate() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_rfi_resource_unauth",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.response_field_inventory.value,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/me",
+            "path": "/api/v1/me",
+            "field_count": 13,
+            "auth_mode": "unauthenticated",
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "resource_instance_extractor"]
+    assert rows == []
 
 
 def test_planner_latest_successful_materialization_used_for_authenticated_followup() -> None:

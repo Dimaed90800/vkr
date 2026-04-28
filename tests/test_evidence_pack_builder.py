@@ -63,6 +63,12 @@ def _reset_store() -> None:
     memory_store.findings.clear()
     memory_store.evidence_by_session.clear()
     memory_store.findings_by_session.clear()
+    memory_store.runtime_response_json_secrets.clear()
+    memory_store.runtime_object_id_secrets.clear()
+    memory_store.runtime_resource_instances.clear()
+    memory_store.runtime_resource_instances_by_campaign.clear()
+    memory_store.runtime_bola_object_pairs.clear()
+    memory_store.runtime_bola_object_pairs_by_campaign.clear()
 
 
 def _create_campaign(campaign_id: str = "cmp_evp1") -> None:
@@ -515,6 +521,155 @@ def test_build_bola_evidence_uses_request_ids_not_raw_bodies():
     assert "headers_redacted" not in serialized_blob
 
 
+def test_build_bola_replay_result_evidence_ready_when_access_granted() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    replay = _add_corpus(
+        url="http://testapp.local/community/api/v2/community/posts/post-123",
+        path_template="/community/api/v2/community/posts/{postId}",
+        role="authprof_attacker_1",
+        status_code=200,
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        response_body={"id": "post-123", "title": "owned"},
+    )
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        request_id=replay.request_id,
+        auth_profile="authprof_attacker_1",
+        status_code=200,
+        confidence=0.95,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "resource_type": "post",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "request_id": replay.request_id,
+            "result": "attacker_access_granted",
+            "access_granted": True,
+            "evidence_strength": "high",
+            "reason_codes": ["owner_baseline_valid", "attacker_access_granted"],
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "owner_result": "attacker_access_granted",
+            "attacker_status_code": 200,
+            "attacker_result": "attacker_access_granted",
+            "replay_classification": "possible_bola",
+        },
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    assert pack.vulnerability_class == "bola"
+    assert pack.owasp_category == "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
+    assert pack.attack is not None and pack.attack.request_ref is not None
+    assert pack.attack.request_ref.request_id == replay.request_id
+    blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
+    for bad in ("post-123", "bearer ", "set-cookie", "cookie:", "password", "response_body"):
+        assert bad not in blob
+
+
+def test_build_bola_replay_result_evidence_not_ready_when_denied() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    replay = _add_corpus(
+        url="http://testapp.local/community/api/v2/community/posts/post-404",
+        path_template="/community/api/v2/community/posts/{postId}",
+        role="authprof_attacker_1",
+        status_code=403,
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        response_body={"error": "forbidden"},
+    )
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        request_id=replay.request_id,
+        auth_profile="authprof_attacker_1",
+        status_code=403,
+        confidence=0.5,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_2",
+            "resource_type": "post",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "request_id": replay.request_id,
+            "result": "attacker_access_denied",
+            "access_granted": False,
+            "evidence_strength": "low",
+            "reason_codes": ["owner_baseline_valid", "attacker_denied"],
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "owner_result": "attacker_access_granted",
+            "attacker_status_code": 403,
+            "attacker_result": "attacker_access_denied",
+            "replay_classification": "access_denied",
+        },
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.judge_ready is False
+    assert pack.status == "incomplete"
+
+
+def test_build_bola_replay_result_evidence_not_ready_when_invalid_object_pair() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        request_id="",
+        auth_profile="authprof_attacker_1",
+        status_code=400,
+        confidence=0.2,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_3",
+            "resource_type": "post",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "result": "invalid_object_pair",
+            "access_granted": False,
+            "evidence_strength": "low",
+            "reason_codes": ["owner_baseline_failed"],
+            "owner_baseline_valid": False,
+            "owner_status_code": 400,
+            "owner_result": "non_2xx",
+            "attacker_status_code": 0,
+            "attacker_result": "skipped",
+            "replay_classification": "invalid_object_pair",
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.judge_ready is False
+
+
 # ─── unexpected_500 tests ─────────────────────────────────────────
 
 
@@ -849,6 +1004,115 @@ def test_build_auth_flow_signal_not_judge_ready():
     assert pack is not None
     assert pack.owasp_category == "API2_AUTH"
     assert pack.vulnerability_class == "auth_flow_diagnostic"
+    assert pack.status == "not_judge_ready"
+    assert pack.judge_ready is False
+
+
+def test_build_resource_instance_inventory_not_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="resource_instance_extractor")
+    obs = _make_obs(
+        ObservationType.resource_instance_inventory.value,
+        observation_id="obs_resource_inventory_evp",
+        details={
+            "source": "resource_instance_extractor",
+            "validation_mode": "resource_instance_extraction",
+            "source_observation_id": "obs_rfi_source",
+            "source_operation_id": "op_GET_/api/v1/me",
+            "source_path": "/api/v1/me",
+            "source_auth_profile_id": "authprof_owner_1",
+            "source_role_hint": "owner",
+            "resource_instances_count": 1,
+            "resource_types": ["vehicle"],
+            "object_refs": [{
+                "object_ref_id": "objref_1",
+                "resource_type": "vehicle",
+                "object_id_field": "vehicleid",
+                "object_id_ref": "objidref_1",
+                "confidence": "high",
+            }],
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    pack, error, _existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert pack is not None
+    assert pack.owasp_category == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+    assert pack.status == "not_judge_ready"
+    assert pack.judge_ready is False
+    blob = json.dumps(pack.model_dump(mode="json")).lower()
+    assert "veh-123" not in blob
+
+
+def test_build_resource_seed_result_not_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="resource_seed_worker")
+    obs = _make_obs(
+        ObservationType.resource_seed_result.value,
+        observation_id="obs_resource_seed_evp",
+        details={
+            "validation_mode": "resource_seed",
+            "seed_status": "seeded",
+            "resource_type": "order",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "seed_operation_id": "op_POST_/api/orders",
+            "seed_method": "POST",
+            "seed_path": "/api/orders",
+            "followup_operation_id": "",
+            "object_refs_created_count": 1,
+            "object_refs": [{
+                "object_ref_id": "objref_1",
+                "object_id_ref": "objidref_1",
+                "object_id_field": "order_id",
+                "resource_type": "order",
+                "confidence": "high",
+            }],
+            "http_calls_count": 1,
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    pack, error, _existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert pack is not None
+    assert pack.owasp_category == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
+    assert pack.status == "not_judge_ready"
+    assert pack.judge_ready is False
+
+
+def test_build_bola_object_pair_inventory_not_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="bola_object_pair_builder")
+    obs = _make_obs(
+        ObservationType.bola_object_pair_inventory.value,
+        observation_id="obs_bola_pair_inventory_evp",
+        details={
+            "validation_mode": "bola_object_pair_building",
+            "object_pairs_count": 1,
+            "resource_types": ["vehicle"],
+            "object_pairs": [{
+                "object_pair_id": "objpair_1",
+                "resource_type": "vehicle",
+                "object_ref_id": "objref_1",
+                "object_id_ref": "objidref_1",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "attacker_auth_profile_id": "authprof_attacker_1",
+                "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                "target_path_template": "/api/v1/vehicles/{vehicleId}",
+                "target_method": "GET",
+                "path_param_name": "vehicleId",
+                "confidence": "high",
+                "reason_codes": ["path_param_resource_match"],
+            }],
+            "reason_codes": ["object_pairs_built"],
+        },
+    )
+    pack, error, _existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert pack is not None
+    assert pack.owasp_category == "API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"
     assert pack.status == "not_judge_ready"
     assert pack.judge_ready is False
 

@@ -33,6 +33,9 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "data_exposure_validator": "data_exposure_validator",
     "auth_flow_detector": "auth_flow_detector",
     "test_account_materializer": "test_account_materializer",
+    "resource_instance_extractor": "resource_instance_extractor",
+    "resource_seed_worker": "resource_seed_worker",
+    "bola_object_pair_builder": "bola_object_pair_builder",
 }
 
 SYNC_ONLY_TOOLS: set[str] = {
@@ -53,6 +56,9 @@ SYNC_ONLY_TOOLS: set[str] = {
     "data_exposure_validator",
     "auth_flow_detector",
     "test_account_materializer",
+    "resource_instance_extractor",
+    "resource_seed_worker",
+    "bola_object_pair_builder",
     "schemathesis_negative_test",
     "injection_test",
 }

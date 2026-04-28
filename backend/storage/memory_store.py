@@ -25,6 +25,12 @@ class MemoryStore:
         self.auth_profiles_by_campaign: dict[str, list[str]] = defaultdict(list)
         self.runtime_token_secrets: dict[str, object] = {}
         self.runtime_credential_secrets: dict[str, object] = {}
+        self.runtime_response_json_secrets: dict[str, object] = {}
+        self.runtime_object_id_secrets: dict[str, object] = {}
+        self.runtime_resource_instances: dict[str, dict] = {}
+        self.runtime_resource_instances_by_campaign: dict[str, list[str]] = defaultdict(list)
+        self.runtime_bola_object_pairs: dict[str, dict] = {}
+        self.runtime_bola_object_pairs_by_campaign: dict[str, list[str]] = defaultdict(list)
 
         self.commands: dict[str, dict] = {}
         self.commands_by_campaign: dict[str, list[str]] = defaultdict(list)
@@ -140,6 +146,50 @@ class MemoryStore:
 
     def get_runtime_credential_secret(self, credential_ref: str) -> object | None:
         return self.runtime_credential_secrets.get(credential_ref)
+
+    def store_runtime_response_json_secret(self, secret_ref: str, value: object) -> None:
+        if secret_ref:
+            self.runtime_response_json_secrets[secret_ref] = value
+
+    def get_runtime_response_json_secret(self, secret_ref: str) -> object | None:
+        return self.runtime_response_json_secrets.get(secret_ref)
+
+    def store_runtime_object_id_secret(self, object_id_ref: str, value: object) -> None:
+        if object_id_ref:
+            self.runtime_object_id_secrets[object_id_ref] = value
+
+    def get_runtime_object_id_secret(self, object_id_ref: str) -> object | None:
+        return self.runtime_object_id_secrets.get(object_id_ref)
+
+    def store_runtime_resource_instance(self, object_ref_id: str, campaign_id: str, data: dict) -> None:
+        self.runtime_resource_instances[object_ref_id] = data
+        if object_ref_id not in self.runtime_resource_instances_by_campaign[campaign_id]:
+            self.runtime_resource_instances_by_campaign[campaign_id].append(object_ref_id)
+
+    def get_runtime_resource_instance(self, object_ref_id: str) -> dict | None:
+        return self.runtime_resource_instances.get(object_ref_id)
+
+    def list_runtime_resource_instances_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.runtime_resource_instances[rid]
+            for rid in self.runtime_resource_instances_by_campaign.get(campaign_id, [])
+            if rid in self.runtime_resource_instances
+        ]
+
+    def store_runtime_bola_object_pair(self, object_pair_id: str, campaign_id: str, data: dict) -> None:
+        self.runtime_bola_object_pairs[object_pair_id] = data
+        if object_pair_id not in self.runtime_bola_object_pairs_by_campaign[campaign_id]:
+            self.runtime_bola_object_pairs_by_campaign[campaign_id].append(object_pair_id)
+
+    def get_runtime_bola_object_pair(self, object_pair_id: str) -> dict | None:
+        return self.runtime_bola_object_pairs.get(object_pair_id)
+
+    def list_runtime_bola_object_pairs_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.runtime_bola_object_pairs[pid]
+            for pid in self.runtime_bola_object_pairs_by_campaign.get(campaign_id, [])
+            if pid in self.runtime_bola_object_pairs
+        ]
 
     def store_command(self, command_id: str, campaign_id: str, data: dict) -> None:
         self.commands[command_id] = data

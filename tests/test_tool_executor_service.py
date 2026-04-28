@@ -56,6 +56,12 @@ def _reset_store() -> None:
     memory_store.auth_profiles_by_campaign.clear()
     memory_store.runtime_token_secrets.clear()
     memory_store.runtime_credential_secrets.clear()
+    memory_store.runtime_response_json_secrets.clear()
+    memory_store.runtime_object_id_secrets.clear()
+    memory_store.runtime_resource_instances.clear()
+    memory_store.runtime_resource_instances_by_campaign.clear()
+    memory_store.runtime_bola_object_pairs.clear()
+    memory_store.runtime_bola_object_pairs_by_campaign.clear()
 
 
 def _create_campaign(
@@ -493,6 +499,24 @@ def test_registry_test_account_materializer_has_sync_adapter() -> None:
     assert reg.get_execution_mode("test_account_materializer") == "sync"
 
 
+def test_registry_resource_instance_extractor_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("resource_instance_extractor") is True
+    assert reg.get_execution_mode("resource_instance_extractor") == "sync"
+
+
+def test_registry_resource_seed_worker_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("resource_seed_worker") is True
+    assert reg.get_execution_mode("resource_seed_worker") == "sync"
+
+
+def test_registry_bola_object_pair_builder_has_sync_adapter() -> None:
+    reg = ToolRegistry()
+    assert reg.has_adapter("bola_object_pair_builder") is True
+    assert reg.get_execution_mode("bola_object_pair_builder") == "sync"
+
+
 def test_registry_undocumented_endpoint_validator_has_sync_adapter() -> None:
     reg = ToolRegistry()
     assert reg.has_adapter("undocumented_endpoint_validator") is True
@@ -897,6 +921,278 @@ def test_tool_executor_dispatches_test_account_materializer() -> None:
     assert result.tool_name == "test_account_materializer"
 
 
+def test_tool_executor_dispatches_resource_instance_extractor() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="extract_resource_instances",
+        tool_name="resource_instance_extractor",
+        operation_id="op_GET_/api/me",
+        inputs={
+            "source_observation_id": "obs_rfi_auth_1",
+            "source_operation_id": "op_GET_/api/me",
+            "source_path": "/api/me",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+            "validation_mode": "resource_instance_extraction",
+            "max_instances": 10,
+        },
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_resource_extract_test",
+        campaign_id="cmp_test1",
+        tool_name="resource_instance_extractor",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.resource_instance_extractor_adapter.ResourceInstanceExtractorAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "resource_instance_extractor"
+
+
+def test_tool_executor_dispatches_resource_seed_worker() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="seed_resource_instance",
+        tool_name="resource_seed_worker",
+        operation_id="",
+        inputs={
+            "validation_mode": "resource_seed",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "max_seed_attempts": 1,
+            "max_followup_requests": 1,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    fake_result = ToolResult(
+        tool_run_id="toolrun_resource_seed_test",
+        campaign_id="cmp_test1",
+        tool_name="resource_seed_worker",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.resource_seed_worker_adapter.ResourceSeedWorkerAdapter.execute",
+        return_value=fake_result,
+    ):
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.status == "finished"
+    assert result.tool_name == "resource_seed_worker"
+
+
+def test_tool_executor_dispatches_bola_object_pair_builder() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="build_bola_object_pairs",
+        tool_name="bola_object_pair_builder",
+        inputs={
+            "validation_mode": "bola_object_pair_building",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "max_object_pairs": 10,
+        },
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    dummy = ToolResult(tool_run_id="toolrun_mock", campaign_id="cmp_test1", tool_name="bola_object_pair_builder", status="finished")
+    with patch(
+        "backend.services.adapters.bola_object_pair_builder_adapter.BolaObjectPairBuilderAdapter.execute",
+        return_value=dummy,
+    ) as mocked:
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.tool_name == "bola_object_pair_builder"
+    assert mocked.call_count == 1
+
+
+def test_bola_object_pair_builder_rejects_secret_inputs_and_requires_auth_profiles() -> None:
+    _reset_store()
+    _create_campaign()
+    bad = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="build_bola_object_pairs",
+        tool_name="bola_object_pair_builder",
+        inputs={
+            "validation_mode": "bola_object_pair_building",
+            "owner_auth_profile_id": "",
+            "attacker_auth_profile_id": "",
+            "Authorization": "Bearer secret",
+            "object_id": "veh-raw",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=20),
+    )
+    v = CommandValidator().validate(bad)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "bola_object_pair_forbidden_secret_input" in codes
+    assert "bola_object_pair_owner_auth_profile_required" in codes
+    assert "bola_object_pair_attacker_auth_profile_required" in codes
+    assert "bola_object_pair_budget_max_requests" in codes
+    assert "bola_object_pair_budget_timeout" in codes
+
+
+def test_bola_object_pair_builder_accepts_safe_ref_inputs() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="build_bola_object_pairs",
+        tool_name="bola_object_pair_builder",
+        inputs={
+            "validation_mode": "bola_object_pair_building",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "resource_instances_count": 2,
+            "object_refs_count": 2,
+            "resource_types": ["vehicle", "post"],
+            "max_object_pairs": 10,
+            "object_ref_id": "objref_1",
+            "object_id_ref": "objidref_1",
+        },
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert v.valid is True
+
+
+def test_tool_executor_dispatches_bola_replay_probe() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="replay_bola_object_pair",
+        tool_name="bola_replay_probe",
+        inputs={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "max_requests": 2,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    dummy = ToolResult(
+        tool_run_id="toolrun_mock_bola_replay",
+        campaign_id="cmp_test1",
+        tool_name="bola_replay_probe",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.bola_replay_probe_adapter.BolaReplayProbeAdapter.execute",
+        return_value=dummy,
+    ) as mocked:
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.tool_name == "bola_replay_probe"
+    assert mocked.call_count == 1
+
+
+def test_bola_replay_probe_rejects_secret_inputs_and_requires_object_pair_id() -> None:
+    _reset_store()
+    _create_campaign()
+    bad = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="replay_bola_object_pair",
+        tool_name="bola_replay_probe",
+        inputs={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "",
+            "Authorization": "Bearer secret",
+            "raw_object_id": "post-123",
+            "request_url": "http://testapp.local/api/posts/123",
+            "max_requests": 3,
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=20),
+    )
+    v = CommandValidator().validate(bad)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "bola_replay_forbidden_secret_input" in codes
+    assert "bola_replay_object_pair_id_required" in codes
+    assert "bola_replay_budget_max_requests" in codes
+    assert "bola_replay_budget_timeout" in codes
+
+
+def test_bola_replay_probe_accepts_safe_object_pair_id_contract() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="replay_bola_object_pair",
+        tool_name="bola_replay_probe",
+        inputs={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "max_requests": 2,
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert v.valid is True
+
+
+def test_bola_replay_probe_rejects_max_requests_above_two() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="replay_bola_object_pair",
+        tool_name="bola_replay_probe",
+        inputs={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "max_requests": 3,
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "bola_replay_input_max_requests_invalid" in codes
+    assert "bola_replay_budget_max_requests" in codes
+
+def test_resource_seed_worker_rejects_secret_inputs_and_requires_owner_auth_profile_id() -> None:
+    _reset_store()
+    _create_campaign()
+    bad = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="seed_resource_instance",
+        tool_name="resource_seed_worker",
+        inputs={
+            "validation_mode": "custom_mode",
+            "owner_auth_profile_id": "",
+            "Authorization": "Bearer secret",
+            "raw_body": {"id": "ord-1"},
+            "max_seed_attempts": 2,
+            "max_followup_requests": 2,
+        },
+        budget=CommandBudget(max_requests=3, timeout_sec=16),
+    )
+    v = CommandValidator().validate(bad)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "resource_seed_validation_mode_invalid" in codes
+    assert "resource_seed_owner_auth_profile_required" in codes
+    assert "resource_seed_inputs_unknown_key" in codes
+    assert "resource_seed_budget_max_requests" in codes
+    assert "resource_seed_budget_timeout" in codes
+    assert "resource_seed_max_seed_attempts_invalid" in codes
+    assert "resource_seed_max_followup_requests_invalid" in codes
+
+
 def test_auth_flow_detector_rejects_unsupported_strategy_and_nonzero_budget() -> None:
     _reset_store()
     _create_campaign()
@@ -1109,6 +1405,8 @@ def test_data_exposure_validator_accepts_authenticated_mode_with_auth_profile_id
             "validation_mode": "response_field_inventory_check",
             "auth_mode": "authenticated",
             "auth_profile_id": "authprof_test_1",
+            "follow_same_origin_redirects": True,
+            "max_redirects": 2,
         },
         budget=CommandBudget(max_requests=1, timeout_sec=15),
     )
@@ -1143,6 +1441,62 @@ def test_data_exposure_validator_rejects_raw_secret_inputs() -> None:
     assert not v.valid
     codes = {e.code for e in v.errors}
     assert "data_exposure_forbidden_secret_input" in codes
+
+
+def test_data_exposure_validator_rejects_invalid_redirect_inputs() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="access_control",
+        strategy="validate_response_field_exposure",
+        tool_name="data_exposure_validator",
+        operation_id="op_GET_/api/me",
+        inputs={
+            "target_url": "http://testapp.local",
+            "request_url": "http://testapp.local/api/me",
+            "operation_id": "op_GET_/api/me",
+            "path_template": "/api/me",
+            "method": "GET",
+            "validation_mode": "response_field_inventory_check",
+            "follow_same_origin_redirects": "yes",
+            "max_redirects": 9,
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "data_exposure_follow_redirects_invalid" in codes
+    assert "data_exposure_max_redirects_invalid" in codes
+
+
+def test_resource_instance_extractor_rejects_secret_inputs_and_requires_source_observation() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="auth_context",
+        strategy="extract_resource_instances",
+        tool_name="resource_instance_extractor",
+        operation_id="op_GET_/api/me",
+        inputs={
+            "validation_mode": "bad_mode",
+            "max_instances": 99,
+            "authorization": "Bearer should-not-pass",
+            "object_id": "veh-1",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=16),
+    )
+    v = CommandValidator().validate(cmd)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "resource_instance_source_observation_required" in codes
+    assert "resource_instance_validation_mode_invalid" in codes
+    assert "resource_instance_max_instances_invalid" in codes
+    assert "resource_instance_budget_max_requests" in codes
+    assert "resource_instance_budget_timeout" in codes
+    assert "resource_instance_forbidden_secret_input" in codes
 
 
 def test_js_endpoint_extractor_accepts_max_js_bytes_up_to_three_million() -> None:

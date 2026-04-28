@@ -57,6 +57,12 @@ def _reset_store() -> None:
     memory_store.auth_profiles_by_campaign.clear()
     memory_store.runtime_token_secrets.clear()
     memory_store.runtime_credential_secrets.clear()
+    memory_store.runtime_response_json_secrets.clear()
+    memory_store.runtime_object_id_secrets.clear()
+    memory_store.runtime_resource_instances.clear()
+    memory_store.runtime_resource_instances_by_campaign.clear()
+    memory_store.runtime_bola_object_pairs.clear()
+    memory_store.runtime_bola_object_pairs_by_campaign.clear()
 
 
 def _create_campaign(campaign_id: str = "cmp_obs1") -> None:
@@ -509,6 +515,67 @@ def test_triage_cross_role_access_creates_prove_ownership_plan():
     assert plan is not None
     assert plan.goal == "prove_ownership"
     assert "owner_collection_contains_object" in plan.required_evidence
+
+
+def test_triage_bola_replay_granted_creates_validation_plan() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "bola_replay_result",
+        observation_id="obs_bola_replay_granted",
+        operation_id="op_GET_/community/api/v2/community/posts/{postId}",
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_1",
+            "resource_type": "post",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "status_code": 200,
+            "result": "attacker_access_granted",
+            "access_granted": True,
+            "evidence_strength": "high",
+            "reason_codes": ["attacker_access_granted"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "validate_bola_replay_impact"
+    assert triaged.security_relevance == "high"
+    assert plan is not None
+    assert plan.goal == "validate_bola_replay_impact"
+    assert plan.worker_class == "access_control"
+    assert plan.strategy == "confirm_bola_replay"
+
+
+def test_triage_bola_replay_denied_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "bola_replay_result",
+        observation_id="obs_bola_replay_denied",
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_2",
+            "target_operation_id": "op_GET_/community/api/v2/community/posts/{postId}",
+            "target_path_template": "/community/api/v2/community/posts/{postId}",
+            "target_method": "GET",
+            "status_code": 403,
+            "result": "attacker_access_denied",
+            "access_granted": False,
+            "evidence_strength": "low",
+            "reason_codes": ["attacker_access_denied"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert plan is None
 
 
 def test_triage_schema_mismatch_with_5xx_creates_verification_plan():
@@ -1543,6 +1610,112 @@ def test_triage_test_account_materialization_result_is_store_only() -> None:
             "auth_type": "bearer",
             "token_response_detected": True,
             "reason_codes": ["materialization_succeeded"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_resource_instance_inventory_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "resource_instance_inventory",
+        observation_id="obs_resource_inventory_triage_1",
+        details={
+            "source": "resource_instance_extractor",
+            "validation_mode": "resource_instance_extraction",
+            "source_observation_id": "obs_rfi_1",
+            "source_operation_id": "op_GET_/api/me",
+            "source_path": "/api/me",
+            "source_auth_profile_id": "authprof_owner_1",
+            "source_role_hint": "owner",
+            "resource_instances_count": 1,
+            "resource_types": ["vehicle"],
+            "object_refs": [{
+                "object_ref_id": "objref_1",
+                "resource_type": "vehicle",
+                "object_id_field": "vehicleid",
+                "object_id_ref": "objidref_1",
+                "confidence": "high",
+            }],
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_resource_seed_result_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "resource_seed_result",
+        observation_id="obs_resource_seed_triage_1",
+        details={
+            "validation_mode": "resource_seed",
+            "seed_status": "seeded",
+            "resource_type": "order",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "seed_operation_id": "op_POST_/api/orders",
+            "seed_method": "POST",
+            "seed_path": "/api/orders",
+            "followup_operation_id": "",
+            "followup_method": "",
+            "followup_path": "",
+            "object_refs_created_count": 1,
+            "object_refs": [{
+                "object_ref_id": "objref_1",
+                "object_id_ref": "objidref_1",
+                "object_id_field": "order_id",
+                "resource_type": "order",
+                "confidence": "high",
+            }],
+            "http_calls_count": 1,
+            "reason_codes": ["resource_ids_extracted"],
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert plan is None
+    assert triaged is not None
+    assert triaged.recommended_next_action == "store_only"
+    assert triaged.judge_worthy is False
+
+
+def test_triage_bola_object_pair_inventory_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "bola_object_pair_inventory",
+        observation_id="obs_bola_object_pairs_1",
+        details={
+            "validation_mode": "bola_object_pair_building",
+            "object_pairs_count": 1,
+            "resource_types": ["vehicle"],
+            "object_pairs": [{
+                "object_pair_id": "objpair_1",
+                "resource_type": "vehicle",
+                "object_ref_id": "objref_1",
+                "object_id_ref": "objidref_1",
+                "owner_auth_profile_id": "authprof_owner_1",
+                "attacker_auth_profile_id": "authprof_attacker_1",
+                "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                "target_path_template": "/api/v1/vehicles/{vehicleId}",
+                "target_method": "GET",
+                "path_param_name": "vehicleId",
+                "confidence": "high",
+                "reason_codes": ["path_param_resource_match"],
+            }],
+            "reason_codes": ["object_pairs_built"],
         },
     )
     triaged, plan, err = ObservationTriage().triage(obs.observation_id)

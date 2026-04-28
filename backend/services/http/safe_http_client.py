@@ -60,6 +60,9 @@ class SafeHttpResult:
     request_body_redacted: Any = None
     response_headers_redacted: dict[str, Any] = field(default_factory=dict)
     cookie_summaries: list[dict[str, Any]] = field(default_factory=list)
+    redirect_count: int = 0
+    redirect_followed: bool = False
+    redirect_same_origin: bool = False
     error: SafeHttpError | None = None
     _raw_response_body: Any = field(default=None, repr=False)
     _raw_response_cookies: dict[str, Any] = field(default_factory=dict, repr=False)
@@ -100,6 +103,8 @@ class SafeHttpClient:
         timeout_sec: float = 10,
         max_response_bytes: int | None = None,
         follow_redirects: bool | None = None,
+        follow_same_origin_redirects: bool | None = None,
+        max_redirects: int = 0,
     ) -> SafeHttpResult:
         method = (method or "GET").upper()
         resolved_url = self._resolve_url(campaign, url)
@@ -126,13 +131,10 @@ class SafeHttpClient:
 
         max_bytes = max(1, int(max_response_bytes or self._max_response_bytes))
         allow_redirects = self._follow_redirects if follow_redirects is None else follow_redirects
-        if allow_redirects:
-            base_result.error = SafeHttpError(
-                code="redirect_not_supported",
-                message="follow_redirects=true is not supported in Phase 9A.",
-                details={"url": storage_url},
-            )
-            return base_result
+        allow_same_origin_redirects = (
+            allow_redirects if follow_same_origin_redirects is None else bool(follow_same_origin_redirects)
+        )
+        redirect_limit = max(0, int(max_redirects or 0))
 
         try:
             with httpx.Client(
@@ -141,14 +143,95 @@ class SafeHttpClient:
                 follow_redirects=False,
                 cookies=cookies or None,
             ) as client:
-                response = client.request(
-                    method,
-                    resolved_url,
-                    params=query or None,
-                    headers=headers or None,
-                    json=body if isinstance(body, (dict, list)) else None,
-                    content=body if isinstance(body, (str, bytes)) else None,
-                )
+                current_url = resolved_url
+                redirect_count = 0
+                redirect_followed = False
+                last_same_origin = False
+                while True:
+                    response = client.request(
+                        method,
+                        current_url,
+                        params=query or None,
+                        headers=headers or None,
+                        json=body if isinstance(body, (dict, list)) else None,
+                        content=body if isinstance(body, (str, bytes)) else None,
+                    )
+                    base_result.status_code = response.status_code
+                    base_result.response_content_type = response.headers.get("content-type", "")
+                    base_result.cookie_summaries = _parse_set_cookie_summaries(
+                        response.headers.get_list("set-cookie"),
+                        campaign_id=campaign.campaign_id,
+                        is_https=urlparse(current_url).scheme.lower() == "https",
+                    )
+                    base_result._raw_response_cookies = dict(response.cookies.items())
+                    base_result.response_headers_redacted, _ = redact_sensitive_data(dict(response.headers), None)
+                    base_result.redirect_count = redirect_count
+                    base_result.redirect_followed = redirect_followed
+                    base_result.redirect_same_origin = last_same_origin
+
+                    location = response.headers.get("location")
+                    if not (300 <= response.status_code <= 399 and location):
+                        resolved_url = current_url
+                        storage_url = sanitize_url_for_storage(resolved_url)
+                        base_result.url = storage_url
+                        break
+
+                    redirect_url = urljoin(current_url, location)
+                    redirect_storage_url = sanitize_url_for_storage(redirect_url)
+                    redirect_scope_error = self._scope_error(campaign, redirect_url)
+                    same_origin = self._same_origin(current_url, redirect_url)
+                    base_result.redirect_same_origin = same_origin
+                    if redirect_scope_error is not None:
+                        redirect_scope_error.code = "redirect_host_not_allowed"
+                        redirect_scope_error.message = "Redirect target is outside campaign allowed_hosts."
+                        redirect_scope_error.details = {
+                            "url": storage_url,
+                            "redirect_url": redirect_storage_url,
+                            "redirect_count": redirect_count + 1,
+                            "redirect_same_origin": same_origin,
+                        }
+                        base_result.error = redirect_scope_error
+                        return base_result
+                    if not allow_same_origin_redirects:
+                        base_result.error = SafeHttpError(
+                            code="redirect_not_allowed",
+                            message="Redirect response was not followed because redirects are disabled.",
+                            details={
+                                "url": storage_url,
+                                "redirect_url": redirect_storage_url,
+                                "redirect_count": redirect_count + 1,
+                                "redirect_same_origin": same_origin,
+                            },
+                        )
+                        return base_result
+                    if not same_origin:
+                        base_result.error = SafeHttpError(
+                            code="redirect_host_not_allowed",
+                            message="Redirect target is not same-origin and was not followed.",
+                            details={
+                                "url": storage_url,
+                                "redirect_url": redirect_storage_url,
+                                "redirect_count": redirect_count + 1,
+                                "redirect_same_origin": False,
+                            },
+                        )
+                        return base_result
+                    if redirect_count >= redirect_limit:
+                        base_result.error = SafeHttpError(
+                            code="redirect_not_allowed",
+                            message="Redirect response was not followed because max_redirects was reached.",
+                            details={
+                                "url": storage_url,
+                                "redirect_url": redirect_storage_url,
+                                "redirect_count": redirect_count + 1,
+                                "redirect_same_origin": True,
+                            },
+                        )
+                        return base_result
+                    redirect_count += 1
+                    redirect_followed = True
+                    last_same_origin = True
+                    current_url = redirect_url
         except httpx.TimeoutException as exc:
             base_result.error = SafeHttpError(
                 code="timeout",
@@ -163,33 +246,6 @@ class SafeHttpClient:
                 details={"url": storage_url, "error": str(exc)},
             )
             return base_result
-
-        base_result.status_code = response.status_code
-        base_result.response_content_type = response.headers.get("content-type", "")
-        base_result.cookie_summaries = _parse_set_cookie_summaries(
-            response.headers.get_list("set-cookie"),
-            campaign_id=campaign.campaign_id,
-            is_https=urlparse(resolved_url).scheme.lower() == "https",
-        )
-        base_result._raw_response_cookies = dict(response.cookies.items())
-        base_result.response_headers_redacted, _ = redact_sensitive_data(dict(response.headers), None)
-
-        location = response.headers.get("location")
-        if 300 <= response.status_code <= 399 and location:
-            redirect_url = urljoin(resolved_url, location)
-            redirect_error = self._scope_error(campaign, redirect_url)
-            if redirect_error is not None:
-                redirect_error.code = "redirect_host_not_allowed"
-                redirect_error.message = "Redirect target is outside campaign allowed_hosts."
-                base_result.error = redirect_error
-                return base_result
-            if not allow_redirects:
-                base_result.error = SafeHttpError(
-                    code="redirect_not_allowed",
-                    message="Redirect response was not followed because redirects are disabled.",
-                    details={"url": storage_url, "location": location},
-                )
-                return base_result
 
         content = response.content or b""
         if len(content) > max_bytes:
@@ -209,6 +265,16 @@ class SafeHttpClient:
         _, redacted_response = redact_sensitive_data(None, parsed_body)
         base_result.response_body = redacted_response
         return base_result
+
+    @staticmethod
+    def _same_origin(source_url: str, target_url: str) -> bool:
+        source = urlparse(source_url)
+        target = urlparse(target_url)
+        return (
+            (source.scheme or "").lower() == (target.scheme or "").lower()
+            and (source.hostname or "").lower() == (target.hostname or "").lower()
+            and source.port == target.port
+        )
 
     def _resolve_url(self, campaign: Campaign, url: str) -> str:
         raw = str(url or "")

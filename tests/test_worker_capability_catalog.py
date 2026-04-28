@@ -47,7 +47,9 @@ def test_bola_capability_is_partial_and_requires_auth_seed() -> None:
     assert w.status == "partial"
     assert w.requires_auth is True
     assert w.requires_seed is True
-    assert w.requires_corpus is True
+    assert w.requires_corpus is False
+    assert "bola_replay_result" in w.observation_types
+    assert "object_pair_id" in w.notes
 
 
 def test_injection_worker_now_partial_with_adapter() -> None:
@@ -110,6 +112,45 @@ def test_test_account_materializer_capability_partial_context_only() -> None:
     assert w.evidence_support is False
     assert w.judge_support is False
     assert "runtime auth profile refs" in w.notes.lower()
+
+
+def test_resource_instance_extractor_capability_partial_context_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("resource_instance_extractor")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "auth_context"
+    assert "resource_instance_inventory" in w.observation_types
+    assert w.evidence_support is False
+    assert w.judge_support is False
+    assert "object-id refs" in w.notes.lower()
+
+
+def test_resource_seed_worker_capability_partial_context_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("resource_seed_worker")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "auth_context"
+    assert "resource_seed_result" in w.observation_types
+    assert w.evidence_support is False
+    assert w.judge_support is False
+    assert "seed" in w.notes.lower()
+
+
+def test_bola_object_pair_builder_capability_partial_context_only() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("bola_object_pair_builder")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "access_control"
+    assert "bola_object_pair_inventory" in w.observation_types
+    assert w.evidence_support is False
+    assert w.judge_support is False
+    assert "safe object-pair inventory" in w.notes.lower()
 
 
 def test_data_exposure_validator_capability_partial_sync_finding_capable() -> None:

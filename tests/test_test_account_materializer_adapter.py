@@ -146,6 +146,7 @@ def test_signup_failure_returns_safe_result_without_raw_leakage() -> None:
     for bad in ("should-not-leak", "authorization", "cookie", "set-cookie", "bearer ", "response_body", "request_body"):
         assert bad not in blob
     assert "Vkr!" not in blob
+    assert "@e.io" not in blob
     assert "@example.test" not in blob
 
 
@@ -168,11 +169,14 @@ def test_payload_generation_covers_email_password_name_and_number() -> None:
     adapter.execute(_command(), campaign, "toolrun_authmat_payload")
     signup_payload = captured[0]
     login_payload = captured[1]
-    assert "email" in signup_payload and str(signup_payload["email"]).endswith("@example.test")
+    em = str(signup_payload.get("email") or "")
+    assert em.startswith("o") and em.endswith("@e.io")
+    assert len(em) <= 32
     assert "password" in signup_payload and signup_payload["password"]
     assert "name" in signup_payload and "vkr" in str(signup_payload["name"]).lower()
-    assert "number" in signup_payload and str(signup_payload["number"]).isdigit()
+    assert "number" in signup_payload and str(signup_payload["number"]).isdigit() and len(str(signup_payload["number"])) == 10
     assert set(login_payload) == {"email", "password"}
+    assert str(login_payload.get("email")) == em
 
 
 def test_no_observations_when_login_fails_keeps_safe_artifact_only_metadata() -> None:
@@ -198,7 +202,100 @@ def test_no_observations_when_login_fails_keeps_safe_artifact_only_metadata() ->
     for bad in ("never-store-this", "authorization", "cookie", "set-cookie", "bearer ", "response_body", "request_body", "headers"):
         assert bad not in blob
     assert "Vkr!" not in blob
+    assert "@e.io" not in blob
     assert "@example.test" not in blob
+
+
+def test_generated_owner_and_attacker_emails_short_distinct() -> None:
+    _reset_store()
+    campaign = _campaign()
+    _store_graph()
+    emails: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        if request.url.path.endswith("/signup"):
+            emails.append(str(body.get("email") or ""))
+            return httpx.Response(201, json={"status": "created"})
+        return httpx.Response(200, json={"token": "tok-x"})
+
+    adapter = TestAccountMaterializerAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    )
+    adapter.execute(_command(), campaign, "toolrun_emails_short")
+    assert len(emails) == 2
+    assert emails[0].startswith("o") and emails[0].endswith("@e.io")
+    assert emails[1].startswith("a") and emails[1].endswith("@e.io")
+    assert emails[0] != emails[1]
+    assert all(len(e) <= 32 for e in emails)
+
+
+def test_signup_500_retries_with_regenerated_credentials() -> None:
+    _reset_store()
+    campaign = _campaign()
+    _store_graph()
+    signup_n = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/signup"):
+            signup_n["n"] += 1
+            if signup_n["n"] == 1:
+                return httpx.Response(
+                    500,
+                    json={"detail": "value too long for type character varying(500) update user_login set jwt_token=..."},
+                )
+            return httpx.Response(201, json={"status": "created"})
+        return httpx.Response(200, json={"token": "tok-owner"})
+
+    adapter = TestAccountMaterializerAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    )
+    result = adapter.execute(_command(), campaign, "toolrun_signup500")
+    det = result.observations[0].details
+    assert det["auth_profiles_created_count"] == 2
+    assert "signup_http_500" in det["reason_codes"]
+    assert "signup_retry_after_5xx" in det["reason_codes"]
+    assert "credentials_regenerated" in det["reason_codes"]
+    assert "possible_jwt_token_too_long" in det["reason_codes"]
+    assert det.get("signup_retry_count", 0) >= 1
+    blob = json.dumps(result.model_dump(mode="json"), sort_keys=True).lower()
+    assert "update user_login" not in blob
+    assert "character varying" not in blob
+    assert "varchar(500)" not in blob
+
+
+def test_login_500_retries_whole_user_with_regenerated_credentials() -> None:
+    _reset_store()
+    campaign = _campaign()
+    _store_graph()
+    login_n = {"n": 0}
+    signup_emails: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8") or "{}")
+        if request.url.path.endswith("/signup"):
+            signup_emails.append(str(body.get("email") or ""))
+            return httpx.Response(201, json={"status": "created"})
+        login_n["n"] += 1
+        if login_n["n"] == 1:
+            return httpx.Response(500, json={"error": "jwt_token too long"})
+        return httpx.Response(200, json={"token": "tok-login-retry"})
+
+    adapter = TestAccountMaterializerAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    )
+    result = adapter.execute(_command(), campaign, "toolrun_login500")
+    det = result.observations[0].details
+    assert det["auth_profiles_created_count"] == 2
+    assert "login_http_5xx" in det["reason_codes"]
+    assert "login_retry_with_regenerated_credentials" in det["reason_codes"]
+    assert "credentials_regenerated" in det["reason_codes"]
+    assert "possible_jwt_token_too_long" in det["reason_codes"]
+    assert det.get("login_retry_count", 0) >= 1
+    assert len(signup_emails) >= 3
+    assert signup_emails[0] != signup_emails[1]
+    blob = json.dumps(result.model_dump(mode="json"), sort_keys=True).lower()
+    assert "tok-login-retry" not in blob
 
 
 def _graph_with_distractions() -> None:

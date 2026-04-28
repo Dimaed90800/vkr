@@ -77,7 +77,7 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         tool_name="bola_replay_probe",
         worker_class="access_control",
         scenario_types=["access_control_bola"],
-        observation_types=["cross_role_access_signal"],
+        observation_types=["bola_replay_result"],
         owasp_categories=["API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"],
         status="partial",
         adapter_available=True,
@@ -87,9 +87,9 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         judge_support=True,
         requires_auth=True,
         requires_seed=True,
-        requires_corpus=True,
+        requires_corpus=False,
         risk_level="high",
-        notes="Requires roles, object_pairs, and corpus seeds for full planner + Dify loop.",
+        notes="Bounded attacker-authenticated GET replay using prepared object_pair_id; stores only safe refs and replay metadata, never raw object ids, tokens, cookies, Authorization headers, or raw bodies.",
     ),
     WorkerCapability(
         worker_name="http_replay_executor",
@@ -301,6 +301,69 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         notes=(
             "Context-producing only: creates bounded owner/attacker test accounts and stores only runtime "
             "auth profile refs plus sanitized metadata; no raw passwords, tokens, cookies, headers, or bodies."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="resource_instance_extractor",
+        tool_name="resource_instance_extractor",
+        worker_class="auth_context",
+        scenario_types=["resource_instance_extraction"],
+        observation_types=["resource_instance_inventory"],
+        owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=False,
+        judge_support=False,
+        requires_auth=True,
+        risk_level="low",
+        notes=(
+            "Diagnostic-only context worker: derives object-id refs from authenticated JSON responses using "
+            "runtime-only secret storage; reports sanitized object refs only and never stores raw object ids, "
+            "tokens, cookies, headers, or bodies."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="resource_seed_worker",
+        tool_name="resource_seed_worker",
+        worker_class="auth_context",
+        scenario_types=["resource_seed"],
+        observation_types=["resource_seed_result"],
+        owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=False,
+        judge_support=False,
+        requires_auth=True,
+        risk_level="medium",
+        notes=(
+            "Diagnostic-only context worker: attempts one bounded owner-auth create-like request to obtain a "
+            "seed resource id and stores it as a runtime-only object_id_ref; never stores raw object ids, "
+            "raw payloads, raw bodies, headers, cookies, or tokens."
+        ),
+    ),
+    WorkerCapability(
+        worker_name="bola_object_pair_builder",
+        tool_name="bola_object_pair_builder",
+        worker_class="access_control",
+        scenario_types=["bola_object_pair_building"],
+        observation_types=["bola_object_pair_inventory"],
+        owasp_categories=["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=False,
+        judge_support=False,
+        requires_auth=True,
+        risk_level="low",
+        notes=(
+            "Diagnostic/context-producing only: builds safe object-pair inventory from object refs and OpenAPI "
+            "path-parameter matching; stores only object_ref_id/object_id_ref and never stores raw object ids, "
+            "tokens, passwords, cookies, Authorization headers, or raw bodies."
         ),
     ),
     WorkerCapability(
