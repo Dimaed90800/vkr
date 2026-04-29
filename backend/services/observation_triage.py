@@ -200,6 +200,8 @@ class ObservationTriage:
             return self._triage_undocumented_endpoint_signal(obs)
         if obs_type == "ssrf_candidate_signal":
             return self._triage_ssrf_candidate_signal(obs)
+        if obs_type == "ssrf_probe_result":
+            return self._triage_ssrf_probe_result(obs)
         if obs_type == "data_exposure_signal":
             return self._triage_data_exposure_signal(obs)
         if obs_type == "bola_replay_result":
@@ -686,6 +688,47 @@ class ObservationTriage:
                     "openapi_schema_url_like_field",
                     "operation_context",
                 ],
+                commands=[],
+                status=VerificationPlanStatus.pending,
+                created_at=_now_iso(),
+            )
+            memory_store.store_verification_plan(
+                plan.verification_plan_id,
+                obs.campaign_id,
+                plan.model_dump(mode="json"),
+            )
+            return obs, plan, None
+
+        obs.security_relevance = SecurityRelevance.informational
+        obs.recommended_next_action = "store_only"
+        obs.judge_worthy = False
+        self._persist_obs(obs)
+        return obs, None, None
+
+    def _triage_ssrf_probe_result(
+        self, obs: Observation,
+    ) -> tuple[Observation, VerificationPlan | None, None]:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        validation_mode = str(details.get("validation_mode") or "").strip()
+        callback_received = bool(details.get("callback_received"))
+        evidence_strength = str(details.get("evidence_strength") or "low").strip().lower()
+        if validation_mode == "ssrf_callback_probe" and callback_received and evidence_strength in {"medium", "high"}:
+            obs.security_relevance = SecurityRelevance.high
+            obs.recommended_next_action = "build_evidence_pack"
+            obs.judge_worthy = True
+            self._persist_obs(obs)
+            existing_plan = self._find_existing_active_plan(obs)
+            if existing_plan is not None:
+                return obs, existing_plan, None
+            plan = VerificationPlan(
+                verification_plan_id=_make_plan_id(),
+                campaign_id=obs.campaign_id,
+                parent_observation_id=obs.observation_id,
+                parent_task_id=obs.task_id,
+                goal="validate_ssrf_callback_impact",
+                worker_class="ssrf_external",
+                strategy="callback_ssrf_probe",
+                required_evidence=["callback_received", "correlation_id_matched"],
                 commands=[],
                 status=VerificationPlanStatus.pending,
                 created_at=_now_iso(),

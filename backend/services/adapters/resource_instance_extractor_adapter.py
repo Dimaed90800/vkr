@@ -123,6 +123,45 @@ _FIELD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def _semantic_id_kind(field_name: str, id_json_path: str = "") -> str:
+    fn = str(field_name or "").strip()
+    lowered = fn.lower() if fn else ""
+    path_low = str(id_json_path or "").lower()
+    if lowered in {"authorid", "author_id"}:
+        return "author_id"
+    if lowered in {"ownerid", "owner_id"}:
+        return "owner_id"
+    if lowered in {"userid", "user_id"}:
+        return "user_id"
+    if lowered in {"postid", "post_id"}:
+        return "post_id"
+    if lowered in {"videoid", "video_id"}:
+        return "video_id"
+    if lowered in {"vehicleid", "vehicle_id"}:
+        return "vehicle_id"
+    if lowered == "vin":
+        return "vin"
+    if ".author." in path_low or path_low.endswith(".author.id") or path_low.endswith(".authorid"):
+        return "author_id"
+    if ".owner." in path_low or path_low.endswith(".owner.id") or path_low.endswith(".ownerid"):
+        return "owner_id"
+    if ".user." in path_low or path_low.endswith(".user.id") or path_low.endswith(".userid"):
+        return "user_id"
+    if ".posts[" in path_low and path_low.endswith(".id"):
+        return "post_id"
+    if ".vehicles[" in path_low and path_low.endswith(".id"):
+        return "vehicle_id"
+    if ".orders[" in path_low and path_low.endswith(".id"):
+        return "order_id"
+    if ".videos[" in path_low and path_low.endswith(".id"):
+        return "video_id"
+    if not fn:
+        return "unknown_id"
+    if lowered.endswith("id") or lowered.endswith("_id"):
+        return "resource_id"
+    return "unknown_id"
+
+
 def _path_suggests_resource_type(source_path: str) -> str | None:
     raw = str(source_path or "").strip()
     if not raw:
@@ -135,11 +174,27 @@ def _path_suggests_resource_type(source_path: str) -> str | None:
     return None
 
 
+def _json_path_suggests_resource_type(id_json_path: str) -> str | None:
+    path = str(id_json_path or "").lower()
+    if ".data.posts[" in path or ".posts[" in path:
+        return "post"
+    if ".data.vehicles[" in path or ".vehicles[" in path:
+        return "vehicle"
+    if ".data.orders[" in path or ".orders[" in path:
+        return "order"
+    if ".data.videos[" in path or ".videos[" in path:
+        return "video"
+    if ".content[" in path or ".items[" in path:
+        return "post"
+    return None
+
+
 def _classify_id_field(
     field_name: str,
     source_path: str,
     *,
     inside_list_item: bool,
+    id_json_path: str = "",
 ) -> tuple[str, str] | None:
     """Return (resource_type, confidence) or None if field name is not an id field pattern."""
     fn = str(field_name or "").strip()
@@ -154,6 +209,9 @@ def _classify_id_field(
         mapped = _PREFIX_TO_RESOURCE.get(prefix)
         if mapped:
             return mapped, "high"
+        json_hit = _json_path_suggests_resource_type(id_json_path)
+        if json_hit:
+            return json_hit, "medium"
         path_hit = _path_suggests_resource_type(source_path)
         if path_hit:
             return path_hit, "medium"
@@ -164,6 +222,9 @@ def _classify_id_field(
         mapped = _PREFIX_TO_RESOURCE.get(prefix)
         if mapped:
             return mapped, "high"
+        json_hit = _json_path_suggests_resource_type(id_json_path)
+        if json_hit:
+            return json_hit, "medium"
         path_hit = _path_suggests_resource_type(source_path)
         if path_hit:
             return path_hit, "medium"
@@ -174,11 +235,22 @@ def _classify_id_field(
         mapped = _PREFIX_TO_RESOURCE.get(prefix)
         if mapped:
             return mapped, "high"
+        json_hit = _json_path_suggests_resource_type(id_json_path)
+        if json_hit:
+            return json_hit, "medium"
         path_hit = _path_suggests_resource_type(source_path)
         if path_hit:
             return path_hit, "medium"
         return "unknown", "low"
     if re.fullmatch(r"id", fn, flags=re.I):
+        path_low = str(id_json_path or "").lower()
+        if ".author." in path_low:
+            return "user", "high"
+        if ".owner." in path_low or ".user." in path_low:
+            return "user", "medium"
+        json_hit = _json_path_suggests_resource_type(id_json_path)
+        if inside_list_item and json_hit:
+            return json_hit, "medium"
         path_hit = _path_suggests_resource_type(source_path)
         if inside_list_item and path_hit:
             return path_hit, "medium"
@@ -210,6 +282,7 @@ def _walk_for_object_ids(
     max_instances: int,
     counters: dict[str, int],
     parent_was_list: bool = False,
+    json_path: str = "$",
 ) -> None:
     if len(out) >= max_instances:
         return
@@ -218,12 +291,13 @@ def _walk_for_object_ids(
             if len(out) >= max_instances:
                 return
             fn = str(key)
+            next_path = f"{json_path}.{fn}"
             norm = _normalize_field_key(fn)
             if norm in _AGGREGATE_FIELD_DENYLIST_NORM:
                 counters["aggregate_fields_filtered_count"] += 1
                 counters["filtered_fields_count"] += 1
             else:
-                cls = _classify_id_field(fn, source_path, inside_list_item=parent_was_list)
+                cls = _classify_id_field(fn, source_path, inside_list_item=parent_was_list, id_json_path=next_path)
                 if cls is not None:
                     resource_type, confidence = cls
                     if not _value_looks_like_id(value):
@@ -239,9 +313,11 @@ def _walk_for_object_ids(
                                 seen.add(dedup)
                                 out.append({
                                     "field_name": fn,
+                                    "id_json_path": next_path,
                                     "raw_object_id": value,
                                     "resource_type": resource_type,
                                     "confidence": confidence,
+                                    "reason_codes": ["id_field_pattern_match", f"confidence_{confidence}", f"resource_type_{resource_type}"],
                                 })
                                 if len(out) >= max_instances:
                                     return
@@ -254,10 +330,11 @@ def _walk_for_object_ids(
                     max_instances=max_instances,
                     counters=counters,
                     parent_was_list=False,
+                    json_path=next_path,
                 )
     elif isinstance(node, list):
         limit = min(len(node), max(1, max_instances))
-        for item in node[:limit]:
+        for idx, item in enumerate(node[:limit]):
             if len(out) >= max_instances:
                 return
             if isinstance(item, (dict, list)):
@@ -269,6 +346,7 @@ def _walk_for_object_ids(
                     max_instances=max_instances,
                     counters=counters,
                     parent_was_list=True,
+                    json_path=f"{json_path}[{idx}]",
                 )
 
 
@@ -297,6 +375,8 @@ class ResourceInstanceExtractorAdapter:
         source_path = str(details.get("path") or "").strip()
         source_auth_profile_id = str(details.get("auth_profile_id") or "").strip()
         source_role_hint = str(details.get("role_hint") or "unknown").strip() or "unknown"
+        source_status_code = int(details.get("status_code") or source.get("status_code") or 0)
+        source_content_type = str(details.get("content_type") or "").strip()
         raw_json = memory_store.get_runtime_response_json_secret(source_tool_run_id) if source_tool_run_id else None
 
         resource_rows: list[dict[str, Any]] = []
@@ -332,7 +412,24 @@ class ResourceInstanceExtractorAdapter:
                     source_role_hint=source_role_hint,
                     confidence=str(item.get("confidence") or "low"),
                     created_by="resource_instance_extractor",
-                    metadata={"source_observation_id": source_observation_id},
+                    metadata={
+                        "source_observation_id": source_observation_id,
+                        "source_tool": str(source.get("source") or ""),
+                        "source_method": str(details.get("method") or ""),
+                        "source_status_code": source_status_code,
+                        "source_content_type": source_content_type,
+                        "status_code": source_status_code,
+                        "content_type": source_content_type,
+                        "response_shape_summary": "json_object_or_array",
+                        "id_json_path": str(item.get("id_json_path") or ""),
+                        "owner_evidence": bool(source_auth_profile_id and source_role_hint == "owner"),
+                        "semantic_id_kind": _semantic_id_kind(
+                            str(item.get("field_name") or ""),
+                            str(item.get("id_json_path") or ""),
+                        ),
+                        "source_reason_codes": list(reason_codes or [])[:20],
+                        "reason_codes": [str(x) for x in (item.get("reason_codes") or []) if str(x).strip()][:20],
+                    },
                 )
                 resource_rows.append({
                     "object_ref_id": instance.object_ref_id,
@@ -340,6 +437,15 @@ class ResourceInstanceExtractorAdapter:
                     "object_id_field": instance.object_id_field,
                     "object_id_ref": instance.object_id_ref,
                     "confidence": instance.confidence,
+                    "id_json_path": str(instance.metadata.get("id_json_path") or ""),
+                    "semantic_id_kind": str(instance.metadata.get("semantic_id_kind") or ""),
+                    "source_operation_id": source_operation_id,
+                    "source_method": str(details.get("method") or ""),
+                    "source_path": source_path,
+                    "source_status_code": source_status_code,
+                    "source_content_type": source_content_type,
+                    "owner_evidence": bool(source_auth_profile_id and source_role_hint == "owner"),
+                    "reason_codes": [str(x) for x in (item.get("reason_codes") or []) if str(x).strip()][:20],
                 })
             if resource_rows:
                 reason_codes.append("resource_ids_extracted")

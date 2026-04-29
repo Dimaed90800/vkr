@@ -28,6 +28,8 @@ class Operation(BaseModel):
     path_params: list[str] = Field(default_factory=list)
     query_params: list[str] = Field(default_factory=list)
     body_fields: list[str] = Field(default_factory=list)
+    body_required_fields: list[str] = Field(default_factory=list)
+    body_field_summaries: list[dict[str, Any]] = Field(default_factory=list)
     response_fields: list[str] = Field(default_factory=list)
     resource_type: str = ""
     risk_hints: list[str] = Field(default_factory=list)

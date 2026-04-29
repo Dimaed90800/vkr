@@ -36,6 +36,7 @@ class ObservationType(str, Enum):
     validated_cookie_flag_issue = "validated_cookie_flag_issue"
     undocumented_endpoint_signal = "undocumented_endpoint_signal"
     ssrf_candidate_signal = "ssrf_candidate_signal"
+    ssrf_probe_result = "ssrf_probe_result"
     js_endpoint_extraction_result = "js_endpoint_extraction_result"
     response_field_inventory = "response_field_inventory"
     data_exposure_signal = "data_exposure_signal"

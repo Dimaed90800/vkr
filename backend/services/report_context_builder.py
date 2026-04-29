@@ -15,6 +15,8 @@ try:
         ReportExecutiveSummary,
     )
     from backend.services.auth_profile_store import AuthProfileStore
+    from backend.services.ssrf_evidence_reconciliation_service import reconcile_and_build_ssrf_evidence_for_campaign
+    from backend.services.ssrf_callback_store import get_effective_ssrf_callback_state
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.campaign import Campaign
@@ -26,6 +28,8 @@ except ModuleNotFoundError:  # pragma: no cover
         ReportExecutiveSummary,
     )
     from services.auth_profile_store import AuthProfileStore
+    from services.ssrf_evidence_reconciliation_service import reconcile_and_build_ssrf_evidence_for_campaign
+    from services.ssrf_callback_store import get_effective_ssrf_callback_state
     from storage.memory_store import memory_store
 
 
@@ -117,6 +121,7 @@ _SAFE_KEY_EXCEPTIONS = {
     "owner_auth_profile_id",
     "attacker_auth_profile_id",
     "credential_ref",
+    "payload_synthesis_result",
 }
 
 _DROP_KEY_PARTS = (
@@ -136,6 +141,15 @@ _DROP_KEY_PARTS = (
     "raw_object",
 )
 
+_SSRF_POSITIVE_HINTS = (
+    "api", "endpoint", "callback", "webhook", "url", "uri", "contact", "notify",
+    "target", "destination", "service", "request", "report", "mechanic", "integration", "connect",
+)
+
+_SSRF_NEGATIVE_HINTS = (
+    "product", "image", "video", "file", "upload", "media", "avatar", "logo", "picture",
+)
+
 
 class ReportContextBuilder:
     def __init__(self) -> None:
@@ -146,6 +160,10 @@ class ReportContextBuilder:
         campaign_id: str,
         runtime_state_snapshot: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            reconcile_and_build_ssrf_evidence_for_campaign(campaign_id)
+        except Exception:
+            pass
         raw_campaign = memory_store.get_campaign(campaign_id)
         if raw_campaign is None:
             return None, "campaign_not_found"
@@ -200,6 +218,12 @@ class ReportContextBuilder:
             worker_execution_summary=worker_execution_summary,
         )
         auth_flow_diagnostics = self._build_auth_flow_diagnostics(campaign_id, observations)
+        adaptive_planner_diagnostics = self._build_adaptive_planner_diagnostics(runtime)
+        compact_attempt_summary = self._build_compact_attempt_summary(
+            runtime=runtime,
+            observations=observations,
+        )
+        last_observation_summary = self._build_last_observation_summary(observations)
 
         stopped_reason = "not_available"
         if runtime_attached:
@@ -242,6 +266,9 @@ class ReportContextBuilder:
                 missing_sections=missing_sections,
             ),
             auth_flow_diagnostics=auth_flow_diagnostics,
+            adaptive_planner_diagnostics=adaptive_planner_diagnostics,
+            compact_attempt_summary=compact_attempt_summary,
+            last_observation_summary=last_observation_summary,
         )
         sanitized = self._sanitize_recursive(context.model_dump(mode="json"))
         return sanitized, None
@@ -652,6 +679,315 @@ class ReportContextBuilder:
             })
         return out[:50]
 
+    def _build_compact_attempt_summary(
+        self,
+        *,
+        runtime: dict[str, Any] | None,
+        observations: list[dict[str, Any]],
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        finding_by_tool_run_id: dict[str, bool] = {}
+        if runtime is not None:
+            for row in runtime.get("iteration_summaries") or []:
+                if not isinstance(row, dict):
+                    continue
+                tool_run_id = str(row.get("tool_run_id") or "").strip()
+                if tool_run_id and str(row.get("finding_id") or "").strip():
+                    finding_by_tool_run_id[tool_run_id] = True
+
+        out: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str, str]] = set()
+
+        def _push(row: dict[str, Any]) -> None:
+            key = (
+                str(row.get("kind") or ""),
+                str(row.get("operation_id") or ""),
+                str(row.get("field_path") or row.get("object_pair_id") or ""),
+                str(row.get("dedup_key") or ""),
+            )
+            if key in seen:
+                return
+            seen.add(key)
+            out.append(row)
+
+        for raw in reversed(observations):
+            if not isinstance(raw, dict):
+                continue
+            otype = str(raw.get("type") or raw.get("observation_type") or "").strip()
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            tool_run_id = str(raw.get("tool_run_id") or "").strip()
+            if otype == "ssrf_probe_result":
+                operation_id = str(det.get("operation_id") or raw.get("operation_id") or "").strip()
+                field_path = str(det.get("field_path") or "").strip()
+                auth_mode = str(det.get("auth_mode") or "").strip()
+                result = str(det.get("result") or "").strip()
+                status_code = self._safe_int(det.get("target_status_code") or det.get("status_code") or raw.get("status_code"), 0)
+                effective = get_effective_ssrf_callback_state({"details": det})
+                dedup_key = f"ssrf_probe|{operation_id}|{field_path}|{auth_mode}"
+                _push({
+                    "kind": "ssrf_probe",
+                    "operation_id": operation_id,
+                    "field_path": field_path,
+                    "object_pair_id": "",
+                    "auth_mode": auth_mode,
+                    "result": result,
+                    "status_code": status_code,
+                    "callback_received": bool(effective.get("callback_received_effective")),
+                    "access_granted": False,
+                    "owner_baseline_valid": False,
+                    "evidence_strength": str(det.get("evidence_strength") or ""),
+                    "created_finding": bool(finding_by_tool_run_id.get(tool_run_id)),
+                    "dedup_key": dedup_key,
+                })
+            elif otype == "bola_replay_result" and str(det.get("validation_mode") or "").strip() == "bola_replay":
+                operation_id = str(det.get("target_operation_id") or raw.get("operation_id") or "").strip()
+                object_pair_id = str(det.get("object_pair_id") or "").strip()
+                attacker_auth = str(det.get("attacker_auth_profile_id") or "").strip()
+                auth_mode = "authenticated" if attacker_auth else ""
+                result = str(det.get("result") or det.get("replay_classification") or "").strip()
+                status_code = self._safe_int(det.get("status_code") or det.get("attacker_status_code") or raw.get("status_code"), 0)
+                dedup_key = f"bola_replay_probe|{operation_id}|{object_pair_id}|{attacker_auth}"
+                _push({
+                    "kind": "bola_replay_probe",
+                    "operation_id": operation_id,
+                    "field_path": "",
+                    "object_pair_id": object_pair_id,
+                    "auth_mode": auth_mode,
+                    "result": result,
+                    "status_code": status_code,
+                    "callback_received": False,
+                    "access_granted": bool(det.get("access_granted")),
+                    "owner_baseline_valid": bool(det.get("owner_baseline_valid")),
+                    "evidence_strength": str(det.get("evidence_strength") or ""),
+                    "created_finding": bool(finding_by_tool_run_id.get(tool_run_id)),
+                    "dedup_key": dedup_key,
+                })
+            if len(out) >= limit:
+                return out[:limit]
+
+        if runtime is not None and len(out) < limit:
+            for row in reversed(runtime.get("iteration_summaries") or []):
+                if not isinstance(row, dict):
+                    continue
+                kind = str(row.get("candidate_kind") or "").strip()
+                if not kind:
+                    continue
+                _push({
+                    "kind": kind,
+                    "operation_id": "",
+                    "field_path": "",
+                    "object_pair_id": "",
+                    "auth_mode": "",
+                    "result": str(row.get("outcome") or row.get("tool_result_status") or "").strip(),
+                    "status_code": 0,
+                    "callback_received": False,
+                    "access_granted": False,
+                    "owner_baseline_valid": False,
+                    "evidence_strength": "",
+                    "created_finding": bool(str(row.get("finding_id") or "").strip()),
+                    "dedup_key": f"{kind}|{str(row.get('tool_run_id') or '').strip() or str(row.get('iteration_index') or '')}",
+                })
+                if len(out) >= limit:
+                    break
+        return out[:limit]
+
+    def _build_last_observation_summary(self, observations: list[dict[str, Any]]) -> dict[str, Any]:
+        for raw in reversed(observations):
+            if not isinstance(raw, dict):
+                continue
+            otype = str(raw.get("type") or raw.get("observation_type") or "").strip()
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            return {
+                "type": otype,
+                "operation_id": str(det.get("operation_id") or det.get("target_operation_id") or raw.get("operation_id") or ""),
+                "field_path": str(det.get("field_path") or ""),
+                "object_pair_id": str(det.get("object_pair_id") or ""),
+                "auth_mode": str(det.get("auth_mode") or ("authenticated" if str(det.get("attacker_auth_profile_id") or "").strip() else "")),
+                "result": str(det.get("result") or det.get("replay_classification") or ""),
+                "status_code": self._safe_int(det.get("target_status_code") or det.get("status_code") or raw.get("status_code"), 0),
+                "callback_received": bool(det.get("callback_received")),
+                "access_granted": bool(det.get("access_granted")),
+                "owner_baseline_valid": bool(det.get("owner_baseline_valid")),
+                "evidence_strength": str(det.get("evidence_strength") or ""),
+            }
+        return {}
+
+    def _build_adaptive_planner_diagnostics(self, runtime: dict[str, Any] | None) -> dict[str, Any]:
+        if runtime is None:
+            return {
+                "status": "not_available",
+                "reason": "planner_diagnostics_not_persisted",
+            }
+        summaries = runtime.get("iteration_summaries") if isinstance(runtime.get("iteration_summaries"), list) else []
+        llm_used_count = 0
+        llm_fallback_count = 0
+        recent: list[dict[str, Any]] = []
+        for row in summaries:
+            if not isinstance(row, dict):
+                continue
+            selection_outcome = str(row.get("selection_outcome") or "").strip()
+            fallback_used = bool(selection_outcome.startswith("llm_") and selection_outcome != "selected_ready")
+            if selection_outcome.startswith("llm_") or bool(runtime.get("llm_planner_used")):
+                llm_used_count += 1
+            if fallback_used:
+                llm_fallback_count += 1
+            selected_candidate_id = str(row.get("selected_candidate_id") or runtime.get("llm_selected_candidate_id") or "").strip()
+            selected_kind = str(row.get("candidate_kind") or runtime.get("llm_selected_kind") or "").strip()
+            reason = str(row.get("selection_reason") or runtime.get("llm_selection_reason") or "").strip()
+            decision = "fallback" if fallback_used else "execute"
+            if selected_candidate_id or selected_kind:
+                recent.append({
+                    "selected_candidate_id": selected_candidate_id,
+                    "selected_kind": selected_kind,
+                    "decision": decision,
+                    "fallback_used": fallback_used,
+                    "reason": reason[:200],
+                })
+        if not recent and not runtime.get("llm_selected_candidate_id") and not runtime.get("llm_selected_kind"):
+            return {
+                "status": "not_available",
+                "reason": "planner_diagnostics_not_persisted",
+            }
+        return {
+            "status": "available",
+            "llm_planner_used_count": int(llm_used_count),
+            "llm_planner_fallback_count": int(llm_fallback_count),
+            "last_selected_candidate_id": str(runtime.get("llm_selected_candidate_id") or ""),
+            "last_selected_kind": str(runtime.get("llm_selected_kind") or ""),
+            "last_selection_reason": str(runtime.get("llm_selection_reason") or "")[:200],
+            "last_fallback_reason": str(runtime.get("llm_planner_fallback") or "")[:120],
+            "recent_selected_candidates": recent[-10:],
+        }
+
+    def _build_api7_ssrf_pipeline_trace(
+        self,
+        *,
+        runtime: dict[str, Any] | None,
+        observations: list[dict[str, Any]],
+        ssrf_candidate_signal_count: int,
+        ssrf_ready_checks: list[dict[str, Any]],
+        ssrf_blocked_checks: list[dict[str, Any]],
+        ssrf_probe_samples: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        ready_candidate_ids = [
+            str(row.get("candidate_id") or row.get("dedup_key") or row.get("operation_id") or "")
+            for row in ssrf_ready_checks
+            if str(row.get("candidate_id") or row.get("dedup_key") or row.get("operation_id") or "").strip()
+        ]
+        top_ready = ssrf_ready_checks[0] if ssrf_ready_checks else {}
+        top_row = ssrf_probe_samples[0] if ssrf_probe_samples else {}
+        top_candidate_operation_id = str(top_ready.get("operation_id") or top_row.get("operation_id") or "") or None
+        top_candidate_field_path = str(top_row.get("field_path") or top_ready.get("field_path") or "") or None
+        selected_candidate_id = ""
+        selected_candidate_kind = ""
+        selected_candidate_operation_id = ""
+        if isinstance(runtime, dict):
+            selected_candidate_id = str(
+                runtime.get("llm_selected_candidate_id")
+                or runtime.get("selected_candidate_id")
+                or runtime.get("last_selected_candidate_id")
+                or ""
+            ).strip()
+            selected_candidate_kind = str(
+                runtime.get("llm_selected_kind")
+                or runtime.get("selected_candidate_kind")
+                or runtime.get("last_selected_kind")
+                or ""
+            ).strip()
+            selected_candidate_operation_id = str(
+                runtime.get("selected_candidate_operation_id")
+                or runtime.get("last_selected_operation_id")
+                or ""
+            ).strip()
+        ssrf_tool_failure = None
+        tool_failure_summaries = runtime.get("tool_failure_summaries") if isinstance(runtime, dict) and isinstance(runtime.get("tool_failure_summaries"), list) else []
+        for item in tool_failure_summaries:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("candidate_kind") or "") == "ssrf_probe":
+                ssrf_tool_failure = item
+                break
+        ssrf_failure_error_type = str(
+            (ssrf_tool_failure or {}).get("tool_error_type")
+            or (ssrf_tool_failure or {}).get("error_type")
+            or ""
+        ).strip()
+        tool_executor_called = bool(ssrf_probe_samples or ssrf_tool_failure)
+        adapter_called = bool(ssrf_probe_samples or (ssrf_tool_failure and ssrf_failure_error_type and "validation" not in ssrf_failure_error_type))
+        ssrf_probe_result_emitted = bool(ssrf_probe_samples)
+        ssrf_probe_result_persisted = bool(ssrf_probe_samples)
+        report_context_has_ssrf_probe_results = bool(ssrf_probe_samples)
+        markdown_rendered_ssrf_probe_results = bool(runtime.get("markdown_rendered_ssrf_probe_results")) if isinstance(runtime, dict) else False
+        command_built = bool(ready_candidate_ids or selected_candidate_kind == "ssrf_probe")
+        command_validation_passed: bool | None = None
+        command_validation_error = ""
+        last_failure_stage = ""
+        last_failure_reason = ""
+        for item in tool_failure_summaries:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("candidate_kind") or "") != "ssrf_probe":
+                continue
+            command_validation_error = str(item.get("tool_error_safe_message") or item.get("safe_message") or "")[:200]
+            error_type = str(item.get("tool_error_type") or item.get("error_type") or "")
+            if "validation" in error_type:
+                command_validation_passed = False
+                last_failure_stage = "command_validation"
+                last_failure_reason = error_type or command_validation_error
+                break
+            if not tool_executor_called:
+                last_failure_stage = "tool_executor"
+                last_failure_reason = error_type or command_validation_error or "tool execution failed before adapter call"
+            elif not adapter_called:
+                last_failure_stage = "adapter_lookup"
+                last_failure_reason = error_type or command_validation_error or "adapter not called"
+            else:
+                last_failure_stage = "observation_persistence"
+                last_failure_reason = error_type or command_validation_error or "adapter result not persisted"
+            command_validation_passed = True if command_validation_passed is None else command_validation_passed
+            break
+        if command_validation_passed is None and command_built:
+            command_validation_passed = True
+        if not last_failure_stage:
+            if ssrf_candidate_signal_count > 0 and not ready_candidate_ids:
+                last_failure_stage = "planner"
+                last_failure_reason = "no_ready_ssrf_probe_candidate"
+            elif command_built and not tool_executor_called:
+                last_failure_stage = "tool_executor"
+                last_failure_reason = "ssrf_probe command was not executed"
+            elif tool_executor_called and not adapter_called:
+                last_failure_stage = "adapter_lookup"
+                last_failure_reason = "ssrf_probe adapter was not called"
+            elif adapter_called and not report_context_has_ssrf_probe_results:
+                last_failure_stage = "observation_persistence"
+                last_failure_reason = "ssrf_probe_result was not persisted"
+            elif report_context_has_ssrf_probe_results and not markdown_rendered_ssrf_probe_results:
+                last_failure_stage = "markdown_renderer"
+                last_failure_reason = "markdown report did not render ssrf_probe_results"
+        return {
+            "ssrf_candidate_signal_count": int(ssrf_candidate_signal_count),
+            "top_candidate_operation_id": top_candidate_operation_id,
+            "top_candidate_field_path": top_candidate_field_path,
+            "ready_ssrf_probe_count": len(ssrf_ready_checks),
+            "ready_candidate_ids": ready_candidate_ids[:10],
+            "selected_candidate_id": selected_candidate_id or None,
+            "selected_candidate_kind": selected_candidate_kind or None,
+            "selected_candidate_operation_id": selected_candidate_operation_id or None,
+            "command_built": bool(command_built),
+            "command_kind": "ssrf_probe" if (selected_candidate_kind == "ssrf_probe" or ready_candidate_ids) else None,
+            "command_operation_id": selected_candidate_operation_id or top_candidate_operation_id,
+            "command_validation_passed": command_validation_passed,
+            "command_validation_error": command_validation_error or None,
+            "tool_executor_called": bool(tool_executor_called),
+            "adapter_called": bool(adapter_called),
+            "ssrf_probe_result_emitted": bool(ssrf_probe_result_emitted),
+            "ssrf_probe_result_persisted": bool(ssrf_probe_result_persisted),
+            "report_context_has_ssrf_probe_results": bool(report_context_has_ssrf_probe_results),
+            "markdown_rendered_ssrf_probe_results": bool(markdown_rendered_ssrf_probe_results),
+            "last_failure_stage": last_failure_stage or None,
+            "last_failure_reason": last_failure_reason or None,
+        }
+
     def _build_auth_flow_diagnostics(self, campaign_id: str, observations: list[dict[str, Any]]) -> dict[str, Any]:
         empty = {
             "auth_flow_detected": False,
@@ -926,6 +1262,8 @@ class ReportContextBuilder:
         resource_types: set[str] = set()
         resource_ops: set[str] = set()
         resource_samples: list[dict[str, Any]] = []
+        typed_object_ref_count = 0
+        owner_evidence_object_ref_count = 0
         seed_count = 0
         seed_success = 0
         seed_attempts_count = 0
@@ -939,9 +1277,37 @@ class ReportContextBuilder:
         bola_pairs_samples: list[dict[str, Any]] = []
         bola_replay_result_count = 0
         bola_replay_granted_count = 0
+        owner_baseline_valid_count = 0
         bola_replay_denied_count = 0
         bola_replay_invalid_pair_count = 0
         bola_replay_inconclusive_count = 0
+        invalid_pair_rework_count = 0
+        object_ref_semantic_mismatch_count = 0
+        weak_object_ref_provenance_count = 0
+        blocked_bola_pair_count = 0
+        low_baseline_probability_pair_count = 0
+        last_invalid_pair_reason = ""
+        last_invalid_pair_owner_status_code = 0
+        last_invalid_pair_object_id_field = ""
+        last_invalid_pair_path_param_name = ""
+        last_invalid_pair_semantic_id_kind = ""
+        dependency_edges_count = 0
+        top_object_pair_score = 0.0
+        top_object_pair_reasons: list[str] = []
+        top_object_pair_block_reasons: list[str] = []
+        last_blocked_bola_pair_reasons: list[str] = []
+        last_invalid_bola_pair_reasons: list[str] = []
+        semantic_match_pair_count = 0
+        best_pair_operation_id = ""
+        best_pair_status = "not_available"
+        owner_baseline_status_code = 0
+        attacker_status_code = 0
+        last_replay_result = ""
+        rework_reason = ""
+        corpus_seed_count = 0
+        corpus_seed_2xx_json_count = 0
+        corpus_seed_auth_owner_count = 0
+        corpus_seed_auth_attacker_count = 0
         bola_replay_samples: list[dict[str, Any]] = []
         probe_samples: list[dict[str, Any]] = []
         auth_probe_samples: list[dict[str, Any]] = []
@@ -1032,6 +1398,15 @@ class ReportContextBuilder:
                 for row in refs:
                     if not isinstance(row, dict):
                         continue
+                    corpus_seed_count += 1
+                    if int(row.get("source_status_code") or 0) >= 200 and int(row.get("source_status_code") or 0) < 300:
+                        if "json" in str(row.get("source_content_type") or "").lower():
+                            corpus_seed_2xx_json_count += 1
+                    role_hint = str(row.get("source_role_hint") or det.get("source_role_hint") or "").strip().lower()
+                    if role_hint == "owner":
+                        corpus_seed_auth_owner_count += 1
+                    elif role_hint == "attacker":
+                        corpus_seed_auth_attacker_count += 1
                     rtype = str(row.get("resource_type") or "").strip()
                     if rtype:
                         resource_types.add(rtype)
@@ -1046,19 +1421,27 @@ class ReportContextBuilder:
                             "source_auth_profile_id": auth_profile_id,
                             "source_role_hint": str(det.get("source_role_hint") or ""),
                             "confidence": str(row.get("confidence") or ""),
+                            "id_json_path": str(row.get("id_json_path") or ""),
+                            "owner_evidence": bool(row.get("owner_evidence")),
                             "reason_codes": list(det.get("reason_codes")) if isinstance(det.get("reason_codes"), list) else [],
                         })
+                    if str(row.get("semantic_id_kind") or "").strip() not in {"", "unknown_id"}:
+                        typed_object_ref_count += 1
+                    if bool(row.get("owner_evidence")):
+                        owner_evidence_object_ref_count += 1
             elif otype == "resource_seed_result":
                 det = o.get("details") if isinstance(o.get("details"), dict) else {}
                 if str(det.get("validation_mode") or "").strip() != "resource_seed":
                     continue
                 seed_count += 1
                 seed_status = str(det.get("seed_status") or "").strip()
+                created = ReportContextBuilder._safe_int(det.get("object_refs_created_count"), 0)
                 if seed_status == "seeded":
                     seed_success += 1
+                    corpus_seed_count += max(1, created)
+                    corpus_seed_2xx_json_count += max(1, created)
                 seed_attempts_count += max(0, ReportContextBuilder._safe_int(det.get("resource_seed_attempts_count"), 0))
                 seed_failed_count += max(0, ReportContextBuilder._safe_int(det.get("resource_seed_failed_count"), 0))
-                created = ReportContextBuilder._safe_int(det.get("object_refs_created_count"), 0)
                 seed_object_refs_created += max(0, created)
                 if len(seed_samples) < 10:
                     refs = det.get("object_refs") if isinstance(det.get("object_refs"), list) else []
@@ -1114,6 +1497,15 @@ class ReportContextBuilder:
                     if rt:
                         bola_pair_resource_types.add(rt)
                     rc = row.get("reason_codes")
+                    metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+                    if isinstance(metadata.get("dependency_edge"), dict):
+                        dependency_edges_count += 1
+                    pair_score = float(metadata.get("baseline_probability_score") or 0.0)
+                    if pair_score > top_object_pair_score:
+                        top_object_pair_score = pair_score
+                        top_object_pair_reasons = [str(x) for x in (metadata.get("baseline_probability_reasons") or []) if str(x).strip()][:20]
+                        top_object_pair_block_reasons = [str(x) for x in (metadata.get("baseline_block_reasons") or []) if str(x).strip()][:20]
+                        best_pair_operation_id = str(row.get("target_operation_id") or "")
                     bola_pairs_samples.append({
                         "object_pair_id": str(row.get("object_pair_id") or ""),
                         "resource_type": rt,
@@ -1126,8 +1518,40 @@ class ReportContextBuilder:
                         "target_method": str(row.get("target_method") or ""),
                         "path_param_name": str(row.get("path_param_name") or ""),
                         "confidence": str(row.get("confidence") or ""),
+                        "baseline_probability_score": pair_score,
+                        "baseline_probability_reasons": [str(x) for x in (metadata.get("baseline_probability_reasons") or []) if str(x).strip()][:20],
+                        "dependency_edge_confidence": str(metadata.get("dependency_edge_confidence") or ""),
+                        "semantic_id_kind": str(metadata.get("semantic_id_kind") or ""),
+                        "object_id_field": str(metadata.get("object_id_field") or ""),
+                        "source_operation_id": str(metadata.get("source_operation_id") or ""),
+                        "dependency_producer_operation_id": str(metadata.get("dependency_producer_operation_id") or ""),
+                        "baseline_block_reasons": [str(x) for x in (metadata.get("baseline_block_reasons") or []) if str(x).strip()][:20],
                         "reason_codes": list(rc) if isinstance(rc, list) else [],
                     })
+                    all_reasons = {
+                        str(x).strip() for x in (
+                            list(metadata.get("baseline_probability_reasons") or [])
+                            + list(metadata.get("baseline_block_reasons") or [])
+                            + (list(rc) if isinstance(rc, list) else [])
+                        ) if str(x).strip()
+                    }
+                    if "path_param_semantic_mismatch" in all_reasons or "object_id_field_semantic_mismatch" in all_reasons:
+                        object_ref_semantic_mismatch_count += 1
+                    if "semantic_id_kind_matches_path_param" in all_reasons:
+                        semantic_match_pair_count += 1
+                    if {
+                        "seed_creation_non_2xx_penalty",
+                        "blocked_required_object_ref_penalty",
+                        "source_seed_creation_non_2xx",
+                        "source_seed_blocked_required_object_ref",
+                        "object_ref_provenance_weak",
+                    } & all_reasons:
+                        weak_object_ref_provenance_count += 1
+                    if metadata.get("baseline_block_reasons"):
+                        blocked_bola_pair_count += 1
+                        last_blocked_bola_pair_reasons = [str(x) for x in (metadata.get("baseline_block_reasons") or []) if str(x).strip()][:20]
+                    if pair_score < 50.0:
+                        low_baseline_probability_pair_count += 1
             elif otype == "bola_replay_result":
                 det = o.get("details") if isinstance(o.get("details"), dict) else {}
                 if str(det.get("validation_mode") or "").strip() != "bola_replay":
@@ -1135,6 +1559,8 @@ class ReportContextBuilder:
                 bola_replay_result_count += 1
                 if bool(det.get("access_granted")):
                     bola_replay_granted_count += 1
+                if bool(det.get("owner_baseline_valid")):
+                    owner_baseline_valid_count += 1
                 result_label = str(det.get("result") or "")
                 replay_classification = str(det.get("replay_classification") or "")
                 if replay_classification in {"access_denied", "access_denied_or_not_found"} or result_label in {
@@ -1144,8 +1570,20 @@ class ReportContextBuilder:
                     bola_replay_denied_count += 1
                 if replay_classification == "invalid_object_pair" or result_label == "invalid_object_pair":
                     bola_replay_invalid_pair_count += 1
+                    invalid_pair_rework_count += 1
+                    rework_reason = "request_new_resource_seed_or_try_next_object_pair"
+                    last_invalid_pair_reason = "owner_baseline_failed"
+                    last_invalid_pair_owner_status_code = ReportContextBuilder._safe_int(det.get("owner_status_code"), 0)
+                    last_invalid_pair_object_id_field = str(det.get("object_id_field") or "")
+                    last_invalid_pair_path_param_name = str(det.get("path_param_name") or "")
+                    last_invalid_pair_semantic_id_kind = str(det.get("semantic_id_kind") or "")
+                    last_invalid_bola_pair_reasons = [str(x) for x in (det.get("reason_codes") or []) if str(x).strip()][:20]
                 if replay_classification == "inconclusive" or result_label == "replay_error":
                     bola_replay_inconclusive_count += 1
+                if result_label:
+                    last_replay_result = result_label
+                owner_baseline_status_code = ReportContextBuilder._safe_int(det.get("owner_status_code"), owner_baseline_status_code)
+                attacker_status_code = ReportContextBuilder._safe_int(det.get("attacker_status_code"), attacker_status_code)
                 if len(bola_replay_samples) < 20:
                     rc = det.get("reason_codes")
                     bola_replay_samples.append({
@@ -1225,6 +1663,14 @@ class ReportContextBuilder:
         non_200 = sum(1 for x in probe_results if x == "non_200_response")
         non_json = sum(1 for x in probe_results if x == "non_json_response")
         no_fields = sum(1 for x in probe_results if x == "no_fields_found")
+        if bola_replay_granted_count > 0:
+            best_pair_status = "granted"
+        elif bola_replay_invalid_pair_count > 0:
+            best_pair_status = "invalid_object_pair"
+        elif bola_replay_denied_count > 0:
+            best_pair_status = "denied"
+        elif bola_replay_ready_count > 0:
+            best_pair_status = "ready"
         return {
             "response_field_inventory_count": inv_count,
             "data_exposure_signal_count": sig_count,
@@ -1243,6 +1689,10 @@ class ReportContextBuilder:
             "resource_instance_inventory_count": resource_inventory_count,
             "resource_instances_count": resource_instances_count,
             "object_refs_count": resource_instances_count,
+            "api1_resource_instance_count": resource_instances_count,
+            "api1_object_ref_count": resource_instances_count,
+            "api1_typed_object_ref_count": typed_object_ref_count,
+            "api1_owner_evidence_object_ref_count": owner_evidence_object_ref_count,
             "operations_with_resource_instances": len(resource_ops),
             "resource_types": sorted(resource_types)[:20],
             "resource_instance_results": resource_samples,
@@ -1252,16 +1702,53 @@ class ReportContextBuilder:
             "resource_seed_failed_count": seed_failed_count,
             "resource_seed_object_refs_created_count": seed_object_refs_created,
             "resource_seed_results": seed_samples,
+            "corpus_seed_count": corpus_seed_count,
+            "corpus_seed_2xx_json_count": corpus_seed_2xx_json_count,
+            "corpus_seed_auth_owner_count": corpus_seed_auth_owner_count,
+            "corpus_seed_auth_attacker_count": corpus_seed_auth_attacker_count,
             "bola_object_pair_inventory_count": bola_pair_inventory_count,
             "bola_object_pairs_count": bola_pairs_count,
+            "dependency_edges_count": dependency_edges_count,
             "bola_pair_resource_types": sorted(bola_pair_resource_types)[:20],
             "bola_replay_ready_count": bola_replay_ready_count,
             "bola_object_pairs": bola_pairs_samples,
             "bola_replay_result_count": bola_replay_result_count,
+            "api1_replay_result_count": bola_replay_result_count,
             "bola_replay_granted_count": bola_replay_granted_count,
+            "api1_attacker_access_granted_count": bola_replay_granted_count,
             "bola_replay_denied_count": bola_replay_denied_count,
             "bola_replay_invalid_pair_count": bola_replay_invalid_pair_count,
+            "api1_invalid_pair_count": bola_replay_invalid_pair_count,
             "bola_replay_inconclusive_count": bola_replay_inconclusive_count,
+            "api1_owner_baseline_valid_count": owner_baseline_valid_count,
+            "invalid_pair_rework_count": invalid_pair_rework_count,
+            "object_ref_semantic_mismatch_count": object_ref_semantic_mismatch_count,
+            "weak_object_ref_provenance_count": weak_object_ref_provenance_count,
+            "blocked_bola_pair_count": blocked_bola_pair_count,
+            "api1_blocked_pair_count": blocked_bola_pair_count,
+            "api1_semantic_match_pair_count": semantic_match_pair_count,
+            "low_baseline_probability_pair_count": low_baseline_probability_pair_count,
+            "last_invalid_pair_reason": last_invalid_pair_reason,
+            "last_invalid_pair_owner_status_code": last_invalid_pair_owner_status_code,
+            "last_invalid_pair_object_id_field": last_invalid_pair_object_id_field,
+            "last_invalid_pair_path_param_name": last_invalid_pair_path_param_name,
+            "last_invalid_pair_semantic_id_kind": last_invalid_pair_semantic_id_kind,
+            "top_object_pair_score": float(top_object_pair_score),
+            "top_object_pair_reasons": top_object_pair_reasons[:20],
+            "top_object_pair_block_reasons": top_object_pair_block_reasons[:20],
+            "last_blocked_bola_pair_reasons": last_blocked_bola_pair_reasons[:20],
+            "last_invalid_bola_pair_reasons": last_invalid_bola_pair_reasons[:20],
+            "api1_bola_compact_diagnostics": {
+                "best_pair_operation_id": best_pair_operation_id,
+                "best_pair_score": float(top_object_pair_score),
+                "best_pair_status": best_pair_status,
+                "best_pair_block_reasons": top_object_pair_block_reasons[:20],
+                "last_replay_result": last_replay_result,
+                "owner_baseline_status_code": owner_baseline_status_code,
+                "attacker_status_code": attacker_status_code,
+                "rework_reason": rework_reason,
+            },
+            "best_bola_replay_result": last_replay_result,
             "bola_replay_results": bola_replay_samples,
             "data_exposure_probe_results": probe_samples,
             "authenticated_data_exposure_results": auth_probe_samples,
@@ -1302,6 +1789,7 @@ class ReportContextBuilder:
         )
         mass_assignment_signal_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "mass_assignment_signal")
         ssrf_candidate_signal_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "ssrf_candidate_signal")
+        ssrf_probe_result_count = sum(1 for o in observations if str(o.get("type") or o.get("observation_type") or "") == "ssrf_probe_result")
         undocumented_endpoint_findings_count = sum(
             1
             for f in findings
@@ -1365,7 +1853,16 @@ class ReportContextBuilder:
         api3_de_cov = self._api3_data_exposure_coverage(observations, findings)
         ssrf_operations: set[str] = set()
         ssrf_fields = 0
-        ssrf_samples: list[dict[str, Any]] = []
+        ssrf_rows: list[dict[str, Any]] = []
+        ssrf_probe_samples: list[dict[str, Any]] = []
+        ssrf_callback_received_count = 0
+        ssrf_late_callback_reconciled_count = 0
+        ssrf_no_callback_count = 0
+        ssrf_confirmable_count = 0
+        ssrf_probe_target_non_2xx_count = 0
+        ssrf_probe_probe_error_count = 0
+        ssrf_probe_schema_synthesized_count = 0
+        ssrf_probe_llm_composed_count = 0
         for o in observations:
             if str(o.get("type") or o.get("observation_type") or "") != "ssrf_candidate_signal":
                 continue
@@ -1377,31 +1874,319 @@ class ReportContextBuilder:
                 ssrf_operations.add(op_id)
             if field_name and field_path:
                 ssrf_fields += 1
-            if len(ssrf_samples) < 15:
-                ssrf_samples.append({
-                    "operation_id": op_id,
+            ssrf_rows.append({
+                "operation_id": op_id,
+                "method": str(det.get("method") or ""),
+                "path": str(det.get("path") or ""),
+                "field_name": field_name,
+                "field_path": field_path,
+                "schema_type": str(det.get("schema_type") or ""),
+                "schema_format": str(det.get("schema_format") or ""),
+                "confidence": str(det.get("confidence") or ""),
+                "reason_codes": list(det.get("reason_codes")) if isinstance(det.get("reason_codes"), list) else [],
+                "has_path_params": bool("{" in str(det.get("path") or "") and "}" in str(det.get("path") or "")),
+                "auth_required": bool(det.get("auth_required")),
+                "auth_mode": str(det.get("auth_mode") or ""),
+                "required_body_fields": [str(x) for x in (det.get("required_body_fields") or []) if str(x).strip()][:20],
+                "allowed_body_fields_count": len([x for x in (det.get("allowed_body_fields") or []) if str(x).strip()]),
+                "schema_summary_source": str(det.get("schema_summary_source") or "none"),
+                "ssrf_score": float(det.get("ssrf_score") or 0.0),
+                "ssrf_score_reasons": list(det.get("ssrf_score_reasons") or []) if isinstance(det.get("ssrf_score_reasons"), list) else [],
+            })
+        confidence_rank = {"high": 2, "medium": 1, "low": 0}
+        def _ssrf_row_score(row: dict[str, Any]) -> float:
+            score = 0.0
+            conf = str(row.get("confidence") or "").strip().lower()
+            sf = str(row.get("schema_format") or "").strip().lower()
+            method = str(row.get("method") or "").strip().upper()
+            path = str(row.get("path") or "").strip().lower()
+            field_name = str(row.get("field_name") or "").strip().lower()
+            field_path = str(row.get("field_path") or "").strip().lower()
+            if conf == "high":
+                score += 4.0
+            elif conf == "medium":
+                score += 2.0
+            if sf in {"uri", "url"}:
+                score += 3.0
+            if method in {"POST", "PUT", "PATCH"}:
+                score += 2.0
+            if not bool(row.get("has_path_params")):
+                score += 2.0
+            if any(h in field_name for h in _SSRF_POSITIVE_HINTS) or any(h in field_path for h in _SSRF_POSITIVE_HINTS):
+                score += 2.5
+            if any(h in path for h in _SSRF_POSITIVE_HINTS):
+                score += 2.0
+            if any(h in field_name for h in _SSRF_NEGATIVE_HINTS) or any(h in field_path for h in _SSRF_NEGATIVE_HINTS) or any(h in path for h in _SSRF_NEGATIVE_HINTS):
+                score -= 3.0
+            return score
+        ssrf_rows_sorted = sorted(
+            ssrf_rows,
+            key=lambda row: (
+                _ssrf_row_score(row),
+                confidence_rank.get(str(row.get("confidence") or "").strip().lower(), 0),
+                0 if bool(row.get("has_path_params")) else 1,
+                str(row.get("operation_id") or ""),
+                str(row.get("field_path") or ""),
+            ),
+            reverse=True,
+        )
+        ssrf_samples = ssrf_rows_sorted[:10]
+
+        for o in observations:
+            if str(o.get("type") or o.get("observation_type") or "") != "ssrf_probe_result":
+                continue
+            det = o.get("details") if isinstance(o.get("details"), dict) else {}
+            effective = get_effective_ssrf_callback_state({"details": det})
+            callback_received = bool(det.get("callback_received"))
+            callback_received_effective = bool(effective.get("callback_received_effective"))
+            late_callback_reconciled = bool(effective.get("late_callback_reconciled"))
+            callback_store_received = bool(effective.get("callback_store_received"))
+            callback_correlation_id = str(
+                effective.get("callback_correlation_id")
+                or det.get("callback_correlation_id")
+                or det.get("correlation_id")
+                or ""
+            )
+            if callback_received_effective:
+                ssrf_callback_received_count += 1
+            else:
+                ssrf_no_callback_count += 1
+            if late_callback_reconciled:
+                ssrf_late_callback_reconciled_count += 1
+            result_label = str(det.get("result") or "").strip().lower()
+            if result_label in {"target_non_2xx", "target_4xx", "target_5xx"}:
+                ssrf_probe_target_non_2xx_count += 1
+            if result_label == "probe_error":
+                ssrf_probe_probe_error_count += 1
+            payload_synthesis_result = str(
+                det.get("payload_synthesis_result")
+                or det.get("payload_synthesis")
+                or ("llm_composed" if str(det.get("request_composer") or "").strip().lower() == "llm" else "")
+            )
+            if payload_synthesis_result in {"schema_synthesized", "draft_rejected_schema_synthesized"}:
+                ssrf_probe_schema_synthesized_count += 1
+            if payload_synthesis_result == "llm_composed":
+                ssrf_probe_llm_composed_count += 1
+            if callback_received_effective and str(det.get("evidence_strength") or "").strip().lower() in {"medium", "high"}:
+                ssrf_confirmable_count += 1
+            if len(ssrf_probe_samples) < 20:
+                rc = det.get("reason_codes")
+                safe_reason_codes = list(rc) if isinstance(rc, list) else []
+                for code in effective.get("reason_codes") or []:
+                    if isinstance(code, str) and code.strip() and code.strip() not in safe_reason_codes:
+                        safe_reason_codes.append(code.strip())
+                ssrf_probe_samples.append({
+                    "operation_id": str(det.get("operation_id") or ""),
                     "method": str(det.get("method") or ""),
                     "path": str(det.get("path") or ""),
-                    "field_name": field_name,
-                    "field_path": field_path,
-                    "schema_type": str(det.get("schema_type") or ""),
-                    "schema_format": str(det.get("schema_format") or ""),
-                    "confidence": str(det.get("confidence") or ""),
-                    "reason_codes": list(det.get("reason_codes")) if isinstance(det.get("reason_codes"), list) else [],
+                    "field_name": str(det.get("field_name") or ""),
+                    "field_path": str(det.get("field_path") or ""),
+                    "auth_mode": str(det.get("auth_mode") or ""),
+                    "auth_profile_id": str(det.get("auth_profile_id") or ""),
+                    "role_hint": str(det.get("role_hint") or ""),
+                    "correlation_id": str(det.get("correlation_id") or ""),
+                    "callback_correlation_id": callback_correlation_id,
+                    "target_status_code": ReportContextBuilder._safe_int(det.get("target_status_code"), 0),
+                    "callback_received": callback_received,
+                    "callback_received_effective": callback_received_effective,
+                    "late_callback_reconciled": late_callback_reconciled,
+                    "callback_store_received": callback_store_received,
+                    "callback_method": str(effective.get("callback_method") or det.get("callback_method") or ""),
+                    "callback_headers_count": ReportContextBuilder._safe_int(effective.get("callback_headers_count"), 0),
+                    "result": str(det.get("result") or ""),
+                    "evidence_strength": str(det.get("evidence_strength") or ""),
+                    "request_composer": str(det.get("request_composer") or "deterministic"),
+                    "request_draft_validated": bool(det.get("request_draft_validated")),
+                    "payload_synthesis_result": payload_synthesis_result,
+                    "synthesized_required_fields_count": ReportContextBuilder._safe_int(det.get("synthesized_required_fields_count"), 0),
+                    "filled_required_fields_count": ReportContextBuilder._safe_int(det.get("filled_required_fields_count"), 0),
+                    "missing_required_fields_count": ReportContextBuilder._safe_int(det.get("missing_required_fields_count"), 0),
+                    "rejected_fields_count": ReportContextBuilder._safe_int(det.get("rejected_fields_count"), 0),
+                    "synthesized_field_count": ReportContextBuilder._safe_int(det.get("synthesized_field_count"), 0),
+                    "schema_summary_source": str(det.get("schema_summary_source") or "none"),
+                    "reason_codes": safe_reason_codes,
                 })
+
+        ssrf_ready_checks = [row for row in ready_checks if str(row.get("kind") or "") == "ssrf_probe"]
+        ssrf_blocked_checks = [row for row in blocked_checks if str(row.get("kind") or "") == "ssrf_probe"]
+        ssrf_probe_deprioritized_count = 0
+        if isinstance(runtime, dict):
+            for row in (runtime.get("iteration_summaries") or []):
+                if not isinstance(row, dict):
+                    continue
+                if str(row.get("candidate_kind") or "") != "ssrf_probe":
+                    continue
+                if str(row.get("selection_outcome") or "").strip() == "deprioritized":
+                    ssrf_probe_deprioritized_count += 1
+        top_row = ssrf_rows_sorted[0] if ssrf_rows_sorted else {}
+        top_op = str(top_row.get("operation_id") or "")
+        top_fp = str(top_row.get("field_path") or "")
+        top_candidate_id = ""
+        top_status = "skipped"
+        top_block_reason: str | None = None
+        for row in ssrf_ready_checks:
+            if str(row.get("operation_id") or "") == top_op and str(row.get("field_path") or "") == top_fp:
+                top_candidate_id = str(row.get("candidate_id") or "")
+                top_status = "ready"
+                break
+        if top_status != "ready":
+            for row in ssrf_blocked_checks:
+                if str(row.get("operation_id") or "") == top_op and str(row.get("field_path") or "") == top_fp:
+                    top_candidate_id = str(row.get("candidate_id") or "")
+                    top_status = "blocked"
+                    top_block_reason = str(row.get("reason") or "") or None
+                    break
+        if top_status == "skipped" and top_op and top_fp:
+            top_status = "deprioritized"
+        api7_already_confirmed = ssrf_callback_received_count > 0
+        stopped_reason = str(runtime.get("stopped_reason") or "").strip() if isinstance(runtime, dict) else ""
+        api7_reason = "ssrf_probe_ready_available"
+        if api7_already_confirmed:
+            api7_reason = "api7_already_confirmed"
+        elif not ssrf_ready_checks and ssrf_candidate_signal_count > 0:
+            api7_reason = "no_ready_ssrf_probe_candidates"
+            if stopped_reason == "no_ready_candidate":
+                api7_reason = "no_ready_candidate_with_ssrf_signals"
+        api7_planning_diagnostics = {
+            "ssrf_candidate_signal_count": int(ssrf_candidate_signal_count),
+            "ssrf_probe_ready_count": len(ssrf_ready_checks),
+            "ssrf_probe_blocked_count": len(ssrf_blocked_checks),
+            "ssrf_probe_deprioritized_count": int(ssrf_probe_deprioritized_count),
+            "top_candidate_id": top_candidate_id,
+            "top_candidate_operation_id": top_op,
+            "top_candidate_field_path": top_fp,
+            "top_candidate_status": top_status,
+            "top_candidate_blocked_reason": top_block_reason,
+            "kind_cap_remaining": None,
+            "api7_already_confirmed": bool(api7_already_confirmed),
+            "reason": api7_reason,
+        }
+        api7_ssrf_pipeline_trace = self._build_api7_ssrf_pipeline_trace(
+            runtime=runtime if isinstance(runtime, dict) else None,
+            observations=observations,
+            ssrf_candidate_signal_count=ssrf_candidate_signal_count,
+            ssrf_ready_checks=ssrf_ready_checks,
+            ssrf_blocked_checks=ssrf_blocked_checks,
+            ssrf_probe_samples=ssrf_probe_samples,
+        )
+        if findings_api7 > 0:
+            api7_status = "confirmed"
+            api7_summary_text = "SSRF подтвержден: целевое приложение выполнило исходящий запрос на контролируемый callback URL."
+        elif ssrf_candidate_signal_count > 0 or ssrf_probe_result_count > 0:
+            api7_status = "diagnostic"
+            api7_summary_text = "Диагностические SSRF-кандидаты обнаружены; подтверждение требует controlled callback proof."
+        else:
+            api7_status = "not_checked"
+            api7_summary_text = "SSRF-сигналы в текущем запуске не зафиксированы."
+
+        evidence_by_id = {
+            str(item.get("evidence_id") or ""): item
+            for item in evidence
+            if isinstance(item, dict) and str(item.get("evidence_id") or "").strip()
+        }
+        confirmed_ssrf_evidence: list[dict[str, Any]] = []
+        confirmed_bola_evidence: list[dict[str, Any]] = []
+        for finding in findings:
+            if str(finding.get("owasp_category") or "") != "API7_SERVER_SIDE_REQUEST_FORGERY":
+                continue
+            evidence_id = str(finding.get("evidence_id") or "")
+            ev = evidence_by_id.get(evidence_id) or {}
+            op_id = str(ev.get("operation_id") or finding.get("operation_id") or "")
+            method = str(ev.get("method") or finding.get("method") or "")
+            endpoint = str(finding.get("endpoint") or ev.get("endpoint") or ev.get("path") or "")
+            field_path = str(ev.get("field_path") or "")
+            matched_probe = None
+            for row in ssrf_probe_samples:
+                if not isinstance(row, dict):
+                    continue
+                row_op = str(row.get("operation_id") or "")
+                row_fp = str(row.get("field_path") or "")
+                if op_id and field_path and row_op == op_id and row_fp == field_path:
+                    matched_probe = row
+                    break
+            if matched_probe is None and op_id:
+                for row in ssrf_probe_samples:
+                    if str(row.get("operation_id") or "") == op_id:
+                        matched_probe = row
+                        break
+            if matched_probe is None:
+                matched_probe = next((row for row in ssrf_probe_samples if bool(row.get("callback_received_effective"))), {})
+            reason_codes = []
+            if isinstance(matched_probe, dict):
+                rc = matched_probe.get("reason_codes")
+                reason_codes = [str(x) for x in rc[:20]] if isinstance(rc, list) else []
+                if not field_path:
+                    field_path = str(matched_probe.get("field_path") or "")
+                if not op_id:
+                    op_id = str(matched_probe.get("operation_id") or "")
+                if not method:
+                    method = str(matched_probe.get("method") or "")
+                if not endpoint:
+                    endpoint = str(matched_probe.get("path") or "")
+            confirmed_ssrf_evidence.append({
+                "finding_id": str(finding.get("finding_id") or ""),
+                "evidence_id": evidence_id,
+                "operation_id": op_id,
+                "method": method,
+                "endpoint": endpoint,
+                "field_path": field_path,
+                "callback_received_effective": bool((matched_probe or {}).get("callback_received_effective")),
+                "late_callback_reconciled": bool((matched_probe or {}).get("late_callback_reconciled")),
+                "callback_store_received": bool((matched_probe or {}).get("callback_store_received")),
+                "evidence_strength": str((matched_probe or {}).get("evidence_strength") or ev.get("severity") or ""),
+                "judge_verdict": str(finding.get("judge_verdict") or "confirmed"),
+                "reason_codes": reason_codes,
+                "vulnerability_class": str(finding.get("vulnerability_class") or ""),
+            })
+            continue
+
+        for finding in findings:
+            if str(finding.get("owasp_category") or "") != "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION":
+                continue
+            evidence_id = str(finding.get("evidence_id") or "")
+            ev = evidence_by_id.get(evidence_id) or {}
+            derived = [str(x) for x in (ev.get("derived_signals") or []) if str(x).strip()]
+            def _sig(prefix: str) -> str:
+                row = next((s for s in derived if s.startswith(prefix)), "")
+                return row.split(":", 1)[1].strip() if row else ""
+            confirmed_bola_evidence.append({
+                "finding_id": str(finding.get("finding_id") or ""),
+                "evidence_id": evidence_id,
+                "object_pair_id": _sig("object_pair_id:"),
+                "operation_id": str(ev.get("operation_id") or finding.get("operation_id") or ""),
+                "endpoint": str(finding.get("endpoint") or ev.get("endpoint") or ev.get("path") or ""),
+                "method": str(ev.get("method") or finding.get("method") or ""),
+                "owner_status_code": self._safe_int(_sig("owner_status_code:"), 0),
+                "attacker_status_code": self._safe_int(_sig("attacker_status_code:"), 0),
+                "owner_baseline_valid": _sig("owner_baseline_valid:") == "true",
+                "attacker_access_granted": (_sig("access_granted:") == "true") or (_sig("result:") == "attacker_access_granted"),
+                "replay_classification": _sig("replay_classification:"),
+                "evidence_strength": _sig("evidence_strength:"),
+                "semantic_id_kind": _sig("semantic_id_kind:"),
+                "vulnerability_class": str(finding.get("vulnerability_class") or ""),
+                "judge_verdict": str(finding.get("judge_verdict") or "confirmed"),
+            })
 
         return {
             "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION": {
-                "status": "diagnostic",
+                "status": "confirmed" if findings_api1 > 0 else "diagnostic",
                 "confirmed_findings_count": findings_api1,
                 "bola_replay_result_count": self._safe_int(api3_de_cov.get("bola_replay_result_count"), 0),
                 "bola_replay_granted_count": self._safe_int(api3_de_cov.get("bola_replay_granted_count"), 0),
                 "bola_replay_denied_count": self._safe_int(api3_de_cov.get("bola_replay_denied_count"), 0),
                 "bola_replay_invalid_pair_count": self._safe_int(api3_de_cov.get("bola_replay_invalid_pair_count"), 0),
                 "bola_replay_inconclusive_count": self._safe_int(api3_de_cov.get("bola_replay_inconclusive_count"), 0),
+                "top_object_pair_score": float(api3_de_cov.get("top_object_pair_score") or 0.0),
+                "top_object_pair_reasons": list(api3_de_cov.get("top_object_pair_reasons") or []),
+                "invalid_pair_rework_count": self._safe_int(api3_de_cov.get("invalid_pair_rework_count"), 0),
+                "api1_bola_compact_diagnostics": dict(api3_de_cov.get("api1_bola_compact_diagnostics") or {}),
+                "confirmed_bola_evidence": confirmed_bola_evidence[:10],
+                "last_invalid_pair_owner_status_code": self._safe_int(api3_de_cov.get("last_invalid_pair_owner_status_code"), 0),
+                "last_invalid_pair_semantic_id_kind": str(api3_de_cov.get("last_invalid_pair_semantic_id_kind") or ""),
+                "baseline_block_reasons": list(api3_de_cov.get("top_object_pair_reasons") or [])[:20],
             },
             "API7_SERVER_SIDE_REQUEST_FORGERY": {
-                "status": "diagnostic" if (ssrf_candidate_signal_count > 0 or findings_api7 > 0) else ("not_available" if runtime is None else "pending"),
+                "status": api7_status,
                 "workers": {
                     "ssrf_candidate_detector": {
                         "executed": self._safe_int(executed.get("ssrf_candidate_detector"), 0) if runtime is not None else "not_available",
@@ -1416,6 +2201,21 @@ class ReportContextBuilder:
                 "ssrf_candidate_operations_count": len(ssrf_operations),
                 "ssrf_candidate_fields_count": ssrf_fields,
                 "ssrf_candidates": ssrf_samples,
+                "ssrf_probe_result_count": ssrf_probe_result_count,
+                "ssrf_probe_callback_received_count": ssrf_callback_received_count,
+                "ssrf_probe_target_non_2xx_count": ssrf_probe_target_non_2xx_count,
+                "ssrf_probe_probe_error_count": ssrf_probe_probe_error_count,
+                "ssrf_probe_schema_synthesized_count": ssrf_probe_schema_synthesized_count,
+                "ssrf_probe_llm_composed_count": ssrf_probe_llm_composed_count,
+                "ssrf_probe_late_callback_reconciled_count": ssrf_late_callback_reconciled_count,
+                "ssrf_callback_received_count": ssrf_callback_received_count,
+                "ssrf_no_callback_count": ssrf_no_callback_count,
+                "ssrf_confirmable_count": ssrf_confirmable_count,
+                "summary_text": api7_summary_text,
+                "confirmed_ssrf_evidence": confirmed_ssrf_evidence[:10],
+                "ssrf_probe_results": ssrf_probe_samples,
+                "api7_planning_diagnostics": api7_planning_diagnostics,
+                "api7_ssrf_pipeline_trace": api7_ssrf_pipeline_trace,
             },
             "API8_SECURITY_MISCONFIGURATION": {
                 "status": "checked" if (runtime is not None and sum(self._safe_int(executed.get(k), 0) for k in api8_workers) > 0) else ("not_available" if runtime is None else "pending"),

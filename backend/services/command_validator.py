@@ -154,6 +154,8 @@ class CommandValidator:
             self._validate_cookie_flag_validator(command, campaign, errors)
         if (command.tool_name or "").strip() == "ssrf_candidate_detector":
             self._validate_ssrf_candidate_detector(command, campaign, errors)
+        if (command.tool_name or "").strip() == "ssrf_probe":
+            self._validate_ssrf_probe(command, campaign, errors)
         if (command.tool_name or "").strip() == "js_endpoint_extractor":
             self._validate_js_endpoint_extractor(command, campaign, errors)
         if (command.tool_name or "").strip() == "undocumented_endpoint_validator":
@@ -1010,6 +1012,140 @@ class CommandValidator:
                 message="auth_flow_detector timeout_sec must be <= 15.",
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
+        _ = campaign
+
+    def _validate_ssrf_probe(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass not in {"ssrf_external", "input_validation"}:
+            errors.append(ValidationError(
+                code="ssrf_probe_worker_class_invalid",
+                message="ssrf_probe requires worker_class ssrf_external or input_validation.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "callback_ssrf_probe":
+            errors.append(ValidationError(
+                code="ssrf_probe_strategy_invalid",
+                message="ssrf_probe requires strategy callback_ssrf_probe.",
+            ))
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "validation_mode",
+            "operation_id",
+            "method",
+            "path",
+            "field_name",
+            "field_path",
+            "auth_mode",
+            "auth_profile_id",
+            "role_hint",
+            "correlation_id",
+            "request_draft",
+            "required_body_fields",
+            "allowed_body_fields",
+            "body_field_summaries",
+            "schema_summary_source",
+            "ssrf_target_field",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="ssrf_probe_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for ssrf_probe.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {
+                "authorization", "cookie", "token", "bearer", "password",
+                "raw_secret", "raw_headers", "raw_body", "callback_base_url",
+                "url", "request_url",
+            }:
+                errors.append(ValidationError(
+                    code="ssrf_probe_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for ssrf_probe.",
+                    details={"key": key},
+                ))
+        validation_mode = str(inputs.get("validation_mode") or "ssrf_callback_probe").strip() or "ssrf_callback_probe"
+        if validation_mode != "ssrf_callback_probe":
+            errors.append(ValidationError(
+                code="ssrf_probe_validation_mode_invalid",
+                message="validation_mode must be ssrf_callback_probe.",
+                details={"validation_mode": validation_mode},
+            ))
+        if not str(inputs.get("operation_id") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_operation_id_required",
+                message="inputs.operation_id is required for ssrf_probe.",
+            ))
+        if not str(inputs.get("method") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_method_required",
+                message="inputs.method is required for ssrf_probe.",
+            ))
+        if not str(inputs.get("path") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_path_required",
+                message="inputs.path is required for ssrf_probe.",
+            ))
+        if not str(inputs.get("field_name") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_field_name_required",
+                message="inputs.field_name is required for ssrf_probe.",
+            ))
+        if not str(inputs.get("field_path") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_field_path_required",
+                message="inputs.field_path is required for ssrf_probe.",
+            ))
+        auth_mode = str(inputs.get("auth_mode") or "unauthenticated").strip()
+        if auth_mode not in {"unauthenticated", "authenticated"}:
+            errors.append(ValidationError(
+                code="ssrf_probe_auth_mode_invalid",
+                message="inputs.auth_mode must be unauthenticated or authenticated.",
+                details={"auth_mode": auth_mode},
+            ))
+        if auth_mode == "authenticated" and not str(inputs.get("auth_profile_id") or "").strip():
+            errors.append(ValidationError(
+                code="ssrf_probe_auth_profile_required",
+                message="inputs.auth_profile_id is required for authenticated ssrf_probe.",
+            ))
+        if command.budget.max_requests > 1:
+            errors.append(ValidationError(
+                code="ssrf_probe_budget_max_requests",
+                message="ssrf_probe max_requests must be <= 1.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 15:
+            errors.append(ValidationError(
+                code="ssrf_probe_budget_timeout",
+                message="ssrf_probe timeout_sec must be <= 15.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
+        request_draft = inputs.get("request_draft")
+        if request_draft is not None:
+            if not isinstance(request_draft, dict):
+                errors.append(ValidationError(
+                    code="ssrf_probe_request_draft_invalid",
+                    message="inputs.request_draft must be an object.",
+                ))
+            else:
+                blob = json.dumps(request_draft, ensure_ascii=False).lower()
+                for bad in (
+                    "authorization", "cookie", "token", "password", "bearer",
+                    "secret", "api_key", "raw_body", "raw_headers", "localhost",
+                    "127.0.0.1", "0.0.0.0", "169.254.169.254", "file://", "gopher://", "ftp://",
+                ):
+                    if bad in blob:
+                        errors.append(ValidationError(
+                            code="ssrf_probe_request_draft_forbidden_content",
+                            message="inputs.request_draft contains forbidden content.",
+                            details={"forbidden": bad},
+                        ))
+                        break
         _ = campaign
 
     def _validate_test_account_materializer(

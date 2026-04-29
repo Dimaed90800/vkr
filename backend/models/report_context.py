@@ -48,6 +48,10 @@ class ReportContext(BaseModel):
     recommendations_seed: list[dict[str, str]] = Field(default_factory=list)
     data_quality: ReportDataQuality = Field(default_factory=ReportDataQuality)
     auth_flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    adaptive_planner_diagnostics: dict[str, Any] = Field(default_factory=dict)
+    api7_ssrf_pipeline_trace: dict[str, Any] = Field(default_factory=dict)
+    compact_attempt_summary: list[dict[str, Any]] = Field(default_factory=list)
+    last_observation_summary: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReportContextRequest(BaseModel):

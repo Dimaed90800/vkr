@@ -23,6 +23,7 @@ from backend.models.judge import (
     JudgeVerdictPayload,
 )
 from backend.models.observation import VerificationPlan, VerificationPlanStatus
+from backend.services.auto_judge_service import apply_judge_for_ready_evidence_in_campaign
 from backend.services.judge_apply_service import JudgeApplyError, JudgeApplyService
 from backend.storage.memory_store import memory_store
 
@@ -193,6 +194,184 @@ def test_confirmed_creates_finding_when_pack_judge_ready():
     assert result.finding_id
     assert result.finding is not None
     assert len(memory_store.confirmed_findings) == 1
+
+
+def test_confirmed_api7_ssrf_with_callback_proof_creates_finding() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        owasp="API7_SERVER_SIDE_REQUEST_FORGERY",
+        vulnerability_class="server_side_request_forgery",
+        operation_id="op_POST_/api/contact",
+        endpoint="/api/contact",
+        method="POST",
+        derived_signals=[
+            "ssrf_probe_result",
+            "callback_received_effective:true",
+            "controlled_callback_received",
+            "callback_correlation_matched",
+        ],
+    )
+    candidate = FindingCandidatePayload(vulnerability_class="server_side_request_forgery")
+    result = _apply(_request(JudgeVerdictKind.confirmed, candidate=candidate))
+    assert result.finding is not None
+    assert result.finding.owasp_category == "API7_SERVER_SIDE_REQUEST_FORGERY"
+    assert result.finding.vulnerability_class == "server_side_request_forgery"
+
+
+def test_apply_judge_for_ready_api7_ssrf_evidence_creates_confirmed_finding() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_api7_1",
+        owasp="API7_SERVER_SIDE_REQUEST_FORGERY",
+        vulnerability_class="server_side_request_forgery",
+        operation_id="op_POST_/api/contact",
+        endpoint="/api/contact",
+        method="POST",
+        derived_signals=[
+            "ssrf_probe_result",
+            "callback_received_effective:true",
+            "callback_store_received:true",
+            "controlled_callback_received",
+            "callback_correlation_matched",
+            "evidence_strength:high",
+        ],
+    )
+    summary = apply_judge_for_ready_evidence_in_campaign(
+        "cmp_judge1",
+        owasp_category="API7_SERVER_SIDE_REQUEST_FORGERY",
+        vulnerability_class="server_side_request_forgery",
+    )
+    assert summary["applied_count"] == 1
+    assert summary["confirmed_count"] == 1
+    findings = memory_store.list_confirmed_findings_by_campaign("cmp_judge1")
+    assert len(findings) == 1
+    assert findings[0]["owasp_category"] == "API7_SERVER_SIDE_REQUEST_FORGERY"
+    assert findings[0]["vulnerability_class"] == "server_side_request_forgery"
+
+
+def test_auto_judge_idempotent_for_same_evidence() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_api7_idem",
+        owasp="API7_SERVER_SIDE_REQUEST_FORGERY",
+        vulnerability_class="server_side_request_forgery",
+        derived_signals=[
+            "callback_received_effective:true",
+            "callback_store_received:true",
+            "controlled_callback_received",
+            "callback_correlation_matched",
+            "evidence_strength:high",
+        ],
+    )
+    first = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    second = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    assert first["confirmed_count"] == 1
+    assert second["confirmed_count"] == 0
+    assert len(memory_store.list_judge_decisions_by_campaign("cmp_judge1")) == 1
+    assert len(memory_store.list_confirmed_findings_by_campaign("cmp_judge1")) == 1
+
+
+def test_auto_judge_does_not_confirm_without_callback_store_received() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_api7_no_store",
+        owasp="API7_SERVER_SIDE_REQUEST_FORGERY",
+        vulnerability_class="server_side_request_forgery",
+        derived_signals=[
+            "callback_received_effective:true",
+            "controlled_callback_received",
+            "callback_correlation_matched",
+            "evidence_strength:high",
+        ],
+    )
+    summary = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    assert summary["confirmed_count"] == 0
+    assert len(memory_store.list_confirmed_findings_by_campaign("cmp_judge1")) == 0
+
+
+def test_auto_judge_confirms_ready_bola_evidence() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_bola_1",
+        owasp="API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        vulnerability_class="broken_object_level_authorization",
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        endpoint="/identity/api/v2/vehicle/{vehicleId}/location",
+        method="GET",
+        derived_signals=[
+            "bola_replay_result",
+            "object_pair_id:objpair_auto_1",
+            "owner_baseline_valid:true",
+            "result:attacker_access_granted",
+            "access_granted:true",
+            "replay_classification:possible_bola",
+            "owner_status_code:200",
+            "attacker_status_code:200",
+            "evidence_strength:high",
+            "semantic_id_kind:vehicle_id",
+        ],
+    )
+    summary = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    assert summary["applied_count"] == 1
+    assert summary["confirmed_count"] == 1
+    findings = memory_store.list_confirmed_findings_by_campaign("cmp_judge1")
+    assert len(findings) == 1
+    assert findings[0]["owasp_category"] == "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
+    assert findings[0]["endpoint"] == "/identity/api/v2/vehicle/{vehicleId}/location"
+
+
+def test_auto_judge_idempotent_for_bola() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_bola_idem",
+        owasp="API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        vulnerability_class="broken_object_level_authorization",
+        derived_signals=[
+            "object_pair_id:objpair_auto_idem",
+            "owner_baseline_valid:true",
+            "result:attacker_access_granted",
+            "access_granted:true",
+            "replay_classification:possible_bola",
+            "owner_status_code:200",
+            "attacker_status_code:200",
+            "evidence_strength:high",
+        ],
+    )
+    first = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    second = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    assert first["confirmed_count"] == 1
+    assert second["confirmed_count"] == 0
+    assert len(memory_store.list_judge_decisions_by_campaign("cmp_judge1")) == 1
+    assert len(memory_store.list_confirmed_findings_by_campaign("cmp_judge1")) == 1
+
+
+def test_auto_judge_does_not_confirm_bola_without_strict_callback_equivalent_proof() -> None:
+    _reset_store()
+    _create_campaign()
+    _pack(
+        evidence_id="evp_auto_bola_no_proof",
+        owasp="API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        vulnerability_class="broken_object_level_authorization",
+        derived_signals=[
+            "object_pair_id:objpair_auto_no_proof",
+            "owner_baseline_valid:true",
+            "result:attacker_access_granted",
+            "access_granted:true",
+            "replay_classification:possible_bola",
+            "owner_status_code:200",
+            "attacker_status_code:403",
+            "evidence_strength:high",
+        ],
+    )
+    summary = apply_judge_for_ready_evidence_in_campaign("cmp_judge1")
+    assert summary["confirmed_count"] == 0
+    assert len(memory_store.list_confirmed_findings_by_campaign("cmp_judge1")) == 0
 
 
 def test_confirmed_links_evidence_id_observation_id_decision_id():

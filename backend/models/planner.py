@@ -33,6 +33,7 @@ class PlannerCandidateKind(str, Enum):
     cookie_flag_validator = "cookie_flag_validator"
     undocumented_endpoint_validator = "undocumented_endpoint_validator"
     ssrf_candidate_detector = "ssrf_candidate_detector"
+    ssrf_probe = "ssrf_probe"
     schemathesis_negative_test = "schemathesis_negative_test"
     injection_test = "injection_test"
     property_mutation_test = "property_mutation_test"
@@ -114,4 +115,8 @@ class PlannerResponse(BaseModel):
     blocked_count: int = 0
     skipped_existing_count: int = 0
     candidates: list[PlannerCandidate] = Field(default_factory=list)
+    ready_candidates_by_kind_count: dict[str, int] = Field(default_factory=dict)
+    blocked_candidates_by_kind_count: dict[str, int] = Field(default_factory=dict)
+    ready_candidates_sample: list[dict[str, Any]] = Field(default_factory=list)
+    blocked_candidates_sample: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

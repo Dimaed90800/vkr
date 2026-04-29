@@ -262,6 +262,30 @@ _WORKERS: tuple[WorkerCapability, ...] = (
         ),
     ),
     WorkerCapability(
+        worker_name="ssrf_probe",
+        tool_name="ssrf_probe",
+        worker_class="ssrf_external",
+        scenario_types=["ssrf_callback_proof"],
+        observation_types=["ssrf_probe_result"],
+        owasp_categories=["API7_SERVER_SIDE_REQUEST_FORGERY"],
+        status="partial",
+        adapter_available=True,
+        execution_mode="sync",
+        triage_support=True,
+        evidence_support=True,
+        judge_support=True,
+        requires_auth=False,
+        requires_seed=False,
+        requires_openapi=False,
+        requires_corpus=False,
+        risk_level="high",
+        notes=(
+            "Callback-based SSRF proof probe: mutates a single URL-like field to a backend-controlled callback URL "
+            "and considers SSRF confirmable only if a matching correlation_id callback is received. "
+            "Never stores raw bodies/headers/tokens."
+        ),
+    ),
+    WorkerCapability(
         worker_name="auth_flow_detector",
         tool_name="auth_flow_detector",
         worker_class="auth_context",

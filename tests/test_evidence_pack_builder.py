@@ -69,6 +69,8 @@ def _reset_store() -> None:
     memory_store.runtime_resource_instances_by_campaign.clear()
     memory_store.runtime_bola_object_pairs.clear()
     memory_store.runtime_bola_object_pairs_by_campaign.clear()
+    memory_store.runtime_ssrf_callbacks.clear()
+    memory_store.runtime_ssrf_callbacks_by_campaign.clear()
 
 
 def _create_campaign(campaign_id: str = "cmp_evp1") -> None:
@@ -570,13 +572,96 @@ def test_build_bola_replay_result_evidence_ready_when_access_granted() -> None:
     assert pack is not None
     assert pack.status == "ready_for_judge"
     assert pack.judge_ready is True
-    assert pack.vulnerability_class == "bola"
+    assert pack.vulnerability_class in {"bola", "broken_object_level_authorization"}
     assert pack.owasp_category == "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
     assert pack.attack is not None and pack.attack.request_ref is not None
     assert pack.attack.request_ref.request_id == replay.request_id
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "attack_request_missing" not in missing_codes
+    assert pack.ownership_proof is not None
+    assert "object_pair_id:objpair_1" in (pack.derived_signals or [])
     blob = json.dumps(pack.model_dump(mode="json"), sort_keys=True).lower()
     for bad in ("post-123", "bearer ", "set-cookie", "cookie:", "password", "response_body"):
         assert bad not in blob
+
+
+def test_build_bola_replay_granted_evidence_is_judge_ready() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    replay = _add_corpus(
+        url="http://testapp.local/identity/api/v2/vehicle/veh-1/location",
+        path_template="/identity/api/v2/vehicle/{vehicleId}/location",
+        role="authprof_attacker_1",
+        status_code=200,
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        response_body={"lat": 1.0, "lon": 2.0},
+    )
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        request_id=replay.request_id,
+        auth_profile="authprof_attacker_1",
+        status_code=200,
+        confidence=0.95,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_vehicle_1",
+            "target_operation_id": "op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_path_template": "/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_method": "GET",
+            "result": "attacker_access_granted",
+            "replay_classification": "possible_bola",
+            "access_granted": True,
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "attacker_status_code": 200,
+            "evidence_strength": "high",
+            "semantic_id_kind": "vehicle_id",
+            "request_id": replay.request_id,
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None and existing is False and pack is not None
+    assert pack.judge_ready is True
+    assert pack.status == "ready_for_judge"
+    assert pack.missing_evidence == []
+    assert pack.owasp_category == "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
+    assert pack.vulnerability_class == "broken_object_level_authorization"
+    assert pack.ownership_proof is not None
+
+
+def test_build_bola_replay_does_not_require_bola_replay_request_when_result_is_sufficient() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        request_id="",
+        auth_profile="authprof_attacker_1",
+        status_code=200,
+        confidence=0.95,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_vehicle_2",
+            "target_operation_id": "op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_path_template": "/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_method": "GET",
+            "result": "attacker_access_granted",
+            "replay_classification": "possible_bola",
+            "access_granted": True,
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "attacker_status_code": 200,
+            "evidence_strength": "high",
+            "semantic_id_kind": "vehicle_id",
+        },
+    )
+    pack, error, _ = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None and pack is not None
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "attack_request_missing" not in missing_codes
 
 
 def test_build_bola_replay_result_evidence_not_ready_when_denied() -> None:
@@ -668,6 +753,289 @@ def test_build_bola_replay_result_evidence_not_ready_when_invalid_object_pair() 
     assert existing is False
     assert pack is not None
     assert pack.judge_ready is False
+
+
+def test_build_ssrf_probe_result_evidence_ready_when_callback_received() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="ssrf_probe")
+    obs = _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        operation_id="op_POST_/api/v1/hooks",
+        request_id="",
+        auth_profile="authprof_owner_1",
+        status_code=200,
+        confidence=0.95,
+        details={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+            "correlation_id": "ssrf_x",
+            "target_status_code": 500,
+            "callback_received": True,
+            "callback_method": "GET",
+            "result": "callback_received",
+            "evidence_strength": "high",
+            "reason_codes": ["callback_received", "correlation_id_matched"],
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.judge_ready is True
+    assert pack.owasp_category == "API7_SERVER_SIDE_REQUEST_FORGERY"
+    assert pack.vulnerability_class == "server_side_request_forgery"
+
+
+def test_build_ssrf_probe_result_evidence_not_ready_when_no_callback() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="ssrf_probe")
+    obs = _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        operation_id="op_POST_/api/v1/hooks",
+        request_id="",
+        auth_profile="",
+        status_code=200,
+        confidence=0.4,
+        details={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "auth_mode": "unauthenticated",
+            "auth_profile_id": "",
+            "role_hint": "",
+            "correlation_id": "ssrf_y",
+            "target_status_code": 200,
+            "callback_received": False,
+            "callback_method": "",
+            "result": "no_callback_observed",
+            "evidence_strength": "low",
+            "reason_codes": ["no_callback_observed"],
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.judge_ready is False
+
+
+def test_build_ssrf_probe_result_evidence_ready_when_late_callback_reconciled() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="ssrf_probe")
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_late_ev",
+        "cmp_evp1",
+        {
+            "correlation_id": "ssrf_late_ev",
+            "campaign_id": "cmp_evp1",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "received": True,
+            "callback_method": "GET",
+            "headers_count": 6,
+        },
+    )
+    obs = _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        operation_id="op_POST_/api/v1/hooks",
+        request_id="",
+        auth_profile="authprof_owner_1",
+        status_code=200,
+        confidence=0.7,
+        details={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "correlation_id": "ssrf_late_ev",
+            "target_status_code": 0,
+            "callback_received": False,
+            "callback_method": "",
+            "result": "no_callback_observed",
+            "evidence_strength": "low",
+            "reason_codes": ["no_callback_observed"],
+        },
+    )
+    pack, error, existing = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error is None
+    assert existing is False
+    assert pack is not None
+    assert pack.judge_ready is True
+    assert pack.status == "ready_for_judge"
+    signals = set(pack.derived_signals)
+    assert "controlled_callback_received" in signals
+    assert "late_callback_reconciled" in signals
+
+
+def test_build_ssrf_probe_result_refreshes_existing_not_ready_pack_on_late_callback() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run(tool_name="ssrf_probe")
+    obs = _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        operation_id="op_POST_/api/v1/hooks",
+        request_id="",
+        auth_profile="",
+        status_code=200,
+        confidence=0.4,
+        details={
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_refresh_1",
+            "target_status_code": 0,
+            "callback_received": False,
+            "evidence_strength": "low",
+        },
+    )
+    pack1, error1, existing1 = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error1 is None and pack1 is not None
+    assert existing1 is False
+    assert pack1.judge_ready is False
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_refresh_1",
+        "cmp_evp1",
+        {"correlation_id": "ssrf_refresh_1", "campaign_id": "cmp_evp1", "received": True, "callback_method": "GET", "headers_count": 5},
+    )
+    pack2, error2, existing2 = EvidencePackBuilder().build_from_observation(obs.observation_id)
+    assert error2 is None and pack2 is not None
+    assert existing2 is False
+    assert pack2.evidence_id == pack1.evidence_id
+    assert pack2.judge_ready is True
+
+
+def test_evidence_campaign_endpoint_reconciles_late_ssrf_callback() -> None:
+    _reset_store()
+    _create_campaign("cmp_reconcile")
+    _store_finished_run(tool_name="ssrf_probe", campaign_id="cmp_reconcile", tool_run_id="toolrun_reconcile")
+    obs = _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        campaign_id="cmp_reconcile",
+        tool_run_id="toolrun_reconcile",
+        operation_id="op_POST_/api/contact",
+        status_code=0,
+        details={
+            "operation_id": "op_POST_/api/contact",
+            "method": "POST",
+            "path": "/api/contact",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_reconcile_route_1",
+            "target_status_code": 0,
+            "callback_received": False,
+            "evidence_strength": "low",
+        },
+    )
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_reconcile_route_1",
+        "cmp_reconcile",
+        {"correlation_id": "ssrf_reconcile_route_1", "campaign_id": "cmp_reconcile", "received": True, "callback_method": "GET", "headers_count": 6},
+    )
+    client = _get_test_client()
+    resp = client.get("/v1/evidence/campaign/cmp_reconcile")
+    assert resp.status_code == 200
+    packs = resp.json()
+    assert packs
+    ssrf_pack = next((p for p in packs if p.get("observation_id") == obs.observation_id), None)
+    assert ssrf_pack is not None
+    assert ssrf_pack.get("judge_ready") is True
+    assert ssrf_pack.get("owasp_category") == "API7_SERVER_SIDE_REQUEST_FORGERY"
+    decisions = memory_store.list_judge_decisions_by_campaign("cmp_reconcile")
+    findings = memory_store.list_confirmed_findings_by_campaign("cmp_reconcile")
+    assert len(decisions) == 1
+    assert len(findings) == 1
+    assert findings[0].get("vulnerability_class") == "server_side_request_forgery"
+
+
+def test_no_callback_does_not_build_judge_ready_api7_evidence_via_reconcile() -> None:
+    _reset_store()
+    _create_campaign("cmp_no_cb")
+    _store_finished_run(tool_name="ssrf_probe", campaign_id="cmp_no_cb", tool_run_id="toolrun_no_cb")
+    _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        campaign_id="cmp_no_cb",
+        tool_run_id="toolrun_no_cb",
+        operation_id="op_POST_/api/contact",
+        status_code=0,
+        details={
+            "operation_id": "op_POST_/api/contact",
+            "method": "POST",
+            "path": "/api/contact",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_no_cb_1",
+            "target_status_code": 0,
+            "callback_received": False,
+            "evidence_strength": "low",
+        },
+    )
+    client = _get_test_client()
+    resp = client.get("/v1/evidence/campaign/cmp_no_cb")
+    assert resp.status_code == 200
+    packs = resp.json()
+    if packs:
+        assert all(not bool(p.get("judge_ready")) for p in packs)
+    assert memory_store.list_confirmed_findings_by_campaign("cmp_no_cb") == []
+
+
+def test_apply_ready_judge_endpoint_idempotent() -> None:
+    _reset_store()
+    _create_campaign("cmp_apply_ready")
+    _store_finished_run(tool_name="ssrf_probe", campaign_id="cmp_apply_ready", tool_run_id="toolrun_apply_ready")
+    _make_obs(
+        ObservationType.ssrf_probe_result.value,
+        campaign_id="cmp_apply_ready",
+        tool_run_id="toolrun_apply_ready",
+        operation_id="op_POST_/api/contact",
+        status_code=0,
+        details={
+            "operation_id": "op_POST_/api/contact",
+            "method": "POST",
+            "path": "/api/contact",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_apply_ready_1",
+            "target_status_code": 0,
+            "callback_received": False,
+            "evidence_strength": "low",
+        },
+    )
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_apply_ready_1",
+        "cmp_apply_ready",
+        {"correlation_id": "ssrf_apply_ready_1", "campaign_id": "cmp_apply_ready", "received": True, "callback_method": "GET", "headers_count": 6},
+    )
+    client = _get_test_client()
+    # self-heal path builds evidence + auto-judge
+    r1 = client.get("/v1/evidence/campaign/cmp_apply_ready")
+    assert r1.status_code == 200
+    # explicit endpoint should be idempotent
+    r2 = client.post("/v1/evidence/campaign/cmp_apply_ready/apply-ready-judge")
+    assert r2.status_code == 200
+    body = r2.json()
+    assert body["confirmed_count"] == 0
+    assert len(memory_store.list_judge_decisions_by_campaign("cmp_apply_ready")) == 1
+    assert len(memory_store.list_confirmed_findings_by_campaign("cmp_apply_ready")) == 1
 
 
 # ─── unexpected_500 tests ─────────────────────────────────────────
@@ -2535,6 +2903,57 @@ def test_build_from_observation_route_404_for_missing_observation():
     resp = client.post("/v1/evidence/build/obs_missing_xyz")
     assert resp.status_code == 404
     assert resp.json()["error"] == "observation_not_found"
+
+
+def test_build_from_observation_route_accepts_campaign_id_query_param():
+    _reset_store()
+    _create_campaign("cmp_q")
+    _store_finished_run(campaign_id="cmp_q")
+    obs = _make_obs(ObservationType.timeout_signal.value, campaign_id="cmp_q")
+    client = _get_test_client()
+    resp = client.post(f"/v1/evidence/build/{obs.observation_id}?campaign_id=cmp_q")
+    assert resp.status_code == 200
+    assert resp.json()["evidence_pack"]["campaign_id"] == "cmp_q"
+
+
+def test_build_from_observation_route_resolves_observation_from_alias_store_when_available():
+    _reset_store()
+    _create_campaign("cmp_alias")
+    _store_finished_run(campaign_id="cmp_alias")
+    try:
+        from storage.memory_store import memory_store as alt_memory_store
+    except Exception:
+        return
+    if alt_memory_store is memory_store:
+        return
+    obs = Observation(
+        observation_id="obs_alias_1",
+        campaign_id="cmp_alias",
+        tool_run_id="toolrun_evp",
+        type=ObservationType.timeout_signal,
+        details={},
+    )
+    alt_memory_store.store_observation(
+        obs.observation_id,
+        obs.campaign_id,
+        obs.tool_run_id,
+        obs.model_dump(mode="json"),
+    )
+    client = _get_test_client()
+    resp = client.post(f"/v1/evidence/build/{obs.observation_id}?campaign_id=cmp_alias")
+    assert resp.status_code == 200
+    assert resp.json()["evidence_pack"]["observation_id"] == "obs_alias_1"
+
+
+def test_build_from_observation_campaign_scoped_endpoint_works():
+    _reset_store()
+    _create_campaign("cmp_scoped")
+    _store_finished_run(campaign_id="cmp_scoped")
+    obs = _make_obs(ObservationType.timeout_signal.value, campaign_id="cmp_scoped")
+    client = _get_test_client()
+    resp = client.post(f"/v1/evidence/build-for-campaign/cmp_scoped/{obs.observation_id}")
+    assert resp.status_code == 200
+    assert resp.json()["evidence_pack"]["campaign_id"] == "cmp_scoped"
 
 
 def test_build_from_observation_rejects_missing_campaign():

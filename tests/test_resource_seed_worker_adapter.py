@@ -250,6 +250,42 @@ def test_seed_worker_no_id_returns_no_object_id_found() -> None:
     assert det["object_refs_created_count"] == 0
 
 
+def test_resource_seed_authorid_not_typed_as_post_id() -> None:
+    _reset_store()
+    campaign = _campaign()
+    profile = AuthProfileStore().create_auth_profile(
+        campaign_id=campaign.campaign_id,
+        role_hint="owner",
+        user_label="owner_user",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test_account_materializer",
+        metadata={},
+    )
+    _store_graph([
+        Operation(
+            operation_id="op_POST_/api/posts",
+            method="POST",
+            path_template="/api/posts",
+            body_fields=["title"],
+            auth_required=True,
+            resource_type="post",
+            sources=["openapi"],
+        ),
+    ])
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"authorid": "user-123"})
+
+    adapter = ResourceSeedWorkerAdapter(http_client=SafeHttpClient(transport=httpx.MockTransport(handler)))
+    result = adapter.execute(_cmd(profile.auth_profile_id), campaign, "toolrun_seed_author")
+    det = result.observations[0].details
+    assert det["seed_status"] == "seeded"
+    assert det["object_refs_created_count"] == 1
+    assert det["object_refs"][0]["semantic_id_kind"] == "author_id"
+    assert det["object_refs"][0]["resource_type"] != "post"
+
+
 def test_seed_worker_excludes_auth_admin_upload_payment_and_urlish_body_fields() -> None:
     _reset_store()
     campaign = _campaign()

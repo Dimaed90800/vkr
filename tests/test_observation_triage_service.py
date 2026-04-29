@@ -1546,6 +1546,63 @@ def test_triage_ssrf_candidate_signal_creates_verification_plan() -> None:
     assert plan.commands == []
 
 
+def test_triage_ssrf_probe_result_callback_received_is_judge_worthy() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "ssrf_probe_result",
+        observation_id="obs_ssrf_probe_ok",
+        operation_id="op_POST_/api/v1/hooks",
+        details={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_1",
+            "callback_received": True,
+            "callback_method": "GET",
+            "evidence_strength": "high",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.judge_worthy is True
+    assert triaged.recommended_next_action == "build_evidence_pack"
+    assert plan is not None
+    assert plan.goal == "validate_ssrf_callback_impact"
+    assert plan.worker_class == "ssrf_external"
+
+
+def test_triage_ssrf_probe_result_no_callback_is_store_only() -> None:
+    _reset_store()
+    _create_campaign()
+    obs = _make_obs(
+        "ssrf_probe_result",
+        observation_id="obs_ssrf_probe_no_cb",
+        operation_id="op_POST_/api/v1/hooks",
+        details={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/v1/hooks",
+            "method": "POST",
+            "path": "/api/v1/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "correlation_id": "ssrf_2",
+            "callback_received": False,
+            "evidence_strength": "low",
+        },
+    )
+    triaged, plan, err = ObservationTriage().triage(obs.observation_id)
+    assert err is None
+    assert triaged is not None
+    assert triaged.judge_worthy is False
+    assert triaged.recommended_next_action == "store_only"
+    assert plan is None
+
+
 def test_triage_response_field_inventory_is_store_only() -> None:
     _reset_store()
     _create_campaign()

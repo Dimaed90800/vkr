@@ -32,6 +32,10 @@ class MemoryStore:
         self.runtime_bola_object_pairs: dict[str, dict] = {}
         self.runtime_bola_object_pairs_by_campaign: dict[str, list[str]] = defaultdict(list)
 
+        # Phase API7 — SSRF callback proof store (safe metadata only).
+        self.runtime_ssrf_callbacks: dict[str, dict] = {}
+        self.runtime_ssrf_callbacks_by_campaign: dict[str, list[str]] = defaultdict(list)
+
         self.commands: dict[str, dict] = {}
         self.commands_by_campaign: dict[str, list[str]] = defaultdict(list)
         self.command_fingerprints: dict[str, set[str]] = defaultdict(set)
@@ -189,6 +193,23 @@ class MemoryStore:
             self.runtime_bola_object_pairs[pid]
             for pid in self.runtime_bola_object_pairs_by_campaign.get(campaign_id, [])
             if pid in self.runtime_bola_object_pairs
+        ]
+
+    def store_runtime_ssrf_callback(self, correlation_id: str, campaign_id: str, data: dict) -> None:
+        if not correlation_id:
+            return
+        self.runtime_ssrf_callbacks[correlation_id] = data
+        if correlation_id not in self.runtime_ssrf_callbacks_by_campaign[campaign_id]:
+            self.runtime_ssrf_callbacks_by_campaign[campaign_id].append(correlation_id)
+
+    def get_runtime_ssrf_callback(self, correlation_id: str) -> dict | None:
+        return self.runtime_ssrf_callbacks.get(correlation_id)
+
+    def list_runtime_ssrf_callbacks_by_campaign(self, campaign_id: str) -> list[dict]:
+        return [
+            self.runtime_ssrf_callbacks[cid]
+            for cid in self.runtime_ssrf_callbacks_by_campaign.get(campaign_id, [])
+            if cid in self.runtime_ssrf_callbacks
         ]
 
     def store_command(self, command_id: str, campaign_id: str, data: dict) -> None:

@@ -105,6 +105,30 @@ class BolaReplayProbeAdapter:
                 },
                 errors=[ToolResultError(error_type="object_pair_not_found", message="Prepared object pair was not found.", recoverable=True)],
             )
+        metadata = getattr(pair, "metadata", None) if hasattr(pair, "metadata") else None
+        metadata = metadata if isinstance(metadata, dict) else {}
+        block_reasons = [str(x) for x in (metadata.get("baseline_block_reasons") or []) if str(x).strip()]
+        if block_reasons:
+            return self._finish(
+                command=command,
+                tool_run_id=tool_run_id,
+                start_ms=start_ms,
+                observation_details=self._base_details(pair, validation_mode) | {
+                    "status_code": 0,
+                    "result": "blocked_before_replay",
+                    "access_granted": False,
+                    "response_fingerprint_match": "not_checked",
+                    "evidence_strength": "low",
+                    "reason_codes": ["blocked_pair", *block_reasons][:20],
+                    "owner_status_code": 0,
+                    "owner_result": "skipped",
+                    "attacker_status_code": 0,
+                    "attacker_result": "skipped",
+                    "replay_classification": "blocked_pair",
+                    "owner_baseline_valid": False,
+                },
+                errors=[],
+            )
 
         if str(pair.target_method or "GET").upper() != "GET":
             return self._finish(
@@ -451,6 +475,8 @@ class BolaReplayProbeAdapter:
 
     @staticmethod
     def _base_details(pair: Any, validation_mode: str) -> dict[str, Any]:
+        metadata = getattr(pair, "metadata", None) if hasattr(pair, "metadata") else None
+        metadata = metadata if isinstance(metadata, dict) else {}
         return {
             "validation_mode": validation_mode,
             "object_pair_id": str(pair.object_pair_id or ""),
@@ -461,6 +487,16 @@ class BolaReplayProbeAdapter:
             "path_param_name": str(pair.path_param_name or ""),
             "attacker_auth_profile_id": str(pair.attacker_auth_profile_id or ""),
             "owner_auth_profile_id": str(pair.owner_auth_profile_id or ""),
+            "baseline_probability_score": float(metadata.get("baseline_probability_score") or 0.0),
+            "baseline_probability_reasons": [str(x) for x in (metadata.get("baseline_probability_reasons") or []) if str(x).strip()][:20],
+            "baseline_block_reasons": [str(x) for x in (metadata.get("baseline_block_reasons") or []) if str(x).strip()][:20],
+            "semantic_id_kind": str(metadata.get("semantic_id_kind") or ""),
+            "object_id_field": str(metadata.get("object_id_field") or ""),
+            "id_json_path": str(metadata.get("id_json_path") or ""),
+            "source_operation_id": str(metadata.get("source_operation_id") or ""),
+            "source_status_code": int(metadata.get("source_status_code") or 0),
+            "owner_evidence": bool(metadata.get("owner_evidence")),
+            "dependency_producer_operation_id": str(metadata.get("dependency_producer_operation_id") or ""),
         }
 
     @staticmethod

@@ -1,10 +1,37 @@
 import unittest
+import os
 from types import SimpleNamespace
 
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
+import backend.app.services.report_service as report_service_module
 from backend.app.services.report_service import build_final_session_report, build_session_markdown_report, build_session_report
 
 
 class ReportServiceTests(unittest.TestCase):
+    @staticmethod
+    def _base_final_report() -> dict:
+        return {
+            "session": {"id": 1, "target_name": "crapi", "target_url": "http://target", "status": "finished"},
+            "executive_summary": {"headline": "h", "message": "m"},
+            "summary_text": "summary",
+            "risk_summary": {
+                "total_findings": 0,
+                "confirmed_findings": 0,
+                "candidate_findings": 0,
+                "bola_findings": 0,
+                "bopla_findings": 0,
+                "severity_breakdown": {"high": 0, "medium": 0, "low": 0},
+            },
+            "top_findings": [],
+            "candidate_findings_for_review": [],
+            "judge_trace_summary": {"direct_matches": 0, "recoveries": 0, "fallbacks": 0},
+            "logical_agent_activity_summary": {"logical_agents": []},
+            "logical_agent_learning_summary": {"logical_agents": []},
+            "logical_agent_judge_feedback_summary": {"logical_agents": []},
+            "logical_agent_effectiveness_summary": {"logical_agents": []},
+        }
+
     def test_build_session_report_includes_selected_agent_name(self):
         session_obj = SimpleNamespace(
             id=1,
@@ -419,6 +446,318 @@ class ReportServiceTests(unittest.TestCase):
         )
         self.assertTrue(evidence_bundle["reproducibility"]["has_replay_requests"])
         self.assertTrue(evidence_bundle["reproducibility"]["has_comparison_roles"])
+
+    def test_markdown_report_renders_api7_ssrf_candidates(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "confirmed_findings_count": 0,
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_candidate_operations_count": 1,
+                "ssrf_candidate_fields_count": 1,
+                "ssrf_probe_result_count": 0,
+                "ssrf_probe_callback_received_count": 0,
+                "ssrf_probe_target_non_2xx_count": 0,
+                "ssrf_probe_probe_error_count": 0,
+                "ssrf_probe_schema_synthesized_count": 0,
+                "ssrf_probe_llm_composed_count": 0,
+                "ssrf_candidates": [
+                    {
+                        "operation_id": "op_POST_/api/contact",
+                        "method": "POST",
+                        "path": "/api/contact",
+                        "field_name": "callback_url",
+                        "field_path": "$.callback_url",
+                        "schema_type": "string",
+                        "schema_format": "uri",
+                        "confidence": "high",
+                        "reason_codes": ["schema_format_uri"],
+                    }
+                ],
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("## Детали API7 Server-Side Request Forgery", markdown)
+        self.assertIn("### SSRF Candidates", markdown)
+        self.assertIn("op_POST_/api/contact", markdown)
+        self.assertIn("$.callback_url", markdown)
+
+    def test_markdown_report_renders_ssrf_probe_results(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "confirmed_findings_count": 0,
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_candidate_operations_count": 1,
+                "ssrf_candidate_fields_count": 1,
+                "ssrf_probe_result_count": 1,
+                "ssrf_probe_callback_received_count": 0,
+                "ssrf_probe_target_non_2xx_count": 1,
+                "ssrf_probe_probe_error_count": 0,
+                "ssrf_probe_schema_synthesized_count": 1,
+                "ssrf_probe_llm_composed_count": 0,
+                "ssrf_probe_results": [
+                    {
+                        "operation_id": "op_POST_/api/contact",
+                        "method": "POST",
+                        "path": "/api/contact",
+                        "field_name": "callback_url",
+                        "field_path": "$.callback_url",
+                        "auth_mode": "authenticated",
+                        "auth_profile_id": "authprof_1",
+                        "role_hint": "owner",
+                        "result": "target_non_2xx",
+                        "target_status_code": 400,
+                        "callback_received": False,
+                        "callback_received_effective": True,
+                        "late_callback_reconciled": True,
+                        "callback_store_received": True,
+                        "callback_method": "GET",
+                        "evidence_strength": "high",
+                        "request_composer": "deterministic",
+                        "request_draft_validated": True,
+                        "payload_synthesis_result": "schema_synthesized",
+                        "filled_required_fields_count": 2,
+                        "missing_required_fields_count": 1,
+                        "rejected_fields_count": 0,
+                        "synthesized_field_count": 3,
+                        "schema_summary_source": "api_graph",
+                        "reason_codes": ["target_non_2xx"],
+                    }
+                ],
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("### SSRF Probe Results", markdown)
+        self.assertIn("Target Status Code", markdown)
+        self.assertIn("schema_synthesized", markdown)
+        self.assertIn("Filled Required", markdown)
+        self.assertIn("Callback Received Raw", markdown)
+        self.assertIn("Callback Received Effective", markdown)
+        self.assertIn("Late Callback Reconciled", markdown)
+        self.assertIn("Callback Store Received", markdown)
+        self.assertIn("Field Name", markdown)
+        self.assertIn("Auth Mode", markdown)
+        self.assertIn("Auth Profile ID", markdown)
+        self.assertIn("Role Hint", markdown)
+        self.assertIn("Callback Method", markdown)
+        self.assertIn("Evidence Strength", markdown)
+
+    def test_markdown_api7_confirmed_status_and_summary_are_consistent(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "confirmed",
+                "confirmed_findings_count": 1,
+                "summary_text": "SSRF подтвержден: целевое приложение выполнило исходящий запрос на контролируемый callback URL.",
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_candidate_operations_count": 1,
+                "ssrf_candidate_fields_count": 1,
+                "ssrf_probe_result_count": 1,
+                "ssrf_probe_callback_received_count": 1,
+                "ssrf_probe_target_non_2xx_count": 0,
+                "ssrf_probe_probe_error_count": 1,
+                "ssrf_probe_schema_synthesized_count": 0,
+                "ssrf_probe_llm_composed_count": 1,
+                "confirmed_ssrf_evidence": [
+                    {
+                        "finding_id": "finding_ssrf_1",
+                        "evidence_id": "evp_ssrf_1",
+                        "operation_id": "op_POST_/service/contact",
+                        "method": "POST",
+                        "endpoint": "/service/contact",
+                        "field_path": "$.callback_url",
+                        "callback_received_effective": True,
+                        "late_callback_reconciled": True,
+                        "callback_store_received": True,
+                        "evidence_strength": "high",
+                        "judge_verdict": "confirmed",
+                        "reason_codes": ["controlled_callback_received", "late_callback_reconciled"],
+                    }
+                ],
+                "ssrf_probe_results": [],
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("- Status: `confirmed`", markdown)
+        self.assertIn("SSRF подтвержден", markdown)
+        self.assertNotIn("подтверждённых SSRF-уязвимостей нет", markdown)
+        self.assertIn("### Confirmed SSRF Evidence", markdown)
+        self.assertIn("finding_ssrf_1", markdown)
+        self.assertIn("evp_ssrf_1", markdown)
+        self.assertIn("$.callback_url", markdown)
+
+    def test_markdown_api7_keeps_diagnostic_text_when_no_confirmed(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "confirmed_findings_count": 0,
+                "summary_text": "Диагностические SSRF-кандидаты обнаружены; подтверждение требует controlled callback proof.",
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_candidate_operations_count": 1,
+                "ssrf_candidate_fields_count": 1,
+                "ssrf_probe_result_count": 0,
+                "ssrf_probe_callback_received_count": 0,
+                "ssrf_probe_target_non_2xx_count": 0,
+                "ssrf_probe_probe_error_count": 0,
+                "ssrf_probe_schema_synthesized_count": 0,
+                "ssrf_probe_llm_composed_count": 0,
+                "ssrf_candidates": [],
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("- Status: `diagnostic`", markdown)
+        self.assertIn("Диагностические SSRF-кандидаты обнаружены", markdown)
+
+    def test_markdown_report_renders_api7_planning_diagnostics_when_no_probe_results(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "ssrf_candidate_signal_count": 2,
+                "ssrf_probe_result_count": 0,
+                "api7_planning_diagnostics": {
+                    "ssrf_candidate_signal_count": 2,
+                    "ssrf_probe_ready_count": 0,
+                    "ssrf_probe_blocked_count": 1,
+                    "ssrf_probe_deprioritized_count": 1,
+                    "top_candidate_operation_id": "op_POST_/api/contact",
+                    "top_candidate_field_path": "$.callback_url",
+                    "top_candidate_status": "blocked",
+                    "top_candidate_blocked_reason": "kind_cap_reached",
+                    "kind_cap_remaining": 0,
+                    "api7_already_confirmed": False,
+                    "reason": "kind_cap_reached",
+                },
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("### API7 Planning Diagnostics", markdown)
+        self.assertIn("top_candidate_operation_id", markdown)
+        self.assertIn("top_candidate_status", markdown)
+        self.assertIn("kind_cap_reached", markdown)
+
+    def test_markdown_report_renders_api7_pipeline_trace(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_probe_result_count": 0,
+                "api7_ssrf_pipeline_trace": {
+                    "last_failure_stage": "observation_persistence",
+                    "adapter_called": True,
+                    "ssrf_probe_result_persisted": False,
+                },
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertIn("### API7 SSRF Pipeline Trace", markdown)
+        self.assertIn("last_failure_stage", markdown)
+        self.assertIn("adapter_called", markdown)
+        self.assertIn("ssrf_probe_result_persisted", markdown)
+
+    def test_markdown_report_does_not_leak_ssrf_raw_body_headers_or_secrets(self):
+        session_obj = SimpleNamespace(id=1, last_strategy_json="{}")
+        secret_token = "super-secret-token"
+        final_report = self._base_final_report()
+        final_report["owasp_coverage"] = {
+            "API7_SERVER_SIDE_REQUEST_FORGERY": {
+                "status": "diagnostic",
+                "ssrf_candidate_signal_count": 1,
+                "ssrf_probe_result_count": 1,
+                "ssrf_candidates": [
+                    {
+                        "operation_id": "op_POST_/api/contact",
+                        "method": "POST",
+                        "path": "/api/contact",
+                        "field_name": "callback_url",
+                        "field_path": "$.callback_url",
+                        "schema_type": "string",
+                        "schema_format": "uri",
+                        "confidence": "high",
+                        "reason_codes": [],
+                        "raw_request_body": {"password": "bad"},
+                        "Authorization": f"Bearer {secret_token}",
+                    }
+                ],
+                "ssrf_probe_results": [
+                    {
+                        "operation_id": "op_POST_/api/contact",
+                        "method": "POST",
+                        "path": "/api/contact",
+                        "field_path": "$.callback_url",
+                        "result": "target_non_2xx",
+                        "target_status_code": 400,
+                        "callback_received": False,
+                        "request_composer": "deterministic",
+                        "request_draft_validated": True,
+                        "payload_synthesis_result": "schema_synthesized",
+                        "filled_required_fields_count": 1,
+                        "missing_required_fields_count": 0,
+                        "rejected_fields_count": 0,
+                        "synthesized_field_count": 1,
+                        "schema_summary_source": "api_graph",
+                        "reason_codes": [],
+                        "raw_response_body": {"access_token": "bad"},
+                        "Cookie": "SESSION=bad",
+                        "password": "bad",
+                    }
+                ],
+            }
+        }
+        original = report_service_module.build_final_session_report
+        report_service_module.build_final_session_report = lambda **_: final_report
+        try:
+            markdown = build_session_markdown_report(session_obj, [], [], [], [])
+        finally:
+            report_service_module.build_final_session_report = original
+        self.assertNotIn(secret_token, markdown)
+        self.assertNotIn("raw_request_body", markdown)
+        self.assertNotIn("raw_response_body", markdown)
+        self.assertNotIn("Authorization", markdown)
+        self.assertNotIn("Cookie", markdown)
+        self.assertNotIn("access_token", markdown)
+        self.assertNotIn("password", markdown)
 
 
 if __name__ == "__main__":

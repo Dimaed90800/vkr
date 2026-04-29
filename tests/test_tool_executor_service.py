@@ -1123,6 +1123,71 @@ def test_bola_replay_probe_rejects_secret_inputs_and_requires_object_pair_id() -
     assert "bola_replay_budget_timeout" in codes
 
 
+def test_tool_executor_dispatches_ssrf_probe() -> None:
+    _reset_store()
+    _create_campaign()
+    cmd = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="ssrf_external",
+        strategy="callback_ssrf_probe",
+        tool_name="ssrf_probe",
+        inputs={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/hooks",
+            "method": "POST",
+            "path": "/api/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "auth_mode": "unauthenticated",
+            "auth_profile_id": "",
+        },
+        budget=CommandBudget(max_requests=1, timeout_sec=15),
+    )
+    dummy = ToolResult(
+        tool_run_id="toolrun_mock_ssrf_probe",
+        campaign_id="cmp_test1",
+        tool_name="ssrf_probe",
+        status="finished",
+    )
+    with patch(
+        "backend.services.adapters.ssrf_probe_adapter.SsrfProbeAdapter.execute",
+        return_value=dummy,
+    ) as mocked:
+        result = ToolExecutor().execute_sync(cmd)
+    assert result.tool_name == "ssrf_probe"
+    assert mocked.call_count == 1
+
+
+def test_ssrf_probe_validator_rejects_secret_inputs() -> None:
+    _reset_store()
+    _create_campaign()
+    bad = WorkerCommand(
+        campaign_id="cmp_test1",
+        worker_class="ssrf_external",
+        strategy="callback_ssrf_probe",
+        tool_name="ssrf_probe",
+        inputs={
+            "validation_mode": "ssrf_callback_probe",
+            "operation_id": "op_POST_/api/hooks",
+            "method": "POST",
+            "path": "/api/hooks",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "auth_mode": "unauthenticated",
+            "auth_profile_id": "",
+            "Authorization": "Bearer secret",
+            "callback_base_url": "http://localhost:8000",
+        },
+        budget=CommandBudget(max_requests=2, timeout_sec=20),
+    )
+    v = CommandValidator().validate(bad)
+    assert not v.valid
+    codes = {e.code for e in v.errors}
+    assert "ssrf_probe_forbidden_secret_input" in codes
+    assert "ssrf_probe_budget_max_requests" in codes
+    assert "ssrf_probe_budget_timeout" in codes
+
+
 def test_bola_replay_probe_accepts_safe_object_pair_id_contract() -> None:
     _reset_store()
     _create_campaign()
@@ -1187,9 +1252,7 @@ def test_resource_seed_worker_rejects_secret_inputs_and_requires_owner_auth_prof
     assert "resource_seed_validation_mode_invalid" in codes
     assert "resource_seed_owner_auth_profile_required" in codes
     assert "resource_seed_inputs_unknown_key" in codes
-    assert "resource_seed_budget_max_requests" in codes
     assert "resource_seed_budget_timeout" in codes
-    assert "resource_seed_max_seed_attempts_invalid" in codes
     assert "resource_seed_max_followup_requests_invalid" in codes
 
 

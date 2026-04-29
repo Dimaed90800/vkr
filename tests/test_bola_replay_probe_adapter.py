@@ -85,6 +85,7 @@ def _setup_pair(*, method: str = "GET", raw_object_id: str = "post/123") -> tupl
         confidence="high",
         created_by="bola_object_pair_builder",
         reason_codes=["path_param_resource_match"],
+        metadata={"baseline_probability_score": 73.0, "baseline_probability_reasons": ["method_get_preferred"]},
     )
     return pair.object_pair_id, owner.auth_profile_id, attacker.auth_profile_id
 
@@ -252,3 +253,38 @@ def test_path_substitution_url_encodes_id_and_observation_does_not_expose_raw_id
     assert captured["url"].endswith("/a%2Fb%20c")
     blob = json.dumps(result.observations[0].details, sort_keys=True).lower()
     assert "a/b c" not in blob
+
+
+def test_bola_replay_result_carries_baseline_probability_metadata() -> None:
+    _reset_store()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="abc")
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "bad"})
+
+    result = BolaReplayProbeAdapter(
+        http_client=SafeHttpClient(transport=httpx.MockTransport(handler))
+    ).execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_meta")
+    det = result.observations[0].details
+    assert float(det.get("baseline_probability_score") or 0) == 73.0
+    assert "method_get_preferred" in (det.get("baseline_probability_reasons") or [])
+
+
+def test_blocked_pair_returns_blocked_before_replay() -> None:
+    _reset_store()
+    campaign = _campaign()
+    object_pair_id, _owner, _attacker = _setup_pair(raw_object_id="abc")
+    pair = memory_store.get_runtime_bola_object_pair(object_pair_id)
+    assert isinstance(pair, dict)
+    md = pair.get("metadata") if isinstance(pair.get("metadata"), dict) else {}
+    md["baseline_block_reasons"] = ["object_id_field_semantic_mismatch", "path_param_semantic_mismatch"]
+    pair["metadata"] = md
+    memory_store.store_runtime_bola_object_pair(object_pair_id, "cmp_bola_replay", pair)
+
+    result = BolaReplayProbeAdapter().execute(_cmd(object_pair_id), campaign, "toolrun_bola_replay_blocked")
+    det = result.observations[0].details
+    assert det["result"] == "blocked_before_replay"
+    assert det["replay_classification"] == "blocked_pair"
+    assert det["owner_status_code"] == 0
+    assert det["attacker_status_code"] == 0

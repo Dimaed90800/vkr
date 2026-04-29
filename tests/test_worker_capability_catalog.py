@@ -209,6 +209,20 @@ def test_ssrf_candidate_detector_capability_is_partial_and_diagnostic_only() -> 
     assert "does not perform network ssrf probes" in w.notes.lower()
 
 
+def test_ssrf_probe_capability_is_partial_and_proof_capable() -> None:
+    w = WorkerCapabilityCatalog().get_by_tool_name("ssrf_probe")
+    assert w is not None
+    assert w.status == "partial"
+    assert w.adapter_available is True
+    assert w.execution_mode == "sync"
+    assert w.worker_class == "ssrf_external"
+    assert "ssrf_probe_result" in w.observation_types
+    assert "API7_SERVER_SIDE_REQUEST_FORGERY" in w.owasp_categories
+    assert w.triage_support is True
+    assert w.evidence_support is True
+    assert w.judge_support is True
+
+
 def test_js_endpoint_extractor_capability_is_partial_surface_only() -> None:
     w = WorkerCapabilityCatalog().get_by_tool_name("js_endpoint_extractor")
     assert w is not None

@@ -291,3 +291,131 @@ def test_resource_instance_extractor_returns_safe_diagnostic_when_no_raw_values_
     det = result.observations[0].details
     assert det["resource_instances_count"] == 0
     assert det["reason_codes"] == ["no_raw_values_available"]
+
+
+def test_resource_instance_extractor_extracts_nested_ids_with_json_path() -> None:
+    _reset_store()
+    campaign = _campaign()
+    memory_store.store_runtime_response_json_secret(
+        "toolrun_nested_ids",
+        {"payload": {"items": [{"vehicle": {"vehicleId": "veh-777"}}]}},
+    )
+    obs = Observation(
+        observation_id="obs_nested_ids",
+        campaign_id=campaign.campaign_id,
+        tool_run_id="toolrun_nested_ids",
+        type=ObservationType.response_field_inventory,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/api/v1/vehicles",
+            "path": "/api/v1/vehicles",
+            "status_code": 200,
+            "content_type": "application/json",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+        },
+    )
+    memory_store.store_observation(obs.observation_id, obs.campaign_id, obs.tool_run_id, obs.model_dump(mode="json"))
+    cmd = WorkerCommand(
+        campaign_id=campaign.campaign_id,
+        worker_class="auth_context",
+        strategy="extract_resource_instances",
+        tool_name="resource_instance_extractor",
+        operation_id="op_GET_/api/v1/vehicles",
+        inputs={"source_observation_id": obs.observation_id, "validation_mode": "resource_instance_extraction"},
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    result = ResourceInstanceExtractorAdapter().execute(cmd, campaign, "toolrun_resource_nested")
+    det = result.observations[0].details
+    assert det["resource_instances_count"] >= 1
+    row = det["object_refs"][0]
+    assert row.get("id_json_path")
+    assert row.get("owner_evidence") is True
+    blob = json.dumps(det, sort_keys=True).lower()
+    assert "veh-777" not in blob
+
+
+def test_resource_instance_extractor_semantic_kind_from_json_path() -> None:
+    _reset_store()
+    campaign = _campaign()
+    memory_store.store_runtime_response_json_secret(
+        "toolrun_nested_semantic",
+        {
+            "posts": [
+                {"id": "post-1", "author": {"id": "user-1", "vehicleid": "veh-1"}},
+            ]
+        },
+    )
+    obs = Observation(
+        observation_id="obs_nested_semantic",
+        campaign_id=campaign.campaign_id,
+        tool_run_id="toolrun_nested_semantic",
+        type=ObservationType.response_field_inventory,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/community/posts/recent",
+            "path": "/community/posts/recent",
+            "status_code": 200,
+            "content_type": "application/json",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+        },
+    )
+    memory_store.store_observation(obs.observation_id, obs.campaign_id, obs.tool_run_id, obs.model_dump(mode="json"))
+    cmd = WorkerCommand(
+        campaign_id=campaign.campaign_id,
+        worker_class="auth_context",
+        strategy="extract_resource_instances",
+        tool_name="resource_instance_extractor",
+        operation_id="op_GET_/community/posts/recent",
+        inputs={"source_observation_id": obs.observation_id, "validation_mode": "resource_instance_extraction"},
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    result = ResourceInstanceExtractorAdapter().execute(cmd, campaign, "toolrun_resource_semantic")
+    rows = result.observations[0].details["object_refs"]
+    by_path = {str(r.get("id_json_path") or ""): str(r.get("semantic_id_kind") or "") for r in rows}
+    assert by_path["$.posts[0].id"] == "post_id"
+    assert by_path["$.posts[0].author.id"] == "author_id"
+    assert by_path["$.posts[0].author.vehicleid"] == "vehicle_id"
+
+
+def test_resource_instance_extractor_extracts_vehicle_id_from_vehicles_array() -> None:
+    _reset_store()
+    campaign = _campaign()
+    memory_store.store_runtime_response_json_secret(
+        "toolrun_vehicles_array",
+        {"vehicles": [{"id": "veh-101"}]},
+    )
+    obs = Observation(
+        observation_id="obs_vehicles_array",
+        campaign_id=campaign.campaign_id,
+        tool_run_id="toolrun_vehicles_array",
+        type=ObservationType.response_field_inventory,
+        details={
+            "tool_name": "data_exposure_validator",
+            "operation_id": "op_GET_/identity/api/v2/vehicle/vehicles",
+            "path": "/identity/api/v2/vehicle/vehicles",
+            "status_code": 200,
+            "content_type": "application/json",
+            "auth_mode": "authenticated",
+            "auth_profile_id": "authprof_owner_1",
+            "role_hint": "owner",
+        },
+    )
+    memory_store.store_observation(obs.observation_id, obs.campaign_id, obs.tool_run_id, obs.model_dump(mode="json"))
+    cmd = WorkerCommand(
+        campaign_id=campaign.campaign_id,
+        worker_class="auth_context",
+        strategy="extract_resource_instances",
+        tool_name="resource_instance_extractor",
+        operation_id="op_GET_/identity/api/v2/vehicle/vehicles",
+        inputs={"source_observation_id": obs.observation_id, "validation_mode": "resource_instance_extraction"},
+        budget=CommandBudget(max_requests=0, timeout_sec=15),
+    )
+    result = ResourceInstanceExtractorAdapter().execute(cmd, campaign, "toolrun_resource_vehicles")
+    rows = result.observations[0].details["object_refs"]
+    assert rows
+    assert rows[0]["resource_type"] == "vehicle"
+    assert rows[0]["semantic_id_kind"] == "vehicle_id"

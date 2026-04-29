@@ -36,6 +36,7 @@ try:
     from backend.services.adapters.cors_validator_adapter import CorsValidatorAdapter
     from backend.services.adapters.cookie_flag_validator_adapter import CookieFlagValidatorAdapter
     from backend.services.adapters.ssrf_candidate_detector_adapter import SsrfCandidateDetectorAdapter
+    from backend.services.adapters.ssrf_probe_adapter import SsrfProbeAdapter
     from backend.services.adapters.js_endpoint_extractor_adapter import JsEndpointExtractorAdapter
     from backend.services.adapters.undocumented_endpoint_validator_adapter import (
         UndocumentedEndpointValidatorAdapter,
@@ -88,6 +89,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from services.adapters.cors_validator_adapter import CorsValidatorAdapter
     from services.adapters.cookie_flag_validator_adapter import CookieFlagValidatorAdapter
     from services.adapters.ssrf_candidate_detector_adapter import SsrfCandidateDetectorAdapter
+    from services.adapters.ssrf_probe_adapter import SsrfProbeAdapter
     from services.adapters.js_endpoint_extractor_adapter import JsEndpointExtractorAdapter
     from services.adapters.undocumented_endpoint_validator_adapter import (
         UndocumentedEndpointValidatorAdapter,
@@ -164,6 +166,7 @@ class ToolExecutor:
         self._cors_validator = CorsValidatorAdapter(http_client=http_client)
         self._cookie_flag_validator = CookieFlagValidatorAdapter(http_client=http_client)
         self._ssrf_candidate_detector = SsrfCandidateDetectorAdapter()
+        self._ssrf_probe = SsrfProbeAdapter(http_client=http_client)
         self._js_endpoint_extractor = JsEndpointExtractorAdapter(http_client=http_client)
         self._undocumented_endpoint_validator = UndocumentedEndpointValidatorAdapter(http_client=http_client)
         self._schemathesis_negative = SchemathesisNegativeTestAdapter()
@@ -234,6 +237,8 @@ class ToolExecutor:
             return self._cookie_flag_validator.execute(command, campaign, tool_run_id)
         if command.tool_name == "ssrf_candidate_detector":
             return self._ssrf_candidate_detector.execute(command, campaign, tool_run_id)
+        if command.tool_name == "ssrf_probe":
+            return self._ssrf_probe.execute(command, campaign, tool_run_id)
         if command.tool_name == "js_endpoint_extractor":
             return self._js_endpoint_extractor.execute(command, campaign, tool_run_id)
         if command.tool_name == "undocumented_endpoint_validator":

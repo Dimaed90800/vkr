@@ -357,6 +357,10 @@ class ApiGraphService:
         ]
         request_schema = self._baseline_synth._request_schema(operation, document)
         body_fields = list(self._baseline_synth._schema_property_names(request_schema))
+        body_required_fields, body_field_summaries = self._extract_body_field_summaries(
+            schema=request_schema,
+            document=document,
+        )
         response_fields = list(
             self._baseline_synth._response_schema_property_names(operation, document)
         )
@@ -405,6 +409,8 @@ class ApiGraphService:
             path_params=path_params,
             query_params=query_params,
             body_fields=body_fields,
+            body_required_fields=body_required_fields,
+            body_field_summaries=body_field_summaries,
             response_fields=response_fields,
             resource_type=resource_type,
             risk_hints=risk_hints,
@@ -415,6 +421,74 @@ class ApiGraphService:
         self._add_parameters(graph, op_node, parameters, body_fields, resource_type)
         self._upsert_resource_type(graph, resource_type)
         self._add_requires_auth_edge(graph, op_node, security_names)
+
+    def _extract_body_field_summaries(
+        self,
+        *,
+        schema: Mapping[str, Any] | None,
+        document: Mapping[str, Any],
+    ) -> tuple[list[str], list[dict[str, Any]]]:
+        if not isinstance(schema, Mapping):
+            return [], []
+        resolved = self._baseline_synth._resolve_schema(
+            schema,
+            document=document,
+            visited_refs=set(),
+            depth=0,
+        )
+        required_top = [
+            str(item).strip()
+            for item in (resolved.get("required") or [])
+            if str(item).strip()
+        ]
+        out: list[dict[str, Any]] = []
+
+        def _walk(node: Mapping[str, Any], *, parent_path: str, depth: int, parent_required: set[str]) -> None:
+            if depth > 4:
+                return
+            props = node.get("properties")
+            if not isinstance(props, Mapping):
+                return
+            required_here = {
+                str(item).strip()
+                for item in (node.get("required") or [])
+                if str(item).strip()
+            }
+            for raw_name, raw_child in props.items():
+                name = str(raw_name or "").strip()
+                if not name:
+                    continue
+                child = self._baseline_synth._resolve_schema(
+                    raw_child if isinstance(raw_child, Mapping) else {},
+                    document=document,
+                    visited_refs=set(),
+                    depth=0,
+                )
+                field_path = f"{parent_path}.{name}" if parent_path else f"$.{name}"
+                schema_type = str(child.get("type") or "unknown").strip().lower() or "unknown"
+                schema_format = str(child.get("format") or "").strip() or None
+                enum_values = child.get("enum")
+                enum_sample = [x for x in enum_values[:3]] if isinstance(enum_values, list) else []
+                out.append({
+                    "name": name,
+                    "field_path": field_path,
+                    "location": "body",
+                    "schema_type": schema_type,
+                    "schema_format": schema_format,
+                    "required": name in required_here or (not parent_path and name in parent_required),
+                    "enum_values_sample": enum_sample,
+                    "has_example": child.get("example") is not None,
+                })
+                if schema_type == "object" or isinstance(child.get("properties"), Mapping):
+                    _walk(
+                        child,
+                        parent_path=field_path,
+                        depth=depth + 1,
+                        parent_required=required_here,
+                    )
+
+        _walk(resolved, parent_path="$", depth=0, parent_required=set(required_top))
+        return required_top, out[:80]
 
     def _add_parameters(
         self,

@@ -120,6 +120,27 @@ def _resource_hint_from_path(path: str) -> str:
     return "unknown"
 
 
+def _semantic_id_kind(field_name: str) -> str:
+    normalized = _snake_case_name(field_name)
+    if normalized in {"authorid", "author_id"}:
+        return "author_id"
+    if normalized in {"ownerid", "owner_id"}:
+        return "owner_id"
+    if normalized in {"userid", "user_id"}:
+        return "user_id"
+    if normalized in {"postid", "post_id"}:
+        return "post_id"
+    if normalized in {"videoid", "video_id"}:
+        return "video_id"
+    if normalized in {"vehicleid", "vehicle_id"}:
+        return "vehicle_id"
+    if normalized == "vin":
+        return "vin"
+    if normalized.endswith("id") or normalized.endswith("_id"):
+        return "resource_id"
+    return "unknown_id"
+
+
 def _classify_id_field(field_name: str, *, source_path: str, inside_list_item: bool) -> tuple[str, str] | None:
     """Return (resource_type, confidence) or None if not an id field."""
     fn = str(field_name or "").strip()
@@ -127,9 +148,12 @@ def _classify_id_field(field_name: str, *, source_path: str, inside_list_item: b
         return None
     normalized = _snake_case_name(fn)
     # explicit high-confidence patterns
-    for prefix in ("order", "vehicle", "car", "post", "video", "report", "user"):
+    for prefix in ("order", "vehicle", "car", "post", "video", "report", "user", "author", "owner"):
         if normalized in {f"{prefix}id", f"{prefix}_id"}:
-            rtype = "vehicle" if prefix == "car" else prefix
+            if prefix in {"author", "owner", "user"}:
+                rtype = "user"
+            else:
+                rtype = "vehicle" if prefix == "car" else prefix
             return rtype, "high"
     if normalized.endswith("_id") and len(normalized) > 3:
         # unknown prefix, but still id-like; use path hint as medium
@@ -453,6 +477,8 @@ class ResourceSeedWorkerAdapter:
                 and max_followup_requests > 0
                 and len(requests) < max_http_calls
             ):
+                follow_res = None
+                follow_sc = 0
                 followup_op = self._pick_followup_get_operation(campaign.campaign_id, seed_op)
                 if followup_op is not None:
                     followup_url = _operation_url(campaign.target_url, followup_op.path_template)
@@ -478,18 +504,27 @@ class ResourceSeedWorkerAdapter:
                     follow_sc = int(follow_res.status_code or 0)
                     responses.append(ToolResultResponse(request_id=req_follow, status_code=follow_sc))
                     last_followup_op = followup_op
-                    if follow_res.error is None and 200 <= follow_sc <= 299:
-                        follow_body = follow_res.get_raw_response_body()
-                        rtype, conf, field_name, raw_id = _extract_first_object_id(
-                            follow_body,
-                            source_path=str(followup_op.path_template or ""),
-                        )
+                if follow_res is not None and follow_res.error is None and 200 <= follow_sc <= 299:
+                    follow_body = follow_res.get_raw_response_body()
+                    rtype, conf, field_name, raw_id = _extract_first_object_id(
+                        follow_body,
+                        source_path=str(followup_op.path_template or ""),
+                    )
 
             if rtype is None or conf is None or field_name is None:
                 failed_count += 1
                 last_seed_status = "no_object_id_found"
                 _append_unique(reason_codes, "no_object_id_found")
                 continue
+
+            semantic_kind = _semantic_id_kind(str(field_name or ""))
+            semantic_reason_codes: list[str] = []
+            if semantic_kind == "author_id":
+                _append_unique(semantic_reason_codes, "extracted_id_semantic_kind_author_id")
+            if semantic_kind in {"author_id", "owner_id", "user_id"} and str(rtype or "").lower() == "post":
+                # Avoid typing identity-like identifiers as post ids.
+                rtype = "user"
+                _append_unique(semantic_reason_codes, "skipped_for_resource_type_post_due_to_semantic_mismatch")
 
             instance = self._instances.create_resource_instance(
                 campaign_id=campaign.campaign_id,
@@ -502,7 +537,21 @@ class ResourceSeedWorkerAdapter:
                 source_role_hint="owner",
                 confidence=conf,
                 created_by="resource_seed_worker",
-                metadata={"tool_run_id": tool_run_id, "stage": "seed_create", "attempt": attempts_count},
+                metadata={
+                    "tool_run_id": tool_run_id,
+                    "stage": "seed_create",
+                    "attempt": attempts_count,
+                    "semantic_id_kind": semantic_kind,
+                    "source_method": str(seed_op.method or "").upper(),
+                    "source_status_code": int(sc),
+                    "source_content_type": str(result.response_content_type or ""),
+                    "source_reason_codes": list(reason_codes or [])[:20],
+                    "source_seed_status": str(last_seed_status or ""),
+                    "source_seed_operation_id": str(seed_op.operation_id or ""),
+                    "source_seed_path": str(seed_op.path_template or ""),
+                    "source_seed_created_from_non_2xx": bool("creation_non_2xx" in reason_codes),
+                    "source_seed_blocked_required_object_ref": bool("blocked_required_object_ref" in reason_codes),
+                },
             )
             safe_refs.append({
                 "object_ref_id": instance.object_ref_id,
@@ -510,9 +559,23 @@ class ResourceSeedWorkerAdapter:
                 "object_id_field": instance.object_id_field,
                 "resource_type": instance.resource_type,
                 "confidence": instance.confidence,
+                "semantic_id_kind": semantic_kind,
+                "source_operation_id": str(seed_op.operation_id or ""),
+                "source_method": str(seed_op.method or "").upper(),
+                "source_path": str(seed_op.path_template or ""),
+                "source_status_code": int(sc),
+                "source_content_type": str(result.response_content_type or ""),
+                "source_reason_codes": (list(reason_codes or []) + semantic_reason_codes)[:20],
+                "source_seed_status": str(last_seed_status or ""),
+                "source_seed_operation_id": str(seed_op.operation_id or ""),
+                "source_seed_path": str(seed_op.path_template or ""),
+                "source_seed_created_from_non_2xx": bool("creation_non_2xx" in reason_codes),
+                "source_seed_blocked_required_object_ref": bool("blocked_required_object_ref" in reason_codes),
             })
             last_seed_status = "seeded"
             _append_unique(reason_codes, "resource_ids_extracted")
+            for code in semantic_reason_codes:
+                _append_unique(reason_codes, code)
 
         if safe_refs:
             return self._finished(

@@ -23,6 +23,7 @@ try:
     from backend.api.routes_tool_wrappers import router as tool_wrappers_router
     from backend.api.routes_traffic_discovery import router as traffic_discovery_router
     from backend.api.routes_reports import reports_router
+    from backend.api.routes_callbacks import callbacks_router
     from backend.models.common import HealthResponse
     from backend.storage.memory_store import memory_store
     from backend.services.tool_wrappers import ToolWrapperService
@@ -49,6 +50,7 @@ except ModuleNotFoundError:  # pragma: no cover
     from api.routes_tool_wrappers import router as tool_wrappers_router
     from api.routes_traffic_discovery import router as traffic_discovery_router
     from api.routes_reports import reports_router
+    from api.routes_callbacks import callbacks_router
     from models.common import HealthResponse
     from storage.memory_store import memory_store
     from services.tool_wrappers import ToolWrapperService
@@ -76,6 +78,7 @@ app.include_router(tests_router, prefix="/v1")
 app.include_router(tool_wrappers_router, prefix="/v1")
 app.include_router(store_router, prefix="/v1")
 app.include_router(reports_router)
+app.include_router(callbacks_router)
 app.include_router(workers_router)
 app.include_router(tool_runs_router)
 app.include_router(observations_router)

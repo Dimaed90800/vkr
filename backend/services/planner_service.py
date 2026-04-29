@@ -148,6 +148,7 @@ class PlannerService:
                 graph_summary.model_dump(mode="json"),
             ),
         )
+        candidates.extend(self._ssrf_probe_candidates(campaign))
         candidates.extend(
             self._auth_flow_detector_candidates(
                 campaign,
@@ -202,6 +203,7 @@ class PlannerService:
             ]
 
         candidates = self._ordered(candidates)[:max(int(request.max_candidates or 0), 0)]
+        ready_counts, blocked_counts, ready_sample, blocked_sample = self._build_safe_candidate_samples(candidates)
 
         return PlannerResponse(
             campaign_id=campaign_id,
@@ -210,6 +212,10 @@ class PlannerService:
             blocked_count=sum(1 for c in candidates if c.status == PlannerCandidateStatus.blocked),
             skipped_existing_count=sum(1 for c in candidates if c.status == PlannerCandidateStatus.skipped_existing),
             candidates=candidates,
+            ready_candidates_by_kind_count=ready_counts,
+            blocked_candidates_by_kind_count=blocked_counts,
+            ready_candidates_sample=ready_sample,
+            blocked_candidates_sample=blocked_sample,
             warnings=warnings,
         )
 
@@ -359,7 +365,12 @@ class PlannerService:
             owner_auth_profile_id = str(row.get("owner_auth_profile_id") or "").strip()
             if not object_pair_id or target_method != "GET" or confidence not in {"high", "medium"} or not attacker_auth_profile_id:
                 continue
-            score = self._score_bola_object_pair_row(row, operations_by_id.get(str(row.get("target_operation_id") or "").strip()))
+            score, score_reasons = self._score_bola_object_pair_row(
+                row,
+                operations_by_id.get(str(row.get("target_operation_id") or "").strip()),
+                replay_results,
+            )
+            row["_baseline_probability_reasons"] = score_reasons
             eligible_rows.append((score, index, row))
 
         # Highest score first; stable order by original index.
@@ -386,6 +397,22 @@ class PlannerService:
                 "bola_replay_candidate_source": "bola_object_pair",
                 "reason_codes": ["bola_object_pair_available"],
                 "object_pair_score": float(score),
+                "baseline_probability_score": float(row.get("baseline_probability_score") or score),
+                "baseline_probability_reasons": list(row.get("_baseline_probability_reasons") or []),
+                "invalid_pair_penalty": float(row.get("invalid_pair_penalty") or 0.0),
+                "previous_owner_status_code": int(row.get("previous_owner_status_code") or 0),
+                "object_ref_confidence": str(row.get("object_ref_confidence") or ""),
+                "dependency_edge_confidence": str(row.get("dependency_edge_confidence") or ""),
+                "baseline_block_reasons": list(row.get("baseline_block_reasons") or []),
+                "semantic_id_kind": str(row.get("semantic_id_kind") or ""),
+                "path_param_name": str(row.get("path_param_name") or ""),
+                "object_id_field": str(row.get("object_id_field") or ""),
+                "id_json_path": str(row.get("id_json_path") or ""),
+                "source_operation_id": str(row.get("source_operation_id") or ""),
+                "source_status_code": int(row.get("source_status_code") or 0),
+                "source_reason_codes": list(row.get("source_reason_codes") or []),
+                "owner_evidence": bool(row.get("owner_evidence")),
+                "dependency_producer_operation_id": str(row.get("dependency_producer_operation_id") or ""),
                 "graph_summary": graph_summary,
             }
             if replay_access_granted or granted_exists:
@@ -405,7 +432,12 @@ class PlannerService:
                     priority=50.0,
                     reason="Matching bola_replay_result already exists for this object pair.",
                     dedup_key=dedup_key,
-                    summary={**summary, "prior_result": replay_result_code},
+                    summary={
+                        **summary,
+                        "prior_result": replay_result_code,
+                        "rework_created": replay_result_code == "invalid_object_pair",
+                        "next_pair_available": True,
+                    },
                 ))
                 continue
             if next_ready_emitted:
@@ -416,6 +448,32 @@ class PlannerService:
                     priority=49.0,
                     reason="Replay rotation: waiting for result of a higher-priority untried object pair.",
                     missing_inputs=["prior_untried_object_pair_pending"],
+                    dedup_key=dedup_key,
+                    summary={**summary, "prior_result": "not_replayed"},
+                ))
+                continue
+            block_reasons = [str(x) for x in (row.get("baseline_block_reasons") or []) if str(x).strip()]
+            has_semantic_context = bool(str(row.get("semantic_id_kind") or "").strip()) or bool(str(row.get("object_id_field") or "").strip())
+            if block_reasons or (has_semantic_context and float(score) < 50.0):
+                missing_inputs = ["low_baseline_probability"] if (has_semantic_context and float(score) < 50.0) else []
+                if {"semantic_id_mismatch", "object_id_field_semantic_mismatch", "path_param_semantic_mismatch"} & set(block_reasons):
+                    missing_inputs.append("semantic_id_mismatch")
+                if "weak_object_ref_provenance" in block_reasons:
+                    missing_inputs.append("weak_object_ref_provenance")
+                for code in (
+                    "object_id_field_semantic_mismatch",
+                    "path_param_semantic_mismatch",
+                    "source_seed_creation_non_2xx",
+                    "source_seed_blocked_required_object_ref",
+                ):
+                    if code in block_reasons:
+                        missing_inputs.append(code)
+                results.append(self._candidate(
+                    kind=PlannerCandidateKind.bola_replay_probe,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=49.0,
+                    reason="BOLA object pair was deprioritized due to semantic incompatibility or weak baseline probability.",
+                    missing_inputs=missing_inputs[:5],
                     dedup_key=dedup_key,
                     summary={**summary, "prior_result": "not_replayed"},
                 ))
@@ -447,56 +505,160 @@ class PlannerService:
             next_ready_emitted = True
         return results
 
-    @staticmethod
     def _score_bola_object_pair_row(
+        self,
         row: dict[str, Any],
         operation: Operation | None,
-    ) -> float:
+        replay_results: dict[str, dict[str, Any]],
+    ) -> tuple[float, list[str]]:
         score = 0.0
+        reasons: list[str] = []
         method = str(row.get("target_method") or "GET").strip().upper()
         confidence = str(row.get("confidence") or "low").strip().lower()
         resource_type = str(row.get("resource_type") or "").strip().lower()
         path_param_name = str(row.get("path_param_name") or "").strip().lower()
         object_id_field = str(row.get("object_id_field") or "").strip().lower()
+        target_operation_id = str(row.get("target_operation_id") or "").strip()
+        target_path_template = str(row.get("target_path_template") or "").strip()
+        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
         reason_codes = {
             str(code).strip().lower()
             for code in (row.get("reason_codes") or [])
             if isinstance(code, str)
         }
+        meta_base_score = float(metadata.get("baseline_probability_score") or 0.0)
+        if meta_base_score > 0:
+            score += min(meta_base_score, 100.0) * 0.35
+            reasons.append("pair_builder_baseline_probability_score")
+        semantic_id_kind = str(metadata.get("semantic_id_kind") or row.get("semantic_id_kind") or "").strip().lower()
+        source_reason_codes = {
+            str(x).strip().lower()
+            for x in (metadata.get("source_reason_codes") or row.get("source_reason_codes") or [])
+            if str(x).strip()
+        }
+        owner_evidence = bool(metadata.get("owner_evidence") or row.get("owner_evidence"))
+        block_reasons: list[str] = []
 
         if method == "GET":
             score += 20.0
+            reasons.append("consumer_method_get")
         if confidence == "high":
             score += 15.0
+            reasons.append("pair_confidence_high")
         elif confidence == "medium":
             score += 9.0
+            reasons.append("pair_confidence_medium")
 
         if "path_param_resource_match" in reason_codes:
             score += 8.0
+            reasons.append("path_param_resource_match")
         if any(token and token in path_param_name for token in (resource_type, "id")):
             score += 4.0
+            reasons.append("path_param_name_id_like")
         if any(token and token in object_id_field for token in (resource_type, "id")):
             score += 3.0
+            reasons.append("object_field_id_like")
+        if owner_evidence:
+            score += 25.0
+            reasons.append("owner_evidence_true")
+        else:
+            score -= 12.0
+            reasons.append("owner_evidence_missing_penalty")
+        source_status_code = int(metadata.get("source_status_code") or row.get("source_status_code") or 0)
+        if 200 <= source_status_code <= 299:
+            score += 20.0
+            reasons.append("source_status_2xx")
+        elif source_status_code:
+            score -= 60.0
+            reasons.append("source_status_non_2xx")
+            block_reasons.append("weak_object_ref_provenance")
+        if semantic_id_kind in {"author_id", "owner_id", "user_id"} and path_param_name in {
+            "postid", "post_id", "articleid", "vehicleid", "vehicle_id", "orderid", "order_id", "videoid", "video_id"
+        }:
+            score -= 100.0
+            reasons.append("path_param_semantic_mismatch")
+            reasons.append("object_id_field_semantic_mismatch")
+            block_reasons.append("object_id_field_semantic_mismatch")
+            block_reasons.append("path_param_semantic_mismatch")
+        if "creation_non_2xx" in source_reason_codes:
+            score -= 40.0
+            reasons.append("seed_creation_non_2xx_penalty")
+            block_reasons.append("source_seed_creation_non_2xx")
+            block_reasons.append("weak_object_ref_provenance")
+        if "blocked_required_object_ref" in source_reason_codes:
+            score -= 40.0
+            reasons.append("blocked_required_object_ref_penalty")
+            block_reasons.append("source_seed_blocked_required_object_ref")
+            block_reasons.append("weak_object_ref_provenance")
 
         if operation is not None:
             if bool(operation.auth_required):
                 score += 6.0
+                reasons.append("consumer_auth_required")
             if operation.response_fields:
                 score += 4.0
+                reasons.append("consumer_has_response_fields")
             op_resource = str(operation.resource_type or "").strip().lower()
             if resource_type and op_resource and resource_type == op_resource:
                 score += 5.0
+                reasons.append("consumer_resource_type_match")
             if operation.path_params:
                 params = {str(p or "").strip().lower() for p in operation.path_params}
                 if path_param_name and path_param_name in params:
                     score += 3.0
+                    reasons.append("path_param_declared")
+
+        # Penalize operation/resource combos that previously failed owner baseline / invalid pair.
+        invalid_pair_penalty = 0.0
+        previous_owner_status_code = 0
+        for prev in replay_results.values():
+            if not isinstance(prev, dict):
+                continue
+            if str(prev.get("target_operation_id") or "") != target_operation_id:
+                continue
+            if str(prev.get("resource_type") or "").strip().lower() != resource_type:
+                continue
+            prev_result = str(prev.get("result") or prev.get("replay_classification") or "").strip().lower()
+            prev_owner_status = int(prev.get("owner_status_code") or 0)
+            if prev_owner_status:
+                previous_owner_status_code = max(previous_owner_status_code, prev_owner_status)
+            if prev_result == "invalid_object_pair":
+                invalid_pair_penalty -= 22.0
+                reasons.append("previous_invalid_object_pair_penalty")
+            if prev_owner_status in {400, 404}:
+                invalid_pair_penalty -= 80.0
+                reasons.append("previous_owner_baseline_non_2xx_penalty")
+            if prev_result in {"replay_error", "inconclusive"}:
+                invalid_pair_penalty -= 8.0
+                reasons.append("previous_replay_error_penalty")
+        score += invalid_pair_penalty
 
         # Deterministic generic preference when scores tie.
         if resource_type == "vehicle":
             score += 0.2
+            reasons.append("resource_type_vehicle_tiebreak")
         elif resource_type == "post":
             score += 0.1
-        return score
+            reasons.append("resource_type_post_tiebreak")
+
+        row["baseline_probability_score"] = float(score)
+        row["baseline_probability_reasons"] = reasons[:20]
+        row["invalid_pair_penalty"] = float(invalid_pair_penalty)
+        row["previous_owner_status_code"] = int(previous_owner_status_code)
+        row["object_ref_confidence"] = confidence
+        dep_conf = ""
+        if isinstance(metadata.get("dependency_edge"), dict):
+            dep_conf = str(metadata.get("dependency_edge", {}).get("confidence") or "")
+        row["dependency_edge_confidence"] = dep_conf
+        row["baseline_block_reasons"] = block_reasons[:20]
+        row["semantic_id_kind"] = semantic_id_kind
+        row["source_operation_id"] = str(metadata.get("source_operation_id") or row.get("source_operation_id") or "")
+        row["source_status_code"] = int(metadata.get("source_status_code") or row.get("source_status_code") or 0)
+        row["source_reason_codes"] = [str(x) for x in (metadata.get("source_reason_codes") or row.get("source_reason_codes") or []) if str(x).strip()][:20]
+        row["id_json_path"] = str(metadata.get("id_json_path") or row.get("id_json_path") or "")
+        row["owner_evidence"] = bool(owner_evidence)
+        row["dependency_producer_operation_id"] = str(metadata.get("dependency_producer_operation_id") or "")
+        return score, reasons[:20]
 
     def _bola_candidate(
         self,
@@ -808,6 +970,594 @@ class PlannerService:
                 out.append(candidate)
         return out
 
+    def _ssrf_probe_candidates(self, campaign: Campaign) -> list[PlannerCandidate]:
+        """Emit callback-based SSRF proof probes from existing ssrf_candidate_signal observations."""
+        auth_ctx = self._latest_test_account_materialization_details(campaign.campaign_id)
+        owner_auth_profile_id = ""
+        owner_role_hint = "owner"
+        if isinstance(auth_ctx, dict):
+            owner_auth_profile_id = str(auth_ctx.get("owner_auth_profile_id") or "").strip()
+            if owner_auth_profile_id:
+                profile = memory_store.get_auth_profile(owner_auth_profile_id) or {}
+                owner_role_hint = str(profile.get("role_hint") or "owner")
+
+        stats = self._ssrf_probe_attempt_stats(campaign.campaign_id)
+        if stats["any_callback_received"]:
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.ssrf_probe,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=25.0,
+                    reason="Existing ssrf_probe_result with callback_received=true stops further SSRF probe rotation.",
+                    dedup_key=f"{campaign.campaign_id}|ssrf_probe|callback_confirmed",
+                    summary={
+                        "ssrf_probe_candidate_source": "callback_already_received",
+                        "validation_mode": "ssrf_callback_probe",
+                        "reason_codes": ["callback_received_already"],
+                        "audit_flags": [],
+                    },
+                ),
+            ]
+
+        out: list[PlannerCandidate] = []
+        ready_pool: list[tuple[float, str, WorkerCommand, dict[str, Any]]] = []
+        seen_signal_keys: set[tuple[str, str]] = set()
+        for raw in reversed(memory_store.list_observations_by_campaign(campaign.campaign_id)):
+            if PlannerService._raw_observation_type(raw) != "ssrf_candidate_signal":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("validation_mode") or "").strip() != "ssrf_candidate_detection":
+                continue
+            operation_id = str(det.get("operation_id") or "").strip()
+            method = str(det.get("method") or "").strip().upper()
+            path = str(det.get("path") or "").strip()
+            field_name = str(det.get("field_name") or "").strip()
+            field_path = str(det.get("field_path") or "").strip()
+            schema_format = str(det.get("schema_format") or "").strip().lower()
+            confidence = str(det.get("confidence") or "").strip().lower()
+            required_body_fields = [str(x) for x in (det.get("required_body_fields") or []) if str(x).strip()]
+            allowed_body_fields = [str(x) for x in (det.get("allowed_body_fields") or []) if str(x).strip()]
+            body_field_summaries = [dict(x) for x in (det.get("body_field_summaries") or []) if isinstance(x, dict)]
+            schema_summary_source = str(det.get("schema_summary_source") or ("api_graph" if body_field_summaries else "none")).strip() or "none"
+            if not (operation_id and method and path and field_name and field_path):
+                continue
+            if method not in {"POST", "PUT", "PATCH"}:
+                continue
+            seen_signal_keys.add((operation_id, field_path))
+
+            validation_mode = "ssrf_callback_probe"
+            auth_mode = "authenticated" if owner_auth_profile_id else "unauthenticated"
+            auth_profile_id = owner_auth_profile_id if owner_auth_profile_id else ""
+            role_hint = owner_role_hint if owner_auth_profile_id else ""
+
+            dedup_key = "|".join([
+                campaign.campaign_id,
+                "ssrf_probe",
+                operation_id,
+                field_path,
+                validation_mode,
+                auth_mode,
+                auth_profile_id,
+            ])
+            candidate_key = self._ssrf_probe_candidate_key(
+                operation_id=operation_id,
+                field_path=field_path,
+                validation_mode=validation_mode,
+                auth_mode=auth_mode,
+                auth_profile_id=auth_profile_id,
+            )
+            attempted_count = int(stats["attempted_count_by_candidate"].get(candidate_key, 0))
+            previous_result = str(stats["latest_result_by_candidate"].get(candidate_key, "") or "")
+
+            if attempted_count > 0:
+                attempted_reason_codes = ["ssrf_candidate_already_attempted", "already_attempted"]
+                if previous_result in {"target_non_2xx", "target_4xx", "target_5xx", "probe_error", "no_callback_observed"}:
+                    attempted_reason_codes.append("previous_failure_penalty")
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.ssrf_probe,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=18.0,
+                    reason="This SSRF candidate was already attempted; planner rotates to another unattempted candidate.",
+                    dedup_key=dedup_key,
+                    summary={
+                        "validation_mode": validation_mode,
+                        "operation_id": operation_id,
+                        "method": method,
+                        "path": path,
+                        "field_name": field_name,
+                        "field_path": field_path,
+                        "auth_mode": auth_mode,
+                        "auth_profile_id": auth_profile_id,
+                        "role_hint": role_hint,
+                        "ssrf_probe_candidate_source": "already_attempted",
+                        "previous_result": previous_result,
+                        "attempted_count_for_candidate": attempted_count,
+                        "ssrf_score": 0.0,
+                        "ssrf_score_reasons": ["already_attempted"],
+                        "reason_codes": attempted_reason_codes,
+                        "audit_flags": [],
+                    },
+                ))
+                continue
+
+            if "{" in path and "}" in path:
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.ssrf_probe,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=22.0,
+                    reason="Path parameters require a corpus seed before SSRF callback probe.",
+                    missing_inputs=["path_params_seed"],
+                    dedup_key=dedup_key,
+                    summary={
+                        "validation_mode": validation_mode,
+                        "operation_id": operation_id,
+                        "method": method,
+                        "path": path,
+                        "field_name": field_name,
+                        "field_path": field_path,
+                        "auth_mode": auth_mode,
+                        "auth_profile_id": auth_profile_id,
+                        "role_hint": role_hint,
+                        "ssrf_probe_candidate_source": "path_params_missing_seed",
+                        "previous_result": previous_result,
+                        "attempted_count_for_candidate": attempted_count,
+                        "ssrf_score": 0.0,
+                        "ssrf_score_reasons": ["path_params_present_without_seed"],
+                        "reason_codes": ["path_params_require_seed"],
+                        "audit_flags": ["path_params_present"],
+                    },
+                ))
+                continue
+            if bool(det.get("requires_object_ref")):
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.ssrf_probe,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=22.0,
+                    reason="Candidate requires object ref seed before SSRF callback probe.",
+                    missing_inputs=["object_ref_seed"],
+                    dedup_key=dedup_key,
+                    summary={
+                        "validation_mode": validation_mode,
+                        "operation_id": operation_id,
+                        "method": method,
+                        "path": path,
+                        "field_name": field_name,
+                        "field_path": field_path,
+                        "auth_mode": auth_mode,
+                        "auth_profile_id": auth_profile_id,
+                        "role_hint": role_hint,
+                        "ssrf_probe_candidate_source": "missing_object_ref",
+                        "previous_result": previous_result,
+                        "attempted_count_for_candidate": attempted_count,
+                        "ssrf_score": 0.0,
+                        "ssrf_score_reasons": ["object_ref_required"],
+                        "reason_codes": ["object_ref_required"],
+                        "audit_flags": ["object_ref_required"],
+                    },
+                ))
+                continue
+
+            score, score_reasons = self._ssrf_probe_score(
+                operation_id=operation_id,
+                method=method,
+                path=path,
+                field_name=field_name,
+                field_path=field_path,
+                schema_format=schema_format,
+                confidence=confidence,
+                auth_mode=auth_mode,
+                has_path_params=False,
+                requires_object_ref=False,
+                attempted_count=attempted_count,
+                previous_result=previous_result,
+            )
+
+            suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+            cmd = WorkerCommand(
+                campaign_id=campaign.campaign_id,
+                task_id=f"task_ssrf_probe_{suffix}",
+                worker_class="ssrf_external",
+                strategy="callback_ssrf_probe",
+                tool_name="ssrf_probe",
+                operation_id=operation_id,
+                inputs={
+                    "validation_mode": validation_mode,
+                    "operation_id": operation_id,
+                    "method": method,
+                    "path": path,
+                    "field_name": field_name,
+                    "field_path": field_path,
+                    "auth_mode": auth_mode,
+                    "auth_profile_id": auth_profile_id,
+                    "role_hint": role_hint,
+                    "required_body_fields": required_body_fields,
+                    "allowed_body_fields": allowed_body_fields,
+                    "body_field_summaries": body_field_summaries,
+                    "schema_summary_source": schema_summary_source,
+                    "ssrf_target_field": {
+                        "field_name": field_name,
+                        "field_path": field_path,
+                    },
+                },
+                budget=CommandBudget(max_requests=1, timeout_sec=15),
+                success_criteria=["ssrf_callback_probe_recorded"],
+            )
+            ready_pool.append((
+                score,
+                dedup_key,
+                cmd,
+                {
+                    "validation_mode": validation_mode,
+                    "operation_id": operation_id,
+                    "method": method,
+                    "path": path,
+                    "field_name": field_name,
+                    "field_path": field_path,
+                    "auth_mode": auth_mode,
+                    "auth_profile_id": auth_profile_id,
+                    "role_hint": role_hint,
+                    "ssrf_probe_candidate_source": "ssrf_candidate_signal",
+                    "previous_result": previous_result,
+                    "attempted_count_for_candidate": attempted_count,
+                    "required_body_fields": required_body_fields,
+                    "allowed_body_fields": allowed_body_fields,
+                    "body_field_summaries": body_field_summaries,
+                    "schema_summary_source": schema_summary_source,
+                    "ssrf_target_field": {
+                        "field_name": field_name,
+                        "field_path": field_path,
+                    },
+                    "ssrf_score": float(score),
+                    "ssrf_score_reasons": score_reasons,
+                    "reason_codes": ["url_like_field_mutated_planned"] + (["missing_schema_context"] if schema_summary_source == "none" else []),
+                    "audit_flags": [],
+                },
+            ))
+
+        # Fallback: keep a richer SSRF candidate pool even when detector observations are sparse.
+        for op in self._graph.list_operations(campaign.campaign_id):
+            operation_id = str(op.operation_id or "").strip()
+            method = str(op.method or "").strip().upper()
+            path = normalize_api_path(str(op.path_template or ""))
+            if not (operation_id and path and method in {"POST", "PUT", "PATCH"}):
+                continue
+            fields = _detect_ssrf_candidate_fields(
+                body_fields=list(op.body_fields or []),
+                body_field_summaries=list(op.body_field_summaries or []),
+                body_required_fields=list(op.body_required_fields or []),
+                operation_tags=list(op.tags or []),
+                query_params=list(op.query_params or []),
+                operation_id=operation_id,
+                path_template=path,
+                method=method,
+            )
+            for field in fields:
+                field_name = str(field.get("field_name") or "").strip()
+                field_path = str(field.get("field_path") or "").strip()
+                schema_format = str(field.get("schema_format") or "").strip().lower()
+                confidence = str(field.get("confidence") or "").strip().lower()
+                required_body_fields = [str(x) for x in (field.get("required_body_fields") or []) if str(x).strip()]
+                allowed_body_fields = [str(x) for x in (field.get("allowed_body_fields") or []) if str(x).strip()]
+                body_field_summaries = [dict(x) for x in (field.get("body_field_summaries") or []) if isinstance(x, dict)]
+                schema_summary_source = str(field.get("schema_summary_source") or ("api_graph" if body_field_summaries else "none")).strip() or "none"
+                if not (field_name and field_path):
+                    continue
+                if (operation_id, field_path) in seen_signal_keys:
+                    continue
+                validation_mode = "ssrf_callback_probe"
+                auth_mode = "authenticated" if owner_auth_profile_id else "unauthenticated"
+                auth_profile_id = owner_auth_profile_id if owner_auth_profile_id else ""
+                role_hint = owner_role_hint if owner_auth_profile_id else ""
+                dedup_key = "|".join([
+                    campaign.campaign_id,
+                    "ssrf_probe",
+                    operation_id,
+                    field_path,
+                    validation_mode,
+                    auth_mode,
+                    auth_profile_id,
+                ])
+                candidate_key = self._ssrf_probe_candidate_key(
+                    operation_id=operation_id,
+                    field_path=field_path,
+                    validation_mode=validation_mode,
+                    auth_mode=auth_mode,
+                    auth_profile_id=auth_profile_id,
+                )
+                attempted_count = int(stats["attempted_count_by_candidate"].get(candidate_key, 0))
+                previous_result = str(stats["latest_result_by_candidate"].get(candidate_key, "") or "")
+                if attempted_count > 0:
+                    out.append(self._candidate(
+                        kind=PlannerCandidateKind.ssrf_probe,
+                        status=PlannerCandidateStatus.skipped_existing,
+                        priority=18.0,
+                        reason="This SSRF candidate was already attempted; planner rotates to another unattempted candidate.",
+                        dedup_key=dedup_key,
+                        summary={
+                            "validation_mode": validation_mode,
+                            "operation_id": operation_id,
+                            "method": method,
+                            "path": path,
+                            "field_name": field_name,
+                            "field_path": field_path,
+                            "auth_mode": auth_mode,
+                            "auth_profile_id": auth_profile_id,
+                            "role_hint": role_hint,
+                            "ssrf_probe_candidate_source": "openapi_fallback_already_attempted",
+                            "previous_result": previous_result,
+                            "attempted_count_for_candidate": attempted_count,
+                            "required_body_fields": required_body_fields,
+                            "allowed_body_fields": allowed_body_fields,
+                            "body_field_summaries": body_field_summaries,
+                            "schema_summary_source": schema_summary_source,
+                            "ssrf_score": 0.0,
+                            "ssrf_score_reasons": ["already_attempted"],
+                            "reason_codes": ["ssrf_candidate_already_attempted", "already_attempted"] + (
+                                ["previous_failure_penalty"]
+                                if previous_result in {"target_non_2xx", "target_4xx", "target_5xx", "probe_error", "no_callback_observed"}
+                                else []
+                            ),
+                            "audit_flags": [],
+                        },
+                    ))
+                    continue
+                has_path_params = "{" in path and "}" in path
+                if has_path_params:
+                    out.append(self._candidate(
+                        kind=PlannerCandidateKind.ssrf_probe,
+                        status=PlannerCandidateStatus.blocked,
+                        priority=22.0,
+                        reason="Path parameters require a corpus seed before SSRF callback probe.",
+                        missing_inputs=["path_params_seed"],
+                        dedup_key=dedup_key,
+                        summary={
+                            "validation_mode": validation_mode,
+                            "operation_id": operation_id,
+                            "method": method,
+                            "path": path,
+                            "field_name": field_name,
+                            "field_path": field_path,
+                            "auth_mode": auth_mode,
+                            "auth_profile_id": auth_profile_id,
+                            "role_hint": role_hint,
+                            "ssrf_probe_candidate_source": "openapi_fallback_path_params_missing_seed",
+                            "previous_result": previous_result,
+                            "attempted_count_for_candidate": attempted_count,
+                            "required_body_fields": required_body_fields,
+                            "allowed_body_fields": allowed_body_fields,
+                            "body_field_summaries": body_field_summaries,
+                            "schema_summary_source": schema_summary_source,
+                            "ssrf_score": 0.0,
+                            "ssrf_score_reasons": ["path_params_present_without_seed"],
+                            "reason_codes": ["path_params_require_seed"],
+                            "audit_flags": ["path_params_present"],
+                        },
+                    ))
+                    continue
+                score, score_reasons = self._ssrf_probe_score(
+                    operation_id=operation_id,
+                    method=method,
+                    path=path,
+                    field_name=field_name,
+                    field_path=field_path,
+                    schema_format=schema_format,
+                    confidence=confidence,
+                    auth_mode=auth_mode,
+                    has_path_params=False,
+                    requires_object_ref=False,
+                    attempted_count=attempted_count,
+                    previous_result=previous_result,
+                )
+                suffix = hashlib.sha256(dedup_key.encode()).hexdigest()[:8]
+                cmd = WorkerCommand(
+                    campaign_id=campaign.campaign_id,
+                    task_id=f"task_ssrf_probe_{suffix}",
+                    worker_class="ssrf_external",
+                    strategy="callback_ssrf_probe",
+                    tool_name="ssrf_probe",
+                    operation_id=operation_id,
+                    inputs={
+                        "validation_mode": validation_mode,
+                        "operation_id": operation_id,
+                        "method": method,
+                        "path": path,
+                        "field_name": field_name,
+                        "field_path": field_path,
+                        "auth_mode": auth_mode,
+                        "auth_profile_id": auth_profile_id,
+                        "role_hint": role_hint,
+                        "required_body_fields": required_body_fields,
+                        "allowed_body_fields": allowed_body_fields,
+                        "body_field_summaries": body_field_summaries,
+                        "schema_summary_source": schema_summary_source,
+                        "ssrf_target_field": {
+                            "field_name": field_name,
+                            "field_path": field_path,
+                        },
+                    },
+                    budget=CommandBudget(max_requests=1, timeout_sec=15),
+                    success_criteria=["ssrf_callback_probe_recorded"],
+                )
+                ready_pool.append((
+                    score,
+                    dedup_key,
+                    cmd,
+                    {
+                        "validation_mode": validation_mode,
+                        "operation_id": operation_id,
+                        "method": method,
+                        "path": path,
+                        "field_name": field_name,
+                        "field_path": field_path,
+                        "auth_mode": auth_mode,
+                        "auth_profile_id": auth_profile_id,
+                        "role_hint": role_hint,
+                        "ssrf_probe_candidate_source": "openapi_fallback",
+                        "previous_result": previous_result,
+                        "attempted_count_for_candidate": attempted_count,
+                        "required_body_fields": required_body_fields,
+                        "allowed_body_fields": allowed_body_fields,
+                        "body_field_summaries": body_field_summaries,
+                        "schema_summary_source": schema_summary_source,
+                        "ssrf_target_field": {
+                            "field_name": field_name,
+                            "field_path": field_path,
+                        },
+                        "ssrf_score": float(score),
+                        "ssrf_score_reasons": score_reasons,
+                        "reason_codes": _aggregate_ssrf_reason_codes([field]) + (["missing_schema_context"] if schema_summary_source == "none" else []),
+                        "audit_flags": [],
+                    },
+                ))
+
+        # Emit at most one ready ssrf_probe per planning cycle; preserve blocked/skipped diagnostics.
+        if ready_pool:
+            ready_pool.sort(key=lambda item: item[0], reverse=True)
+            best_score, best_key, best_cmd, best_summary = ready_pool[0]
+            out.append(self._validated_candidate(
+                kind=PlannerCandidateKind.ssrf_probe,
+                priority=float(best_score),
+                reason="SSRF callback probe candidate selected by bounded rotation among unattempted candidates.",
+                dedup_key=best_key,
+                command=best_cmd,
+                summary=best_summary,
+            ))
+            for score, dedup_key, _cmd, summary in ready_pool[1:10]:
+                out.append(self._candidate(
+                    kind=PlannerCandidateKind.ssrf_probe,
+                    status=PlannerCandidateStatus.skipped_existing,
+                    priority=float(score),
+                    reason="Candidate retained in SSRF pool but deprioritized this cycle.",
+                    dedup_key=dedup_key,
+                    summary={
+                        **summary,
+                        "ssrf_probe_candidate_source": str(summary.get("ssrf_probe_candidate_source") or "ssrf_candidate_signal"),
+                        "reason_codes": list(summary.get("reason_codes") or []) + ["deprioritized_this_cycle", "lower_ranked_candidate"],
+                        "audit_flags": list(summary.get("audit_flags") or []),
+                    },
+                ))
+        return out[:12]
+
+    @staticmethod
+    def _ssrf_probe_attempt_stats(campaign_id: str) -> dict[str, Any]:
+        attempted_count_by_candidate: dict[str, int] = {}
+        latest_result_by_candidate: dict[str, str] = {}
+        any_callback_received = False
+        for raw in memory_store.list_observations_by_campaign(campaign_id):
+            if PlannerService._raw_observation_type(raw) != "ssrf_probe_result":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            key = PlannerService._ssrf_probe_candidate_key(
+                operation_id=str(det.get("operation_id") or "").strip(),
+                field_path=str(det.get("field_path") or "").strip(),
+                validation_mode=str(det.get("validation_mode") or "").strip() or "ssrf_callback_probe",
+                auth_mode=str(det.get("auth_mode") or "").strip() or "unauthenticated",
+                auth_profile_id=str(det.get("auth_profile_id") or "").strip(),
+            )
+            if not key:
+                continue
+            attempted_count_by_candidate[key] = int(attempted_count_by_candidate.get(key, 0) or 0) + 1
+            latest_result_by_candidate[key] = str(det.get("result") or "")
+            if bool(det.get("callback_received")):
+                any_callback_received = True
+        return {
+            "attempted_count_by_candidate": attempted_count_by_candidate,
+            "latest_result_by_candidate": latest_result_by_candidate,
+            "any_callback_received": any_callback_received,
+        }
+
+    @staticmethod
+    def _ssrf_probe_candidate_key(
+        *,
+        operation_id: str,
+        field_path: str,
+        validation_mode: str,
+        auth_mode: str,
+        auth_profile_id: str,
+    ) -> str:
+        op = str(operation_id or "").strip()
+        fp = str(field_path or "").strip()
+        vm = str(validation_mode or "").strip()
+        am = str(auth_mode or "").strip()
+        ap = str(auth_profile_id or "").strip()
+        if not (op and fp and vm and am):
+            return ""
+        return "|".join([op, fp, vm, am, ap])
+
+    @staticmethod
+    def _ssrf_probe_score(
+        *,
+        operation_id: str,
+        method: str,
+        path: str,
+        field_name: str,
+        field_path: str,
+        schema_format: str,
+        confidence: str,
+        auth_mode: str,
+        has_path_params: bool,
+        requires_object_ref: bool,
+        attempted_count: int,
+        previous_result: str,
+    ) -> tuple[float, list[str]]:
+        score = 20.0
+        reasons: list[str] = []
+        op_id = str(operation_id or "").strip().lower()
+        m = str(method or "").strip().upper()
+        p = str(path or "").strip().lower()
+        fn = str(field_name or "").strip().lower()
+        fp = str(field_path or "").strip().lower()
+        sf = str(schema_format or "").strip().lower()
+        conf = str(confidence or "").strip().lower()
+        prev = str(previous_result or "").strip().lower()
+
+        if not has_path_params and "{" not in p and "}" not in p:
+            score += 3.0
+            reasons.append("no_path_params")
+        elif has_path_params or ("{" in p and "}" in p):
+            score -= 4.0
+            reasons.append("path_params_penalty")
+        if conf == "high":
+            score += 4.0
+            reasons.append("high_confidence")
+        elif conf == "medium":
+            score += 2.0
+            reasons.append("medium_confidence")
+        if sf in {"uri", "url"}:
+            score += 3.0
+            reasons.append("schema_format_uri")
+        if m in {"POST", "PUT", "PATCH"}:
+            score += 2.0
+            reasons.append("mutation_method")
+        positive_hints = (
+            "api", "endpoint", "callback", "webhook", "url", "uri", "contact", "notify",
+            "target", "destination", "service",
+        )
+        if any(h in fn for h in positive_hints) or any(h in fp for h in positive_hints):
+            score += 3.0
+            reasons.append("ssrf_field_semantic_hints")
+        op_positive_hints = ("contact", "callback", "webhook", "notify", "request", "report", "mechanic", "integration", "connect")
+        if any(h in p for h in op_positive_hints) or any(h in op_id for h in op_positive_hints):
+            score += 2.5
+            reasons.append("ssrf_operation_semantic_hints")
+        if auth_mode == "authenticated":
+            score += 0.5
+            reasons.append("authenticated_context")
+        negative_hints = ("product", "image", "video", "file", "upload", "media", "avatar", "logo", "picture")
+        if any(h in fn for h in negative_hints) or any(h in p for h in negative_hints) or any(h in fp for h in negative_hints):
+            score -= 4.0
+            reasons.append("media_or_asset_bias_down")
+        if requires_object_ref:
+            score -= 6.0
+            reasons.append("requires_object_ref_without_seed")
+        if attempted_count > 0:
+            score -= 8.0
+            reasons.append("already_attempted")
+        if prev in {"target_non_2xx", "probe_error", "no_callback_observed", "no_callback"}:
+            score -= 6.0
+            reasons.append("previous_failed_result_penalty")
+        return score, reasons
+
     def _ssrf_candidate_detector_candidate(
         self,
         campaign: Campaign,
@@ -820,7 +1570,11 @@ class PlannerService:
             return None
         candidate_fields = _detect_ssrf_candidate_fields(
             body_fields=list(op.body_fields or []),
+            body_field_summaries=list(op.body_field_summaries or []),
+            body_required_fields=list(op.body_required_fields or []),
+            operation_tags=list(op.tags or []),
             query_params=list(op.query_params or []),
+            operation_id=str(op.operation_id or ""),
             path_template=path_template,
             method=method,
         )
@@ -842,7 +1596,7 @@ class PlannerService:
             "method": method,
             "ssrf_candidate_source": "openapi_schema",
             "candidate_field_count": len(candidate_fields),
-            "candidate_fields_sample": [dict(item) for item in candidate_fields[:5]],
+            "candidate_fields_sample": [dict(item) for item in candidate_fields[:10]],
             "reason_codes": reason_codes,
             "audit_flags": [],
             "graph_summary": graph_summary,
@@ -894,7 +1648,7 @@ class PlannerService:
                 "path_template": path_template,
                 "method": method,
                 "validation_mode": validation_mode,
-                "candidate_fields": [dict(item) for item in candidate_fields[:20]],
+                "candidate_fields": [dict(item) for item in candidate_fields[:10]],
             },
             budget=CommandBudget(max_requests=0, timeout_sec=15),
             success_criteria=["ssrf_candidate_detection_recorded"],
@@ -1599,6 +2353,127 @@ class PlannerService:
             command=command,
             summary=summary or {},
         )
+
+    def _build_safe_candidate_samples(
+        self,
+        candidates: list[PlannerCandidate],
+        *,
+        sample_limit: int = 10,
+    ) -> tuple[dict[str, int], dict[str, int], list[dict[str, Any]], list[dict[str, Any]]]:
+        ready_counts: dict[str, int] = {}
+        blocked_counts: dict[str, int] = {}
+        ready_sample: list[dict[str, Any]] = []
+        blocked_sample: list[dict[str, Any]] = []
+        for candidate in candidates:
+            kind_name = candidate.kind.value
+            row = self._safe_candidate_summary(candidate)
+            if candidate.status == PlannerCandidateStatus.ready:
+                ready_counts[kind_name] = int(ready_counts.get(kind_name, 0) or 0) + 1
+                if len(ready_sample) < sample_limit:
+                    ready_sample.append(row)
+            elif candidate.status == PlannerCandidateStatus.blocked:
+                blocked_counts[kind_name] = int(blocked_counts.get(kind_name, 0) or 0) + 1
+                if len(blocked_sample) < sample_limit:
+                    blocked_sample.append(row)
+        return ready_counts, blocked_counts, ready_sample, blocked_sample
+
+    def _safe_candidate_summary(self, candidate: PlannerCandidate) -> dict[str, Any]:
+        summary = candidate.summary if isinstance(candidate.summary, dict) else {}
+        command = candidate.command.model_dump(mode="json") if candidate.command is not None else {}
+        inputs = command.get("inputs") if isinstance(command.get("inputs"), dict) else {}
+
+        def _first_text(*values: Any) -> str:
+            for value in values:
+                text = str(value or "").strip()
+                if text:
+                    return text
+            return ""
+
+        def _list_texts(value: Any) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            out: list[str] = []
+            for item in value:
+                text = str(item or "").strip()
+                if text:
+                    out.append(text)
+            return out[:20]
+
+        return {
+            "candidate_id": str(candidate.candidate_id or ""),
+            "dedup_key": str(candidate.dedup_key or ""),
+            "kind": candidate.kind.value,
+            "status": candidate.status.value,
+            "operation_id": _first_text(
+                summary.get("operation_id"),
+                summary.get("target_operation_id"),
+                command.get("operation_id"),
+                inputs.get("operation_id"),
+            ),
+            "method": _first_text(
+                summary.get("method"),
+                summary.get("target_method"),
+                inputs.get("method"),
+            ).upper(),
+            "path": _first_text(
+                summary.get("path"),
+                summary.get("target_path_template"),
+                summary.get("path_template"),
+                inputs.get("path"),
+                inputs.get("path_template"),
+            ),
+            "path_template": _first_text(
+                summary.get("path_template"),
+                summary.get("target_path_template"),
+                summary.get("path"),
+                inputs.get("path_template"),
+                inputs.get("path"),
+            ),
+            "field_name": _first_text(summary.get("field_name"), inputs.get("field_name")),
+            "field_path": _first_text(summary.get("field_path"), inputs.get("field_path")),
+            "object_pair_id": _first_text(summary.get("object_pair_id"), inputs.get("object_pair_id")),
+            "resource_type": _first_text(summary.get("resource_type")),
+            "auth_mode": _first_text(summary.get("auth_mode"), inputs.get("auth_mode")),
+            "has_path_params": bool(
+                "{" in _first_text(
+                    summary.get("path"),
+                    summary.get("target_path_template"),
+                    summary.get("path_template"),
+                    inputs.get("path"),
+                    inputs.get("path_template"),
+                ) and "}" in _first_text(
+                    summary.get("path"),
+                    summary.get("target_path_template"),
+                    summary.get("path_template"),
+                    inputs.get("path"),
+                    inputs.get("path_template"),
+                )
+            ),
+            "auth_required": bool(summary.get("auth_required")),
+            "auth_profile_id": _first_text(summary.get("auth_profile_id"), inputs.get("auth_profile_id")),
+            "confidence": _first_text(summary.get("confidence")),
+            "previous_result": _first_text(summary.get("previous_result")),
+            "utility_score": float(summary.get("utility_score") or summary.get("ssrf_score") or candidate.priority or 0.0),
+            "reason_codes": _list_texts(summary.get("reason_codes")),
+            "missing_inputs": [str(item) for item in (candidate.missing_inputs or []) if str(item or "").strip()][:20],
+            "validation_mode": _first_text(summary.get("validation_mode"), inputs.get("validation_mode")),
+            "required_body_fields": _list_texts(summary.get("required_body_fields") or inputs.get("required_body_fields")),
+            "allowed_body_fields": _list_texts(summary.get("allowed_body_fields") or inputs.get("allowed_body_fields")),
+            "body_field_summaries": [
+                item for item in (
+                    summary.get("body_field_summaries")
+                    if isinstance(summary.get("body_field_summaries"), list)
+                    else (inputs.get("body_field_summaries") if isinstance(inputs.get("body_field_summaries"), list) else [])
+                )
+                if isinstance(item, dict)
+            ][:50],
+            "schema_summary_source": _first_text(summary.get("schema_summary_source"), inputs.get("schema_summary_source")),
+            "ssrf_target_field": (
+                summary.get("ssrf_target_field")
+                if isinstance(summary.get("ssrf_target_field"), dict)
+                else (inputs.get("ssrf_target_field") if isinstance(inputs.get("ssrf_target_field"), dict) else {})
+            ),
+        }
 
     def _data_exposure_validator_candidates(
         self,
@@ -2950,6 +3825,7 @@ class PlannerService:
             PlannerCandidateKind.auth_flow_detector: 8,
             PlannerCandidateKind.test_account_materializer: 9,
             PlannerCandidateKind.ssrf_candidate_detector: 10,
+            PlannerCandidateKind.ssrf_probe: 10.5,
             PlannerCandidateKind.property_mutation_test: 11,
             PlannerCandidateKind.zap_discovery_passive: 12,
             PlannerCandidateKind.js_endpoint_extractor: 13,
@@ -3703,7 +4579,11 @@ def _field_path_for_source(field_name: str, source: str) -> str:
 def _detect_ssrf_candidate_fields(
     *,
     body_fields: list[str],
+    body_field_summaries: list[dict[str, Any]] | None,
+    body_required_fields: list[str] | None,
+    operation_tags: list[str] | None,
     query_params: list[str],
+    operation_id: str,
     path_template: str,
     method: str,
 ) -> list[dict[str, Any]]:
@@ -3711,9 +4591,21 @@ def _detect_ssrf_candidate_fields(
     seen: set[tuple[str, str]] = set()
     path_lower = str(path_template or "").lower()
     path_hints = [
-        hint for hint in ("report", "mechanic", "image", "webhook", "callback", "import", "fetch")
+        hint for hint in ("report", "mechanic", "image", "webhook", "callback", "import", "fetch", "contact", "connect", "integration", "notify", "request")
         if f"/{hint}" in path_lower or hint in path_lower
     ]
+    op_ctx = " ".join([
+        str(operation_id or "").lower(),
+        path_lower,
+        " ".join(str(x or "").lower() for x in (operation_tags or [])),
+    ])
+    body_summary_by_name: dict[str, dict[str, Any]] = {}
+    for row in body_field_summaries or []:
+        if not isinstance(row, dict):
+            continue
+        nm = str(row.get("name") or "").strip()
+        if nm and nm not in body_summary_by_name:
+            body_summary_by_name[nm] = row
     for source_name, fields in (("body", body_fields), ("query", query_params)):
         for raw_name in fields:
             field_name = str(raw_name or "").strip()
@@ -3737,8 +4629,15 @@ def _detect_ssrf_candidate_fields(
                 schema_format = "hostname"
             if not reason_codes:
                 continue
+            if source_name == "body" and "request_body_ref_resolved" not in reason_codes and body_summary_by_name.get(field_name):
+                reason_codes.append("request_body_ref_resolved")
+            if any(tok in op_ctx for tok in ("contact", "callback", "webhook", "notify", "integration", "connect", "report", "request", "mechanic")):
+                reason_codes.append("operation_context_url_sink")
             if schema_format == "uri":
                 reason_codes.append("schema_format_uri")
+                confidence = "high"
+            elif schema_format == "url":
+                reason_codes.append("schema_format_url")
                 confidence = "high"
             elif schema_format == "hostname":
                 reason_codes.append("schema_format_hostname")
@@ -3751,15 +4650,137 @@ def _detect_ssrf_candidate_fields(
             if key in seen:
                 continue
             seen.add(key)
+            summary_row = body_summary_by_name.get(field_name) if source_name == "body" else {}
+            if not isinstance(summary_row, dict):
+                summary_row = {}
+            required_fields = [str(x) for x in (body_required_fields or []) if str(x).strip()]
+            field_summaries = [
+                dict(item)
+                for item in (body_field_summaries or [])
+                if isinstance(item, dict)
+            ]
             out.append({
                 "field_name": field_name,
                 "field_path": field_path,
-                "schema_type": "string",
-                "schema_format": schema_format,
+                "schema_type": str(summary_row.get("schema_type") or "string"),
+                "schema_format": str(summary_row.get("schema_format") or schema_format),
                 "confidence": confidence,
                 "reason_codes": reason_codes[:6],
+                "required_body_fields": required_fields[:25],
+                "allowed_body_fields": sorted(list(body_summary_by_name.keys()))[:60],
+                "body_field_summaries": field_summaries[:80],
+                "schema_summary_source": "api_graph" if field_summaries else "none",
+                "ssrf_target_field": {
+                    "field_name": field_name,
+                    "field_path": field_path,
+                },
             })
-    return out[:20]
+    # Include nested request-body fields discovered via resolved schema summaries.
+    for row in (body_field_summaries or []):
+        if not isinstance(row, dict):
+            continue
+        source_name = "body"
+        field_name = str(row.get("name") or "").strip()
+        field_path = str(row.get("field_path") or "").strip()
+        if not field_name or not field_path:
+            continue
+        normalized = _snake_case_name(field_name)
+        reason_codes: list[str] = []
+        if normalized in _SSRF_EXACT_FIELD_NAMES or normalized.endswith(("_url", "_uri", "_endpoint", "_callback", "_webhook")):
+            reason_codes.append("url_like_field_name")
+        if "api" in normalized and "url_like_field_name" not in reason_codes:
+            reason_codes.append("url_like_field_name")
+        if not reason_codes:
+            continue
+        if any(tok in op_ctx for tok in ("contact", "callback", "webhook", "notify", "integration", "connect", "report", "request", "mechanic")):
+            reason_codes.append("operation_context_url_sink")
+        reason_codes.append("nested_body_field_detected")
+        reason_codes.append("request_body_ref_resolved")
+        schema_format = str(row.get("schema_format") or "").strip().lower()
+        confidence = "high" if schema_format in {"uri", "url"} else "medium"
+        if schema_format == "uri":
+            reason_codes.append("schema_format_uri")
+        elif schema_format == "url":
+            reason_codes.append("schema_format_url")
+        key = (field_name, field_path)
+        if key in seen:
+            continue
+        seen.add(key)
+        required_fields = [str(x) for x in (body_required_fields or []) if str(x).strip()]
+        out.append({
+            "field_name": field_name,
+            "field_path": field_path,
+            "schema_type": str(row.get("schema_type") or "string"),
+            "schema_format": schema_format,
+            "confidence": confidence,
+            "reason_codes": reason_codes[:6],
+            "required_body_fields": required_fields[:25],
+            "allowed_body_fields": sorted(list(body_summary_by_name.keys()))[:60],
+            "body_field_summaries": [dict(item) for item in (body_field_summaries or []) if isinstance(item, dict)][:80],
+            "schema_summary_source": "api_graph",
+            "ssrf_target_field": {"field_name": field_name, "field_path": field_path},
+        })
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for row in out:
+        score = _ssrf_detector_field_score(
+            method=method,
+            path_template=path_template,
+            field_name=str(row.get("field_name") or ""),
+            field_path=str(row.get("field_path") or ""),
+            schema_format=str(row.get("schema_format") or ""),
+            confidence=str(row.get("confidence") or ""),
+        )
+        scored.append((score, row))
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            str(item[1].get("field_name") or ""),
+            str(item[1].get("field_path") or ""),
+        ),
+        reverse=True,
+    )
+    # Keep a richer deterministic pool for downstream planner/probe selection.
+    return [row for _score, row in scored[:10]]
+
+
+def _ssrf_detector_field_score(
+    *,
+    method: str,
+    path_template: str,
+    field_name: str,
+    field_path: str,
+    schema_format: str,
+    confidence: str,
+) -> float:
+    score = 0.0
+    m = str(method or "").strip().upper()
+    p = str(path_template or "").strip().lower()
+    fn = str(field_name or "").strip().lower()
+    fp = str(field_path or "").strip().lower()
+    sf = str(schema_format or "").strip().lower()
+    conf = str(confidence or "").strip().lower()
+    if conf == "high":
+        score += 4.0
+    elif conf == "medium":
+        score += 2.0
+    if sf in {"uri", "url"}:
+        score += 3.0
+    if m in {"POST", "PUT", "PATCH"}:
+        score += 2.0
+    if "{" not in p and "}" not in p:
+        score += 2.0
+    positive_hints = (
+        "api", "endpoint", "callback", "webhook", "url", "uri", "contact", "notify",
+        "target", "destination", "service", "request", "report", "mechanic", "integration", "connect",
+    )
+    if any(h in fn for h in positive_hints) or any(h in fp for h in positive_hints):
+        score += 2.5
+    if any(h in p for h in positive_hints):
+        score += 2.0
+    negative_hints = ("product", "image", "video", "file", "upload", "media", "avatar", "logo", "picture")
+    if any(h in fn for h in negative_hints) or any(h in fp for h in negative_hints) or any(h in p for h in negative_hints):
+        score -= 3.0
+    return score
 
 
 def _aggregate_ssrf_reason_codes(fields: list[dict[str, Any]]) -> list[str]:

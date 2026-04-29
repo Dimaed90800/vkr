@@ -92,6 +92,9 @@ def test_vehicle_ref_and_vehicle_id_path_builds_high_confidence_pair() -> None:
     det = res.observations[0].details
     assert det["object_pairs_count"] == 1
     assert det["object_pairs"][0]["confidence"] == "high"
+    md = det["object_pairs"][0].get("metadata") or {}
+    assert float(md.get("baseline_probability_score") or 0) > 0
+    assert str(md.get("dependency_edge_confidence") or "") in {"high", "medium", "low"}
     blob = json.dumps(res.model_dump(mode="json"), sort_keys=True).lower()
     assert "veh-1" not in blob
 
@@ -114,6 +117,28 @@ def test_post_ref_and_postid_path_builds_pair() -> None:
     res = BolaObjectPairBuilderAdapter().execute(_cmd(), campaign, "toolrun_bola_pair_2")
     assert res.observations[0].details["object_pairs_count"] == 1
     assert res.observations[0].details["object_pairs"][0]["resource_type"] == "post"
+
+
+def test_vehicle_ref_and_vehicleid_path_builds_ready_pair() -> None:
+    _reset_store()
+    campaign = _campaign()
+    _add_resource("vehicle", "vehicleId", "veh-vehicle-1")
+    _store_graph([
+        Operation(
+            operation_id="op_GET_/api/v1/vehicles/{vehicleId}",
+            method="GET",
+            path_template="/api/v1/vehicles/{vehicleId}",
+            path_params=["vehicleId"],
+            auth_required=True,
+            resource_type="vehicle",
+            tags=["vehicles"],
+        )
+    ])
+    res = BolaObjectPairBuilderAdapter().execute(_cmd(), campaign, "toolrun_bola_pair_vehicle")
+    det = res.observations[0].details
+    assert det["object_pairs_count"] >= 1
+    ready = [x for x in det["object_pairs"] if str(x.get("status") or "ready") == "ready"]
+    assert ready
 
 
 def test_generic_id_with_matching_alias_produces_medium_pair() -> None:
@@ -187,3 +212,80 @@ def test_adapter_output_has_no_raw_secret_leakage() -> None:
     blob = json.dumps(res.model_dump(mode="json"), sort_keys=True).lower()
     for bad in ("veh-raw-secret", "authorization", "cookie", "password", "token", "raw_body"):
         assert bad not in blob
+
+
+def test_bola_pair_builder_blocks_authorid_for_postid_path_param() -> None:
+    _reset_store()
+    campaign = _campaign()
+    ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_bola_pair",
+        resource_type="post",
+        object_id_field="authorid",
+        raw_object_id="user-1",
+        source_operation_id="op_POST_/api/orders",
+        source_path="/api/orders",
+        source_auth_profile_id="authprof_owner_1",
+        source_role_hint="owner",
+        confidence="medium",
+        created_by="resource_seed_worker",
+        metadata={"semantic_id_kind": "author_id", "source_reason_codes": ["creation_non_2xx", "blocked_required_object_ref"]},
+    )
+    _store_graph([
+        Operation(
+            operation_id="op_GET_/api/posts/{postId}",
+            method="GET",
+            path_template="/api/posts/{postId}",
+            path_params=["postId"],
+            auth_required=True,
+            resource_type="post",
+            tags=["posts"],
+        )
+    ])
+    res = BolaObjectPairBuilderAdapter().execute(_cmd(), campaign, "toolrun_bola_pair_sem")
+    det = res.observations[0].details
+    rows = det["object_pairs"]
+    assert rows
+    assert not any(str(r.get("status") or "ready") == "ready" for r in rows)
+    blocked = [r for r in rows if str(r.get("status") or "") == "blocked"]
+    assert blocked
+    md = blocked[0].get("metadata") or {}
+    reasons = set(md.get("baseline_block_reasons") or [])
+    assert "object_id_field_semantic_mismatch" in reasons
+    assert "source_seed_creation_non_2xx" in reasons
+    assert "source_seed_blocked_required_object_ref" in reasons
+    assert "all_candidate_pairs_blocked" in det["reason_codes"]
+
+
+def test_bola_pair_builder_blocks_authorid_for_vehicleid_path_param() -> None:
+    _reset_store()
+    campaign = _campaign()
+    ResourceInstanceStore().create_resource_instance(
+        campaign_id="cmp_bola_pair",
+        resource_type="post",
+        object_id_field="authorid",
+        raw_object_id="user-2",
+        source_operation_id="op_POST_/api/orders",
+        source_path="/api/orders",
+        source_auth_profile_id="authprof_owner_1",
+        source_role_hint="owner",
+        confidence="medium",
+        created_by="resource_seed_worker",
+        metadata={"semantic_id_kind": "author_id", "source_reason_codes": ["creation_non_2xx"]},
+    )
+    _store_graph([
+        Operation(
+            operation_id="op_GET_/api/vehicles/{vehicleId}",
+            method="GET",
+            path_template="/api/vehicles/{vehicleId}",
+            path_params=["vehicleId"],
+            auth_required=True,
+            resource_type="vehicle",
+            tags=["vehicles"],
+        )
+    ])
+    res = BolaObjectPairBuilderAdapter().execute(_cmd(), campaign, "toolrun_bola_pair_sem_vehicle")
+    det = res.observations[0].details
+    blocked = [r for r in det["object_pairs"] if str(r.get("status") or "") == "blocked"]
+    assert blocked
+    reasons = set((blocked[0].get("metadata") or {}).get("baseline_block_reasons") or [])
+    assert "object_id_field_semantic_mismatch" in reasons

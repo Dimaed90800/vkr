@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -760,6 +761,37 @@ def test_planner_route_returns_planner_response():
     assert payload["candidates"][0]["command"]["tool_name"] == "bola_replay_probe"
 
 
+def test_planner_response_exposes_safe_ready_candidate_summaries_only() -> None:
+    _reset_store()
+    _campaign()
+    _store_runtime_bola_pair()
+
+    response = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate(
+            {
+                "zap": {"enabled": False},
+                "bola": {"enabled": True},
+            }
+        ),
+    )
+
+    assert response.ready_candidates_by_kind_count.get("bola_replay_probe") == 1
+    assert len(response.ready_candidates_sample) == 1
+    row = response.ready_candidates_sample[0]
+    assert row["candidate_id"].startswith("pcand_")
+    assert row["kind"] == "bola_replay_probe"
+    assert row["operation_id"] == "op_GET_/api/v1/vehicles/{vehicleId}"
+    assert row["method"] == "GET"
+    assert row["path_template"] == "/api/v1/vehicles/{vehicleId}"
+    assert row["object_pair_id"] == "objpair_veh_1"
+    assert row["resource_type"] == "vehicle"
+    assert row["validation_mode"] == "bola_replay"
+    blob = json.dumps(row, ensure_ascii=False)
+    for bad in ("Authorization", "Cookie", "password", "request_body", "response_body", "object_id", "raw_headers", "token="):
+        assert bad not in blob
+
+
 def test_planner_zap_dedup_not_too_broad_by_target_or_seed():
     _reset_store()
     _campaign()
@@ -857,8 +889,692 @@ def test_planner_prefers_security_header_validator_over_zap_after_zap_alerts_exi
         "security_header_validator",
         "zap_discovery_passive",
     ]
-    assert response.candidates[0].status == "ready"
-    assert response.candidates[1].status == "skipped_existing"
+
+
+def test_planner_emits_authenticated_ssrf_probe_candidate_from_ssrf_candidate_signal() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+
+    owner = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test",
+    )
+    attacker = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="attacker",
+        user_label="attacker",
+        auth_type="bearer",
+        raw_token="attacker-token",
+        created_by="test",
+    )
+    memory_store.store_observation(
+        "obs_mat",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_mat",
+            campaign_id="cmp_plan",
+            type=ObservationType.test_account_materialization_result,
+            details={
+                "source": "test_account_materializer",
+                "test_account_materialization_status": "materialized",
+                "auth_profiles_created_count": 2,
+                "owner_auth_profile_id": owner.auth_profile_id,
+                "attacker_auth_profile_id": attacker.auth_profile_id,
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_ssrf",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/api/hooks",
+                "method": "POST",
+                "path": "/api/hooks",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    candidates = [c for c in response.candidates if c.kind.value == "ssrf_probe"]
+    assert candidates
+    ready = next(c for c in candidates if c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.tool_name == "ssrf_probe"
+    assert ready.command.inputs["auth_mode"] == "authenticated"
+    assert ready.command.inputs["auth_profile_id"] == owner.auth_profile_id
+
+
+def test_planner_blocks_ssrf_probe_when_path_params_present() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_ssrf2",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf2",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_PUT_/api/videos/{video_id}",
+                "method": "PUT",
+                "path": "/api/videos/{video_id}",
+                "field_name": "video_url",
+                "field_path": "$.video_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    blocked = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "blocked")
+    assert "path_params_seed" in blocked.missing_inputs
+
+
+def test_ssrf_probe_rotation_failed_candidate_does_not_block_next_candidate() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    owner = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test",
+    )
+    memory_store.store_observation(
+        "obs_mat",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_mat",
+            campaign_id="cmp_plan",
+            type=ObservationType.test_account_materialization_result,
+            details={
+                "source": "test_account_materializer",
+                "test_account_materialization_status": "materialized",
+                "auth_profiles_created_count": 2,
+                "owner_auth_profile_id": owner.auth_profile_id,
+            },
+        ).model_dump(mode="json"),
+    )
+    # Candidate A: image-like path (lower score), already attempted and failed.
+    memory_store.store_observation(
+        "obs_ssrf_a",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf_a",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/workshop/api/shop/products",
+                "method": "POST",
+                "path": "/workshop/api/shop/products",
+                "field_name": "image_url",
+                "field_path": "$.image_url",
+                "schema_format": "uri",
+                "confidence": "medium",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_probe_a",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_probe_a",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "validation_mode": "ssrf_callback_probe",
+                "operation_id": "op_POST_/workshop/api/shop/products",
+                "field_path": "$.image_url",
+                "auth_mode": "authenticated",
+                "auth_profile_id": owner.auth_profile_id,
+                "result": "target_non_2xx",
+                "callback_received": False,
+            },
+        ).model_dump(mode="json"),
+    )
+    # Candidate B: contact/api-like path should be next ready.
+    memory_store.store_observation(
+        "obs_ssrf_b",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf_b",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/workshop/api/merchant/contact_mechanic",
+                "method": "POST",
+                "path": "/workshop/api/merchant/contact_mechanic",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = [c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready"]
+    assert len(ready) == 1
+    assert ready[0].command is not None
+    assert ready[0].command.operation_id == "op_POST_/workshop/api/merchant/contact_mechanic"
+
+
+def test_ssrf_probe_rotation_stops_when_callback_received_true() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_ssrf",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/workshop/api/merchant/contact_mechanic",
+                "method": "POST",
+                "path": "/workshop/api/merchant/contact_mechanic",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_probe_ok",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_probe_ok",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "validation_mode": "ssrf_callback_probe",
+                "operation_id": "op_POST_/workshop/api/merchant/contact_mechanic",
+                "field_path": "$.mechanic_api",
+                "auth_mode": "unauthenticated",
+                "auth_profile_id": "",
+                "result": "callback_received",
+                "callback_received": True,
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = [c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready"]
+    assert not ready
+
+
+def test_ssrf_probe_emits_at_most_one_ready_per_cycle() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    for i, (op, field) in enumerate((
+        ("op_POST_/a", "$.target_url"),
+        ("op_POST_/b", "$.callback_url"),
+        ("op_POST_/c", "$.notify_api"),
+    )):
+        memory_store.store_observation(
+            f"obs_ssrf_{i}",
+            "cmp_plan",
+            "",
+            Observation(
+                observation_id=f"obs_ssrf_{i}",
+                campaign_id="cmp_plan",
+                type=ObservationType.ssrf_candidate_signal,
+                details={
+                    "validation_mode": "ssrf_candidate_detection",
+                    "operation_id": op,
+                    "method": "POST",
+                    "path": f"/{chr(97+i)}",
+                    "field_name": field.strip("$."),
+                    "field_path": field,
+                    "schema_format": "uri",
+                    "confidence": "high",
+                },
+            ).model_dump(mode="json"),
+        )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = [c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready"]
+    assert len(ready) <= 1
+
+
+def test_ssrf_probe_dedup_key_includes_operation_field_and_auth_profile() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    owner = AuthProfileStore().create_auth_profile(
+        campaign_id="cmp_plan",
+        role_hint="owner",
+        user_label="owner",
+        auth_type="bearer",
+        raw_token="owner-token",
+        created_by="test",
+    )
+    memory_store.store_observation(
+        "obs_mat",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_mat",
+            campaign_id="cmp_plan",
+            type=ObservationType.test_account_materialization_result,
+            details={
+                "source": "test_account_materializer",
+                "test_account_materialization_status": "materialized",
+                "owner_auth_profile_id": owner.auth_profile_id,
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_ssrf",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/hooks",
+                "method": "POST",
+                "path": "/hooks",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert "op_POST_/hooks" in ready.dedup_key
+    assert "$.callback_url" in ready.dedup_key
+    assert owner.auth_profile_id in ready.dedup_key
+
+
+def test_ssrf_probe_ranking_prefers_contact_api_over_product_image() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_img",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_img",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/workshop/api/shop/products",
+                "method": "POST",
+                "path": "/workshop/api/shop/products",
+                "field_name": "image_url",
+                "field_path": "$.image_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_contact",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_contact",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/workshop/api/merchant/contact_mechanic",
+                "method": "POST",
+                "path": "/workshop/api/merchant/contact_mechanic",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.operation_id == "op_POST_/workshop/api/merchant/contact_mechanic"
+
+
+def test_ssrf_probe_pool_retains_more_than_two_candidates_and_keeps_deprioritized_rows() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    for i, (op_id, path, field_name, field_path) in enumerate(
+        (
+            ("op_POST_/alpha/contact", "/alpha/contact", "callback_url", "$.callback_url"),
+            ("op_POST_/beta/integration", "/beta/integration", "target_api", "$.target_api"),
+            ("op_POST_/gamma/notify", "/gamma/notify", "notify_url", "$.notify_url"),
+            ("op_POST_/delta/report", "/delta/report", "service_endpoint", "$.service_endpoint"),
+            ("op_POST_/epsilon/connect", "/epsilon/connect", "destination_url", "$.destination_url"),
+        )
+    ):
+        memory_store.store_observation(
+            f"obs_ssrf_pool_{i}",
+            "cmp_plan",
+            "",
+            Observation(
+                observation_id=f"obs_ssrf_pool_{i}",
+                campaign_id="cmp_plan",
+                type=ObservationType.ssrf_candidate_signal,
+                details={
+                    "validation_mode": "ssrf_candidate_detection",
+                    "operation_id": op_id,
+                    "method": "POST",
+                    "path": path,
+                    "field_name": field_name,
+                    "field_path": field_path,
+                    "schema_format": "uri",
+                    "confidence": "high",
+                },
+            ).model_dump(mode="json"),
+        )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ssrf_rows = [c for c in response.candidates if c.kind.value == "ssrf_probe"]
+    assert len(ssrf_rows) >= 5
+    assert len([c for c in ssrf_rows if c.status.value == "ready"]) == 1
+    assert len([c for c in ssrf_rows if c.status.value == "skipped_existing"]) >= 3
+
+
+def test_ssrf_probe_uses_openapi_fallback_when_candidate_signal_missing_contact_like_operation() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/store/products",
+                method="POST",
+                path_template="/store/products",
+                body_fields=["image_url"],
+                sources=["openapi"],
+            ),
+            Operation(
+                operation_id="op_POST_/integrations/contact-service",
+                method="POST",
+                path_template="/integrations/contact-service",
+                body_fields=["service_endpoint"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    memory_store.store_observation(
+        "obs_only_product",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_only_product",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/store/products",
+                "method": "POST",
+                "path": "/store/products",
+                "field_name": "image_url",
+                "field_path": "$.image_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.operation_id == "op_POST_/integrations/contact-service"
+
+
+def test_ssrf_probe_penalizes_previous_target_non_2xx_and_selects_next_eligible_candidate() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_candidate_1",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_candidate_1",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/services/product-media",
+                "method": "POST",
+                "path": "/services/product-media",
+                "field_name": "image_url",
+                "field_path": "$.image_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_candidate_2",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_candidate_2",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/services/contact-notify",
+                "method": "POST",
+                "path": "/services/contact-notify",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_prev_fail",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_prev_fail",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "validation_mode": "ssrf_callback_probe",
+                "operation_id": "op_POST_/services/product-media",
+                "field_path": "$.image_url",
+                "auth_mode": "unauthenticated",
+                "auth_profile_id": "",
+                "result": "target_non_2xx",
+                "callback_received": False,
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.operation_id == "op_POST_/services/contact-notify"
+
+
+def test_ssrf_scoring_logic_is_generic_and_not_hardcoded_to_specific_crapi_paths() -> None:
+    code = Path("backend/services/planner_service.py").read_text(encoding="utf-8")
+    assert "workshop/api/merchant/contact_mechanic" not in code
+    assert "mechanic_api should rank" not in code
+
+
+def test_ssrf_detector_resolves_ref_request_body_schema() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/api/contact",
+                method="POST",
+                path_template="/api/contact",
+                body_fields=["mechanic_api", "problem_details"],
+                body_required_fields=["mechanic_api", "problem_details"],
+                body_field_summaries=[
+                    {"name": "mechanic_api", "field_path": "$.mechanic_api", "schema_type": "string"},
+                    {"name": "problem_details", "field_path": "$.problem_details", "schema_type": "string"},
+                ],
+                tags=["contact"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    detector = next(c for c in response.candidates if c.kind.value == "ssrf_candidate_detector")
+    sample = detector.summary.get("candidate_fields_sample")[0]
+    assert sample["field_path"] == "$.mechanic_api"
+    assert "url_like_field_name" in sample["reason_codes"]
+    assert "request_body_ref_resolved" in sample["reason_codes"]
+
+
+def test_ssrf_detector_detects_service_endpoint_with_uri_format() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[Operation(
+            operation_id="op_POST_/api/integration/connect",
+            method="POST",
+            path_template="/api/integration/connect",
+            body_fields=["service_endpoint"],
+            body_field_summaries=[{"name": "service_endpoint", "field_path": "$.service_endpoint", "schema_type": "string", "schema_format": "uri"}],
+            sources=["openapi"],
+        )],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    detector = next(c for c in response.candidates if c.kind.value == "ssrf_candidate_detector")
+    sample = detector.summary.get("candidate_fields_sample")[0]
+    assert sample["confidence"] == "high"
+    assert sample["schema_format"] == "uri"
+
+
+def test_ssrf_candidate_summary_contains_required_and_allowed_body_fields() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_ssrf_schema",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf_schema",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/hooks",
+                "method": "POST",
+                "path": "/hooks",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "schema_format": "uri",
+                "confidence": "high",
+                "required_body_fields": ["callback_url", "problem_details"],
+                "allowed_body_fields": ["callback_url", "problem_details"],
+                "body_field_summaries": [{"name": "callback_url", "schema_type": "string"}],
+                "schema_summary_source": "api_graph",
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.summary.get("required_body_fields") == ["callback_url", "problem_details"]
+    assert "callback_url" in (ready.summary.get("allowed_body_fields") or [])
+
+
+def test_high_value_ssrf_signal_becomes_ready_probe() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_ssrf_hv",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf_hv",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/api/contact",
+                "method": "POST",
+                "path": "/api/contact",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.operation_id == "op_POST_/api/contact"
+
+
+def test_ssrf_ready_probe_carries_schema_context() -> None:
+    _reset_store()
+    _campaign("cmp_plan")
+    memory_store.store_observation(
+        "obs_ssrf_schema_ctx",
+        "cmp_plan",
+        "",
+        Observation(
+            observation_id="obs_ssrf_schema_ctx",
+            campaign_id="cmp_plan",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "validation_mode": "ssrf_candidate_detection",
+                "operation_id": "op_POST_/api/contact",
+                "method": "POST",
+                "path": "/api/contact",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "schema_format": "uri",
+                "confidence": "high",
+                "required_body_fields": ["mechanic_api", "problem_details"],
+                "allowed_body_fields": ["mechanic_api", "problem_details"],
+                "body_field_summaries": [{"name": "mechanic_api", "schema_type": "string"}],
+                "schema_summary_source": "api_graph",
+                "ssrf_target_field": {"field_name": "mechanic_api", "field_path": "$.mechanic_api"},
+            },
+        ).model_dump(mode="json"),
+    )
+    response = PlannerService().plan("cmp_plan", PlannerRequest(max_candidates=50))
+    ready = next(c for c in response.candidates if c.kind.value == "ssrf_probe" and c.status.value == "ready")
+    assert ready.command is not None
+    assert ready.command.inputs.get("required_body_fields") == ["mechanic_api", "problem_details"]
+    assert ready.command.inputs.get("schema_summary_source") == "api_graph"
 
 
 def test_planner_still_returns_zap_ready_when_no_zap_output_exists():
@@ -2852,6 +3568,68 @@ def test_planner_ssrf_candidate_detector_ready_for_url_like_request_fields() -> 
     assert sample[0]["field_name"] == "mechanic_api"
 
 
+def test_ssrf_candidate_detector_ranks_contact_like_field_above_product_image_field() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/integrations/contact-service",
+                method="POST",
+                path_template="/integrations/contact-service",
+                body_fields=["image_url", "mechanic_api"],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "ssrf_candidate_detector"]
+    assert len(rows) == 1
+    command = rows[0].command
+    assert command is not None
+    fields = command.inputs.get("candidate_fields") if isinstance(command.inputs.get("candidate_fields"), list) else []
+    assert len(fields) >= 2
+    assert fields[0]["field_name"] == "mechanic_api"
+    assert any(item["field_name"] == "image_url" for item in fields)
+
+
+def test_ssrf_candidate_detector_caps_candidate_fields_to_ten_after_scoring() -> None:
+    _reset_store()
+    _campaign()
+    graph = ApiGraph(
+        campaign_id="cmp_plan",
+        operations=[
+            Operation(
+                operation_id="op_POST_/services/bulk-connect",
+                method="POST",
+                path_template="/services/bulk-connect",
+                body_fields=[
+                    "callback_url", "notify_url", "service_endpoint", "target_url", "destination_url",
+                    "integration_url", "connect_uri", "request_url", "webhook_url", "contact_api",
+                    "backup_url", "avatar_url", "image_url",
+                ],
+                sources=["openapi"],
+            ),
+        ],
+    )
+    memory_store.store_graph_for_campaign("cmp_plan", graph.model_dump(mode="json"))
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": False}, "max_candidates": 40}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "ssrf_candidate_detector"]
+    assert len(rows) == 1
+    command = rows[0].command
+    assert command is not None
+    fields = command.inputs.get("candidate_fields") if isinstance(command.inputs.get("candidate_fields"), list) else []
+    assert len(fields) == 10
+
+
 def test_planner_ssrf_candidate_detector_not_created_without_request_fields() -> None:
     _reset_store()
     _campaign()
@@ -4421,6 +5199,180 @@ def test_planner_bola_replay_ordering_prefers_vehicle_high_over_post_medium() ->
     assert rows[0].command is not None
     assert rows[0].command.inputs.get("object_pair_id") == "objpair_vehicle_high"
     assert "objpair_vehicle_high" in (rows[0].dedup_key or "")
+
+
+def test_planner_bola_pair_scoring_penalizes_previous_owner_400_invalid_pair() -> None:
+    _reset_store()
+    _campaign()
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_post_high",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_post_high",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_ref_id": "objref_post_1",
+            "object_id_ref": "objidref_post_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/api/v1/posts/{postId}",
+            "target_path_template": "/api/v1/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "confidence": "high",
+            "created_by": "bola_object_pair_builder",
+            "reason_codes": ["path_param_resource_match"],
+            "metadata": {"baseline_probability_score": 92.0},
+        },
+    )
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_vehicle_medium",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_vehicle_medium",
+            "campaign_id": "cmp_plan",
+            "resource_type": "vehicle",
+            "object_ref_id": "objref_veh_1",
+            "object_id_ref": "objidref_veh_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+            "target_path_template": "/api/v1/vehicles/{vehicleId}",
+            "target_method": "GET",
+            "path_param_name": "vehicleId",
+            "confidence": "medium",
+            "created_by": "bola_object_pair_builder",
+            "reason_codes": ["path_param_resource_match"],
+            "metadata": {"baseline_probability_score": 70.0},
+        },
+    )
+    _store_raw_observation(
+        observation_id="obs_bola_post_invalid",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.bola_replay_result.value,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_post_high",
+            "target_operation_id": "op_GET_/api/v1/posts/{postId}",
+            "resource_type": "post",
+            "result": "invalid_object_pair",
+            "owner_status_code": 400,
+            "access_granted": False,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    ready = [c for c in resp.candidates if c.kind.value == "bola_replay_probe" and c.status.value == "ready"]
+    assert len(ready) == 1
+    assert ready[0].command is not None
+    assert ready[0].command.inputs.get("object_pair_id") == "objpair_vehicle_medium"
+    assert float(ready[0].summary.get("invalid_pair_penalty") or 0.0) <= 0.0
+
+
+def test_planner_does_not_select_low_baseline_probability_bola_pair() -> None:
+    _reset_store()
+    _campaign()
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_low_sem",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_low_sem",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_ref_id": "objref_1",
+            "object_id_ref": "objidref_1",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/api/posts/{postId}",
+            "target_path_template": "/api/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "object_id_field": "authorid",
+            "confidence": "medium",
+            "created_by": "bola_object_pair_builder",
+            "metadata": {
+                "semantic_id_kind": "author_id",
+                "source_reason_codes": ["creation_non_2xx", "blocked_required_object_ref"],
+            },
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    rows = [c for c in resp.candidates if c.kind.value == "bola_replay_probe"]
+    assert rows
+    assert all(c.status.value != "ready" for c in rows)
+    assert any("semantic_id_mismatch" in (c.missing_inputs or []) or "low_baseline_probability" in (c.missing_inputs or []) for c in rows)
+    sample = rows[0].summary or {}
+    assert "semantic_id_kind" in sample
+    assert "object_id_field" in sample
+    assert "baseline_block_reasons" in sample
+    assert "source_status_code" in sample
+
+
+def test_planner_selects_semantic_match_pair_before_weak_pair() -> None:
+    _reset_store()
+    _campaign()
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_post_blocked",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_post_blocked",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_ref_id": "objref_weak",
+            "object_id_ref": "objidref_weak",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/api/posts/{postId}",
+            "target_path_template": "/api/posts/{postId}",
+            "target_method": "GET",
+            "path_param_name": "postId",
+            "object_id_field": "authorid",
+            "confidence": "medium",
+            "metadata": {
+                "semantic_id_kind": "author_id",
+                "baseline_block_reasons": ["object_id_field_semantic_mismatch"],
+                "source_status_code": 400,
+            },
+        },
+    )
+    memory_store.store_runtime_bola_object_pair(
+        "objpair_vehicle_ready",
+        "cmp_plan",
+        {
+            "object_pair_id": "objpair_vehicle_ready",
+            "campaign_id": "cmp_plan",
+            "resource_type": "vehicle",
+            "object_ref_id": "objref_ok",
+            "object_id_ref": "objidref_ok",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "target_operation_id": "op_GET_/api/vehicles/{vehicleId}",
+            "target_path_template": "/api/vehicles/{vehicleId}",
+            "target_method": "GET",
+            "path_param_name": "vehicleId",
+            "object_id_field": "vehicleId",
+            "confidence": "high",
+            "metadata": {
+                "semantic_id_kind": "vehicle_id",
+                "baseline_probability_score": 95.0,
+                "source_status_code": 200,
+                "owner_evidence": True,
+            },
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    ready = [c for c in resp.candidates if c.kind.value == "bola_replay_probe" and c.status.value == "ready"]
+    assert ready
+    assert ready[0].command is not None
+    assert ready[0].command.inputs.get("object_pair_id") == "objpair_vehicle_ready"
 
 
 def test_planner_resource_instance_inventory_dedups_existing_source_observation() -> None:

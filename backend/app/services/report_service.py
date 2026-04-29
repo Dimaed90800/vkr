@@ -1206,6 +1206,279 @@ def build_final_session_report(
     }
 
 
+def _safe_markdown_value(value, default: str = "не доступно") -> str:
+    if value is None:
+        return default
+    text = str(value)
+    if not text.strip():
+        return default
+    return text.replace("\n", " ").replace("|", "\\|")
+
+
+def _append_markdown_table(lines: list[str], headers: list[str], rows: list[list[object]]) -> None:
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+    for row in rows:
+        safe_cells = [_safe_markdown_value(cell, default="") for cell in row]
+        lines.append("| " + " | ".join(safe_cells) + " |")
+    lines.append("")
+
+
+def _extract_api7_context(final_report: dict, session_obj) -> dict:
+    direct_api7 = final_report.get("api7")
+    if isinstance(direct_api7, dict):
+        return direct_api7
+
+    owasp = final_report.get("owasp_coverage")
+    if isinstance(owasp, dict):
+        api7 = owasp.get("API7_SERVER_SIDE_REQUEST_FORGERY")
+        if isinstance(api7, dict):
+            return api7
+
+    strategy_state = _safe_load_json(getattr(session_obj, "last_strategy_json", None)) or {}
+    if isinstance(strategy_state, dict):
+        context = strategy_state.get("report_context")
+        if isinstance(context, dict):
+            coverage = context.get("owasp_coverage")
+            if isinstance(coverage, dict):
+                api7 = coverage.get("API7_SERVER_SIDE_REQUEST_FORGERY")
+                if isinstance(api7, dict):
+                    return api7
+        coverage = strategy_state.get("owasp_coverage")
+        if isinstance(coverage, dict):
+            api7 = coverage.get("API7_SERVER_SIDE_REQUEST_FORGERY")
+            if isinstance(api7, dict):
+                return api7
+        api7 = strategy_state.get("api7")
+        if isinstance(api7, dict):
+            return api7
+
+    return {}
+
+
+def _render_api7_ssrf_section(lines: list[str], api7: dict) -> None:
+    if not isinstance(api7, dict) or not api7:
+        return
+
+    lines.extend([
+        "## Детали API7 Server-Side Request Forgery",
+        "",
+        f"- Status: `{_safe_markdown_value(api7.get('status'), default='не доступно')}`",
+        f"- Confirmed Findings Count: {_safe_markdown_value(api7.get('confirmed_findings_count'), default='0')}",
+        f"- SSRF Candidate Signal Count: {_safe_markdown_value(api7.get('ssrf_candidate_signal_count'), default='0')}",
+        f"- SSRF Candidate Operations Count: {_safe_markdown_value(api7.get('ssrf_candidate_operations_count'), default='0')}",
+        f"- SSRF Candidate Fields Count: {_safe_markdown_value(api7.get('ssrf_candidate_fields_count'), default='0')}",
+        f"- SSRF Probe Result Count: {_safe_markdown_value(api7.get('ssrf_probe_result_count'), default='0')}",
+        f"- SSRF Probe Callback Received Count: {_safe_markdown_value(api7.get('ssrf_probe_callback_received_count'), default='0')}",
+        f"- SSRF Probe Target Non-2xx Count: {_safe_markdown_value(api7.get('ssrf_probe_target_non_2xx_count'), default='0')}",
+        f"- SSRF Probe Error Count: {_safe_markdown_value(api7.get('ssrf_probe_probe_error_count'), default='0')}",
+        f"- SSRF Probe Schema Synthesized Count: {_safe_markdown_value(api7.get('ssrf_probe_schema_synthesized_count'), default='0')}",
+        f"- SSRF Probe LLM Composed Count: {_safe_markdown_value(api7.get('ssrf_probe_llm_composed_count'), default='0')}",
+        "",
+    ])
+    summary_text = _safe_markdown_value(api7.get("summary_text"), default="")
+    if summary_text:
+        lines.extend([summary_text, ""])
+
+    confirmed_evidence = api7.get("confirmed_ssrf_evidence")
+    if isinstance(confirmed_evidence, list) and confirmed_evidence:
+        rows = []
+        for item in confirmed_evidence:
+            if not isinstance(item, dict):
+                continue
+            rows.append([
+                item.get("finding_id"),
+                item.get("evidence_id"),
+                item.get("operation_id"),
+                item.get("method"),
+                item.get("endpoint"),
+                item.get("field_path"),
+                item.get("callback_received_effective"),
+                item.get("late_callback_reconciled"),
+                item.get("callback_store_received"),
+                item.get("evidence_strength"),
+                item.get("judge_verdict"),
+                ", ".join([str(code) for code in (item.get("reason_codes") or [])]) or "не доступно",
+            ])
+        if rows:
+            lines.extend(["### Confirmed SSRF Evidence", ""])
+            _append_markdown_table(
+                lines,
+                [
+                    "Finding ID",
+                    "Evidence ID",
+                    "Operation ID",
+                    "Method",
+                    "Endpoint",
+                    "Field Path",
+                    "Callback Received Effective",
+                    "Late Callback Reconciled",
+                    "Callback Store Received",
+                    "Evidence Strength",
+                    "Judge Verdict",
+                    "Reason Codes",
+                ],
+                rows,
+            )
+
+    candidates = api7.get("ssrf_candidates")
+    if isinstance(candidates, list) and candidates:
+        rows = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            rows.append([
+                candidate.get("operation_id"),
+                candidate.get("method"),
+                candidate.get("path"),
+                candidate.get("field_name"),
+                candidate.get("field_path"),
+                candidate.get("schema_type"),
+                candidate.get("schema_format"),
+                candidate.get("confidence"),
+                ", ".join([str(code) for code in (candidate.get("reason_codes") or [])]) or "не доступно",
+            ])
+        if rows:
+            lines.extend(["### SSRF Candidates", ""])
+            _append_markdown_table(
+                lines,
+                [
+                    "Operation ID",
+                    "Method",
+                    "Path",
+                    "Field Name",
+                    "Field Path",
+                    "Schema Type",
+                    "Schema Format",
+                    "Confidence",
+                    "Reason Codes",
+                ],
+                rows,
+            )
+
+    probe_results = api7.get("ssrf_probe_results")
+    rendered_probe_results = False
+    if isinstance(probe_results, list) and probe_results:
+        rows = []
+        for result in probe_results:
+            if not isinstance(result, dict):
+                continue
+            rows.append([
+                result.get("operation_id"),
+                result.get("method"),
+                result.get("path"),
+                result.get("field_name"),
+                result.get("field_path"),
+                result.get("auth_mode"),
+                result.get("auth_profile_id"),
+                result.get("role_hint"),
+                result.get("result"),
+                result.get("target_status_code"),
+                result.get("callback_received"),
+                result.get("callback_received_effective"),
+                result.get("late_callback_reconciled"),
+                result.get("callback_store_received"),
+                result.get("callback_method"),
+                result.get("evidence_strength"),
+                result.get("request_composer"),
+                result.get("request_draft_validated"),
+                result.get("payload_synthesis_result"),
+                result.get("filled_required_fields_count"),
+                result.get("missing_required_fields_count"),
+                result.get("rejected_fields_count"),
+                result.get("synthesized_field_count"),
+                result.get("schema_summary_source"),
+                ", ".join([str(code) for code in (result.get("reason_codes") or [])]) or "не доступно",
+            ])
+        if rows:
+            rendered_probe_results = True
+            lines.extend(["### SSRF Probe Results", ""])
+            _append_markdown_table(
+                lines,
+                [
+                    "Operation ID",
+                    "Method",
+                    "Path",
+                    "Field Name",
+                    "Field Path",
+                    "Auth Mode",
+                    "Auth Profile ID",
+                    "Role Hint",
+                    "Result",
+                    "Target Status Code",
+                    "Callback Received Raw",
+                    "Callback Received Effective",
+                    "Late Callback Reconciled",
+                    "Callback Store Received",
+                    "Callback Method",
+                    "Evidence Strength",
+                    "Request Composer",
+                    "Draft Validated",
+                    "Payload Synthesis",
+                    "Filled Required",
+                    "Missing Required",
+                    "Rejected Fields",
+                    "Synthesized Fields",
+                    "Schema Source",
+                    "Reason Codes",
+                ],
+                rows,
+            )
+
+    candidate_signal_count = int(api7.get("ssrf_candidate_signal_count") or 0)
+    probe_count = int(api7.get("ssrf_probe_result_count") or 0)
+    planning_diag = api7.get("api7_planning_diagnostics")
+    if candidate_signal_count > 0 and probe_count == 0 and isinstance(planning_diag, dict):
+        lines.extend([
+            "### API7 Planning Diagnostics",
+            "",
+            f"- ssrf_candidate_signal_count: {_safe_markdown_value(planning_diag.get('ssrf_candidate_signal_count'), default='0')}",
+            f"- ssrf_probe_ready_count: {_safe_markdown_value(planning_diag.get('ssrf_probe_ready_count'), default='0')}",
+            f"- ssrf_probe_blocked_count: {_safe_markdown_value(planning_diag.get('ssrf_probe_blocked_count'), default='0')}",
+            f"- ssrf_probe_deprioritized_count: {_safe_markdown_value(planning_diag.get('ssrf_probe_deprioritized_count'), default='0')}",
+            f"- top_candidate_operation_id: `{_safe_markdown_value(planning_diag.get('top_candidate_operation_id'))}`",
+            f"- top_candidate_field_path: `{_safe_markdown_value(planning_diag.get('top_candidate_field_path'))}`",
+            f"- top_candidate_status: `{_safe_markdown_value(planning_diag.get('top_candidate_status'))}`",
+            f"- top_candidate_blocked_reason: `{_safe_markdown_value(planning_diag.get('top_candidate_blocked_reason'))}`",
+            f"- kind_cap_remaining: {_safe_markdown_value(planning_diag.get('kind_cap_remaining'))}",
+            f"- api7_already_confirmed: {_safe_markdown_value(planning_diag.get('api7_already_confirmed'), default='false')}",
+            f"- reason: `{_safe_markdown_value(planning_diag.get('reason'))}`",
+            "",
+        ])
+
+    trace = api7.get("api7_ssrf_pipeline_trace")
+    if isinstance(trace, dict) and trace:
+        lines.extend(["### API7 SSRF Pipeline Trace", ""])
+        trace_rendered = dict(trace)
+        trace_rendered["markdown_rendered_ssrf_probe_results"] = rendered_probe_results
+        ordered_keys = [
+            "ssrf_candidate_signal_count",
+            "top_candidate_operation_id",
+            "top_candidate_field_path",
+            "ready_ssrf_probe_count",
+            "ready_candidate_ids",
+            "selected_candidate_id",
+            "selected_candidate_kind",
+            "selected_candidate_operation_id",
+            "command_built",
+            "command_kind",
+            "command_operation_id",
+            "command_validation_passed",
+            "command_validation_error",
+            "tool_executor_called",
+            "adapter_called",
+            "ssrf_probe_result_emitted",
+            "ssrf_probe_result_persisted",
+            "report_context_has_ssrf_probe_results",
+            "markdown_rendered_ssrf_probe_results",
+            "last_failure_stage",
+            "last_failure_reason",
+        ]
+        for key in ordered_keys:
+            lines.append(f"- {key}: `{_safe_markdown_value(trace_rendered.get(key))}`")
+        lines.append("")
+
+
 def build_session_markdown_report(
     session_obj,
     roles,
@@ -1226,6 +1499,7 @@ def build_session_markdown_report(
         agent_memory_rows=agent_memory_rows,
         agent_judge_feedback_rows=agent_judge_feedback_rows,
     )
+    api7 = _extract_api7_context(final_report, session_obj)
 
     lines = [
         f"# Pentest Report: Session {final_report['session']['id']}",
@@ -1442,5 +1716,7 @@ def build_session_markdown_report(
                 f"selection_rate {agent['selection_rate']:.2f}, confirmation_rate {agent['confirmation_rate']:.2f}"
             )
         lines.append("")
+
+    _render_api7_ssrf_section(lines, api7)
 
     return "\n".join(lines)

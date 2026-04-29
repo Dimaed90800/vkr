@@ -52,7 +52,9 @@ try:
         VerificationPlanStatus,
     )
     from backend.services.api_graph_service import ApiGraphService
+    from backend.services.observation_resolution_service import resolve_observation_for_evidence
     from backend.services.request_corpus_service import RequestCorpusService
+    from backend.services.ssrf_callback_store import get_effective_ssrf_callback_state
     from backend.storage.memory_store import memory_store
 except ModuleNotFoundError:  # pragma: no cover
     from models.api_graph import Operation
@@ -77,7 +79,9 @@ except ModuleNotFoundError:  # pragma: no cover
         VerificationPlanStatus,
     )
     from services.api_graph_service import ApiGraphService
+    from services.observation_resolution_service import resolve_observation_for_evidence
     from services.request_corpus_service import RequestCorpusService
+    from services.ssrf_callback_store import get_effective_ssrf_callback_state
     from storage.memory_store import memory_store
 
 
@@ -90,6 +94,7 @@ _HARD_CODED_OWASP_BY_OBS_TYPE: dict[str, str] = {
     ObservationType.discovered_endpoint.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
     ObservationType.undocumented_endpoint_signal.value: "API9_IMPROPER_INVENTORY_MANAGEMENT",
     ObservationType.ssrf_candidate_signal.value: "API7_SERVER_SIDE_REQUEST_FORGERY",
+    ObservationType.ssrf_probe_result.value: "API7_SERVER_SIDE_REQUEST_FORGERY",
     ObservationType.auth_flow_signal.value: "API2_AUTH",
     ObservationType.validated_cors_issue.value: "API8_SECURITY_MISCONFIGURATION",
     ObservationType.validated_cookie_flag_issue.value: "API8_SECURITY_MISCONFIGURATION",
@@ -152,13 +157,21 @@ class EvidencePackBuilder:
     # Public entry points
     # ------------------------------------------------------------------
     def build_from_observation(
-        self, observation_id: str
+        self, observation_id: str, campaign_id_hint: str | None = None
     ) -> tuple[EvidencePack | None, EvidencePackBuildError | None, bool]:
-        obs_data = memory_store.get_observation(observation_id)
+        obs_data, lookup_diag = resolve_observation_for_evidence(
+            observation_id=observation_id,
+            campaign_id=campaign_id_hint,
+        )
         if obs_data is None:
+            diag_suffix = ""
+            if isinstance(lookup_diag, dict):
+                searched = lookup_diag.get("searched_stores")
+                if isinstance(searched, list) and searched:
+                    diag_suffix = f" (searched_stores={','.join(str(x) for x in searched[:8])})"
             return None, EvidencePackBuildError(
                 "observation_not_found",
-                f"Observation '{observation_id}' not found.",
+                f"Observation '{observation_id}' not found.{diag_suffix}",
             ), False
 
         obs = Observation.model_validate(obs_data)
@@ -224,12 +237,14 @@ class EvidencePackBuilder:
     ) -> tuple[EvidencePack, None, bool]:
         plan_id = plan.verification_plan_id if plan else ""
         existing = self._find_existing(obs.observation_id, plan_id)
-        if existing is not None:
+        if existing is not None and not self._should_refresh_existing(obs, existing):
             return existing, None, True
 
         obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
 
         pack = self._init_pack(obs, plan)
+        if existing is not None:
+            pack.evidence_id = existing.evidence_id
 
         if obs_type in _NOT_JUDGE_READY_TYPES:
             self._fill_not_judge_ready(pack, obs)
@@ -260,6 +275,8 @@ class EvidencePackBuilder:
             self._fill_undocumented_endpoint_signal(pack, obs, plan)
         elif obs_type == ObservationType.ssrf_candidate_signal.value:
             self._fill_ssrf_candidate_signal(pack, obs, plan)
+        elif obs_type == ObservationType.ssrf_probe_result.value:
+            self._fill_ssrf_probe_result(pack, obs, plan)
         elif obs_type == ObservationType.schema_mismatch.value:
             self._fill_schema_mismatch(pack, obs, plan)
         elif obs_type == ObservationType.injection_signal.value:
@@ -278,6 +295,17 @@ class EvidencePackBuilder:
         self._finalize_status(pack, plan)
         self._persist(pack, obs, plan)
         return pack, None, False
+
+    def _should_refresh_existing(self, obs: Observation, existing: EvidencePack) -> bool:
+        """Allow deterministic refresh for late SSRF callback reconciliation."""
+        obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
+        if obs_type != ObservationType.ssrf_probe_result.value:
+            return False
+        if existing.judge_ready:
+            return False
+        details = obs.details if isinstance(obs.details, dict) else {}
+        effective = get_effective_ssrf_callback_state({"details": details})
+        return bool(effective.get("callback_received_effective"))
 
     # ------------------------------------------------------------------
     # Init / finalize helpers
@@ -538,6 +566,8 @@ class EvidencePackBuilder:
             return "undocumented_api_endpoint"
         if obs_type == ObservationType.ssrf_candidate_signal.value:
             return "ssrf_candidate"
+        if obs_type == ObservationType.ssrf_probe_result.value:
+            return "ssrf"
         if obs_type == ObservationType.data_exposure_signal.value:
             return "sensitive_property_exposure"
         if obs_type == ObservationType.auth_flow_signal.value:
@@ -657,15 +687,21 @@ class EvidencePackBuilder:
         path = str(details.get("target_path_template") or "").strip()
         method = str(details.get("target_method") or "GET").strip().upper() or "GET"
         status_code = int(details.get("status_code") or 0)
+        owner_status_code = int(details.get("owner_status_code") or 0)
+        attacker_status_code = int(details.get("attacker_status_code") or status_code or 0)
         access_granted = bool(details.get("access_granted"))
         evidence_strength = str(details.get("evidence_strength") or "low").strip().lower()
         owner_baseline_valid = bool(details.get("owner_baseline_valid"))
         result_label = str(details.get("result") or "").strip()
+        replay_classification = str(details.get("replay_classification") or "").strip()
+        object_pair_id = str(details.get("object_pair_id") or "").strip()
+        semantic_id_kind = str(details.get("semantic_id_kind") or "").strip()
         request_id = str(details.get("request_id") or obs.request_id or "").strip()
         attacker_auth_profile_id = str(details.get("attacker_auth_profile_id") or "").strip()
+        owner_auth_profile_id = str(details.get("owner_auth_profile_id") or "").strip()
 
         pack.owasp_category = "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"
-        pack.vulnerability_class = "bola"
+        pack.vulnerability_class = "broken_object_level_authorization"
         if op_id:
             pack.operation_id = op_id
         if path:
@@ -683,6 +719,18 @@ class EvidencePackBuilder:
                 request_ref=attack_ref,
                 description="Attacker-authenticated replay against prepared object pair.",
             )
+        pack.ownership_proof = EvidenceOwnershipProof(
+            object_id="",
+            owner_role=owner_auth_profile_id,
+            owner_collection_request_ref=None,
+            attacker_collection_request_ref=None,
+            proof=(
+                f"object_pair_id:{object_pair_id};owner_baseline_valid:{str(owner_baseline_valid).lower()};"
+                f"owner_status_code:{owner_status_code};attacker_status_code:{attacker_status_code};"
+                f"access_granted:{str(access_granted).lower()};replay_classification:{replay_classification or result_label};"
+                f"semantic_id_kind:{semantic_id_kind or 'unknown'}"
+            ),
+        )
         pack.replay_steps = [
             EvidenceReplayStep(
                 order=1,
@@ -696,19 +744,29 @@ class EvidencePackBuilder:
         ]
         pack.derived_signals = [
             "bola_replay_result",
-            f"object_pair_id:{str(details.get('object_pair_id') or '')}",
+            f"object_pair_id:{object_pair_id}",
+            f"owner_baseline_valid:{str(owner_baseline_valid).lower()}",
             f"status_code:{status_code}",
             f"result:{result_label}",
             f"access_granted:{str(access_granted).lower()}",
+            f"replay_classification:{replay_classification or result_label}",
+            f"owner_status_code:{owner_status_code}",
+            f"attacker_status_code:{attacker_status_code}",
             f"evidence_strength:{evidence_strength or 'low'}",
+            f"semantic_id_kind:{semantic_id_kind or 'unknown'}",
         ]
+        is_success_result = result_label == "attacker_access_granted"
+        is_success_replay_class = replay_classification in {"possible_bola", "confirmed_bola", "attacker_access_granted"}
+        owner_status_2xx = 200 <= owner_status_code <= 299
+        attacker_status_2xx = 200 <= attacker_status_code <= 299
+
         if not owner_baseline_valid:
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="owner_baseline_invalid",
                 description="Owner baseline request did not succeed (2xx); object pair is not valid evidence for BOLA replay.",
                 required_for="bola",
             ))
-        if result_label != "attacker_access_granted":
+        if not is_success_result:
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="bola_replay_not_granted",
                 description="Replay did not show attacker access granted for the owner-linked object pair.",
@@ -718,6 +776,24 @@ class EvidencePackBuilder:
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="attacker_access_not_granted",
                 description="Replay did not show attacker access to the prepared object pair.",
+                required_for="bola",
+            ))
+        if not is_success_replay_class:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="replay_classification_not_confirmable",
+                description="Replay classification does not indicate a confirmable BOLA result.",
+                required_for="bola",
+            ))
+        if not owner_status_2xx:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="owner_status_non_2xx",
+                description="Owner baseline status must be 2xx for confirmable BOLA replay evidence.",
+                required_for="bola",
+            ))
+        if not attacker_status_2xx:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="attacker_status_non_2xx",
+                description="Attacker replay status must be 2xx for confirmable BOLA replay evidence.",
                 required_for="bola",
             ))
         if evidence_strength not in {"high", "medium"}:
@@ -738,7 +814,27 @@ class EvidencePackBuilder:
                 description="target_path_template is required for BOLA replay evidence.",
                 required_for="bola",
             ))
-        if attack_ref is None:
+        if not object_pair_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="object_pair_id_missing",
+                description="object_pair_id is required for BOLA replay evidence.",
+                required_for="bola",
+            ))
+        # attack request corpus reference is helpful but not mandatory when
+        # replay observation already carries strict owner+attacker 2xx proof.
+        if attack_ref is None and not (
+            owner_baseline_valid
+            and owner_status_2xx
+            and attacker_status_2xx
+            and access_granted
+            and is_success_result
+            and is_success_replay_class
+            and evidence_strength in {"high", "medium"}
+            and object_pair_id
+            and op_id
+            and path
+            and method
+        ):
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="attack_request_missing",
                 description="Replay request_id is required in corpus for BOLA replay evidence.",
@@ -1220,6 +1316,91 @@ class EvidencePackBuilder:
                 code="validation_mode_missing",
                 description="ssrf_candidate_signal evidence requires validation_mode.",
                 required_for="ssrf_candidate_signal",
+            ))
+
+    def _fill_ssrf_probe_result(
+        self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None,
+    ) -> None:
+        details = obs.details if isinstance(obs.details, dict) else {}
+        operation_id = str(details.get("operation_id") or obs.operation_id or "").strip()
+        method = str(details.get("method") or "").strip().upper()
+        path = str(details.get("path") or "").strip()
+        field_name = str(details.get("field_name") or "").strip()
+        field_path = str(details.get("field_path") or "").strip()
+        correlation_id = str(details.get("correlation_id") or "").strip()
+        callback_received = bool(details.get("callback_received"))
+        effective = get_effective_ssrf_callback_state({"details": details})
+        callback_received_effective = bool(effective.get("callback_received_effective"))
+        late_callback_reconciled = bool(effective.get("late_callback_reconciled"))
+        callback_store_received = bool(effective.get("callback_store_received"))
+        callback_method = str(
+            effective.get("callback_method")
+            or details.get("callback_method")
+            or ""
+        ).strip().upper()
+        target_status_code = int(details.get("target_status_code") or 0)
+        evidence_strength = str(details.get("evidence_strength") or "low").strip().lower()
+        if callback_received_effective and evidence_strength not in {"high", "medium"}:
+            evidence_strength = "high"
+
+        pack.owasp_category = "API7_SERVER_SIDE_REQUEST_FORGERY"
+        pack.vulnerability_class = "server_side_request_forgery"
+        if operation_id:
+            pack.operation_id = operation_id
+        if method:
+            pack.method = method
+        if path:
+            pack.endpoint = EvidencePackBuilder._strip_path_query(path)
+        pack.hypothesis = "Server-side callback was observed for a mutated URL-like field with matching correlation_id."
+        pack.derived_signals.extend([
+            "ssrf_probe_result",
+            f"operation_id:{operation_id}",
+            f"method:{method or 'unknown'}",
+            f"path:{path or 'unknown'}",
+            f"field_name:{field_name}",
+            f"field_path:{field_path}",
+            f"correlation_id:{correlation_id}",
+            f"callback_received:{str(callback_received).lower()}",
+            f"callback_received_effective:{str(callback_received_effective).lower()}",
+            f"late_callback_reconciled:{str(late_callback_reconciled).lower()}",
+            f"callback_store_received:{str(callback_store_received).lower()}",
+            f"callback_method:{callback_method or 'unknown'}",
+            f"target_status_code:{target_status_code}",
+            f"evidence_strength:{evidence_strength or 'low'}",
+        ])
+        for code in effective.get("reason_codes") or []:
+            if isinstance(code, str) and code.strip():
+                pack.derived_signals.append(code.strip())
+
+        if not callback_received_effective:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="callback_not_observed",
+                description="SSRF callback was not observed for the correlation_id; not judge-ready.",
+                required_for="server_side_request_forgery",
+            ))
+        if evidence_strength not in {"high", "medium"}:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="evidence_strength_low",
+                description="SSRF callback proof requires evidence_strength medium/high.",
+                required_for="server_side_request_forgery",
+            ))
+        if not correlation_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="correlation_id_missing",
+                description="SSRF callback proof requires correlation_id.",
+                required_for="server_side_request_forgery",
+            ))
+        if not operation_id:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="operation_context_missing",
+                description="SSRF callback proof requires operation_id.",
+                required_for="server_side_request_forgery",
+            ))
+        if not field_name or not field_path:
+            pack.missing_evidence.append(MissingEvidenceItem(
+                code="field_context_missing",
+                description="SSRF callback proof requires field_name and field_path.",
+                required_for="server_side_request_forgery",
             ))
 
     @staticmethod

@@ -28,6 +28,7 @@ def _reset_store() -> None:
         "runtime_response_json_secrets", "runtime_object_id_secrets",
         "runtime_resource_instances", "runtime_resource_instances_by_campaign",
         "runtime_bola_object_pairs", "runtime_bola_object_pairs_by_campaign",
+        "runtime_ssrf_callbacks", "runtime_ssrf_callbacks_by_campaign",
     ]:
         getattr(memory_store, name).clear()
 
@@ -323,6 +324,8 @@ def test_report_context_pending_and_runtime_absence_defaults() -> None:
     assert ctx["executive_summary"]["iterations_run"] == "not_available"
     assert len(ctx["pending_verification"]) >= 1
     assert ctx["worker_execution_summary"]["status"] == "not_available"
+    assert ctx["adaptive_planner_diagnostics"]["status"] == "not_available"
+    assert ctx["adaptive_planner_diagnostics"]["reason"] == "planner_diagnostics_not_persisted"
 
 
 def test_report_context_sanitizer_no_raw_leakage_but_safe_cookie_fields_allowed() -> None:
@@ -348,6 +351,285 @@ def test_report_context_sanitizer_no_raw_leakage_but_safe_cookie_fields_allowed(
         assert bad not in blob
     assert "cookie_flag_validator" in blob
     assert "cookie_name_hash" in blob
+
+
+def test_report_context_compact_attempt_summary_keeps_safe_ssrf_and_bola_attempts() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_attempt",
+        "cmp_report",
+        "toolrun_ssrf_1",
+        Observation(
+            observation_id="obs_ssrf_attempt",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_ssrf_1",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/hooks",
+                "field_path": "$.callback_url",
+                "auth_mode": "authenticated",
+                "result": "no_callback",
+                "target_status_code": 202,
+                "callback_received": False,
+                "evidence_strength": "low",
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_bola_attempt",
+        "cmp_report",
+        "toolrun_bola_1",
+        Observation(
+            observation_id="obs_bola_attempt",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_bola_1",
+            type=ObservationType.bola_replay_result,
+            details={
+                "validation_mode": "bola_replay",
+                "target_operation_id": "op_GET_/vehicles/{vehicleId}",
+                "object_pair_id": "objpair_1",
+                "attacker_auth_profile_id": "authprof_attacker_1",
+                "result": "invalid_object_pair",
+                "status_code": 404,
+                "access_granted": False,
+                "owner_baseline_valid": True,
+                "evidence_strength": "low",
+            },
+        ).model_dump(mode="json"),
+    )
+
+    runtime = {
+        "iteration_summaries": [
+            {"tool_run_id": "toolrun_ssrf_1", "candidate_kind": "ssrf_probe", "finding_id": ""},
+            {"tool_run_id": "toolrun_bola_1", "candidate_kind": "bola_replay_probe", "finding_id": ""},
+        ]
+    }
+    ctx, error = ReportContextBuilder().build("cmp_report", runtime_state_snapshot=runtime)
+    assert error is None
+    assert ctx is not None
+    attempts = ctx["compact_attempt_summary"]
+    assert len(attempts) >= 2
+    ssrf = next(row for row in attempts if row["kind"] == "ssrf_probe")
+    assert ssrf["operation_id"] == "op_POST_/hooks"
+    assert ssrf["field_path"] == "$.callback_url"
+    assert ssrf["result"] == "no_callback"
+    assert ssrf["status_code"] == 202
+    assert ssrf["callback_received"] is False
+    bola = next(row for row in attempts if row["kind"] == "bola_replay_probe")
+    assert bola["operation_id"] == "op_GET_/vehicles/{vehicleId}"
+    assert bola["object_pair_id"] == "objpair_1"
+    assert bola["result"] == "invalid_object_pair"
+    assert bola["owner_baseline_valid"] is True
+    blob = json.dumps({"attempts": attempts, "last": ctx["last_observation_summary"]}, ensure_ascii=False)
+    for bad in ("Authorization", "Cookie", "request_body", "response_body", "raw_headers", "password", "object_id"):
+        assert bad not in blob
+
+
+def test_report_context_adaptive_planner_diagnostics_populated_safe_shape() -> None:
+    _reset_store()
+    _create_campaign()
+    runtime = {
+        "llm_planner_used": True,
+        "llm_planner_fallback": "selected_kind",
+        "llm_selected_candidate_id": "pcand_123",
+        "llm_selected_kind": "ssrf_probe",
+        "llm_selection_reason": "Prefer callback/contact endpoint after media candidate failed.",
+        "iteration_summaries": [
+            {
+                "candidate_kind": "ssrf_probe",
+                "selection_outcome": "llm_selected_kind",
+                "selected_candidate_id": "pcand_123",
+                "selection_reason": "safe reason",
+            }
+        ],
+    }
+    ctx, error = ReportContextBuilder().build("cmp_report", runtime_state_snapshot=runtime)
+    assert error is None
+    assert ctx is not None
+    diag = ctx["adaptive_planner_diagnostics"]
+    assert diag["status"] == "available"
+    assert diag["llm_planner_used_count"] >= 1
+    assert diag["llm_planner_fallback_count"] >= 1
+    assert diag["last_selected_candidate_id"] == "pcand_123"
+    assert diag["last_selected_kind"] == "ssrf_probe"
+    assert isinstance(diag["recent_selected_candidates"], list)
+    assert diag["recent_selected_candidates"]
+    row = diag["recent_selected_candidates"][0]
+    assert set(row.keys()) == {"selected_candidate_id", "selected_kind", "decision", "fallback_used", "reason"}
+    blob = json.dumps(diag, ensure_ascii=False)
+    for bad in ("Authorization", "Cookie", "request_body", "response_body", "raw_headers", "password", "token="):
+        assert bad not in blob
+
+
+def test_report_context_includes_ssrf_payload_synthesis_diagnostics() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_diag",
+        "cmp_report",
+        "toolrun_ssrf_diag",
+        Observation(
+            observation_id="obs_ssrf_diag",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_ssrf_diag",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/api/contact",
+                "method": "POST",
+                "path": "/api/contact",
+                "field_name": "mechanic_api",
+                "field_path": "$.mechanic_api",
+                "request_composer": "deterministic",
+                "request_draft_validated": False,
+                "payload_synthesis_result": "schema_synthesized",
+                "filled_required_fields_count": 3,
+                "missing_required_fields_count": 1,
+                "rejected_fields_count": 0,
+                "synthesized_field_count": 4,
+                "schema_summary_source": "api_graph",
+                "reason_codes": ["required_secret_like_field_not_synthesized"],
+                "target_status_code": 200,
+                "callback_received": False,
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    sample = api7["ssrf_probe_results"][0]
+    assert sample["payload_synthesis_result"] == "schema_synthesized"
+    assert sample["filled_required_fields_count"] == 3
+    assert sample["missing_required_fields_count"] == 1
+    assert sample["synthesized_field_count"] == 4
+    blob = json.dumps(sample, ensure_ascii=False).lower()
+    for bad in ("body_json", "authorization", "cookie", "token", "password", "raw_body", "raw_headers"):
+        assert bad not in blob
+
+
+def test_report_context_includes_ssrf_probe_synthesis_counts() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_counts",
+        "cmp_report",
+        "toolrun_ssrf_counts",
+        Observation(
+            observation_id="obs_ssrf_counts",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_ssrf_counts",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/api/hooks",
+                "field_path": "$.callback_url",
+                "result": "target_4xx",
+                "target_status_code": 400,
+                "callback_received": False,
+                "request_composer": "llm",
+                "payload_synthesis_result": "llm_composed",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    assert api7["ssrf_probe_result_count"] >= 1
+    assert api7["ssrf_probe_target_non_2xx_count"] >= 1
+    assert api7["ssrf_probe_llm_composed_count"] >= 1
+
+
+def test_report_context_includes_api7_planning_diagnostics() -> None:
+    _reset_store()
+    _create_campaign()
+    runtime = {
+        "stopped_reason": "no_ready_candidate",
+        "ready_candidates_sample": [],
+        "blocked_candidates_sample": [
+            {
+                "kind": "ssrf_probe",
+                "operation_id": "op_PUT_/api/videos/{id}",
+                "field_path": "$.video_url",
+                "reason": "Path parameters require a corpus seed before SSRF callback probe.",
+            }
+        ],
+    }
+    memory_store.store_observation(
+        "obs_ssrf_signal_diag",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_signal_diag",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "operation_id": "op_PUT_/api/videos/{id}",
+                "method": "PUT",
+                "path": "/api/videos/{id}",
+                "field_name": "video_url",
+                "field_path": "$.video_url",
+                "confidence": "high",
+                "schema_format": "uri",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report", runtime_state_snapshot=runtime)
+    assert error is None and ctx is not None
+    diag = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]["api7_planning_diagnostics"]
+    assert diag["ssrf_candidate_signal_count"] >= 1
+    assert diag["ssrf_probe_ready_count"] == 0
+    assert diag["ssrf_probe_blocked_count"] >= 1
+    assert "reason" in diag
+
+
+def test_report_context_includes_api7_ssrf_pipeline_trace() -> None:
+    _reset_store()
+    _create_campaign()
+    runtime = {
+        "stopped_reason": "no_ready_candidate",
+        "ready_candidates_sample": [
+            {
+                "kind": "ssrf_probe",
+                "candidate_id": "pcand_ready_1",
+                "operation_id": "op_POST_/api/contact",
+                "field_path": "$.callback_url",
+                "reason": "ready",
+            }
+        ],
+        "blocked_candidates_sample": [],
+        "tool_failure_summaries": [],
+        "llm_selected_candidate_id": "pcand_ready_1",
+        "llm_selected_kind": "ssrf_probe",
+        "selected_candidate_operation_id": "op_POST_/api/contact",
+    }
+    memory_store.store_observation(
+        "obs_ssrf_trace",
+        "cmp_report",
+        "toolrun_ssrf_trace",
+        Observation(
+            observation_id="obs_ssrf_trace",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_ssrf_trace",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/api/contact",
+                "field_path": "$.callback_url",
+                "target_status_code": 400,
+                "callback_received": False,
+                "payload_synthesis_result": "schema_synthesized",
+                "request_composer": "deterministic",
+                "reason_codes": ["target_non_2xx"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report", runtime_state_snapshot=runtime)
+    assert error is None and ctx is not None
+    trace = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]["api7_ssrf_pipeline_trace"]
+    assert trace["ssrf_candidate_signal_count"] >= 0
+    assert trace["ready_ssrf_probe_count"] >= 1
+    assert trace["selected_candidate_id"] == "pcand_ready_1"
+    assert trace["ssrf_probe_result_emitted"] is True
+    assert trace["report_context_has_ssrf_probe_results"] is True
 
 
 def test_report_context_confirmed_finding_safe_fields_have_no_raw_leakage() -> None:
@@ -418,6 +700,195 @@ def test_schema_contract_violation_normalized_to_api9() -> None:
     assert row["category_normalized"] is True
     assert ctx["owasp_coverage"]["API9_IMPROPER_INVENTORY_MANAGEMENT"]["confirmed_findings_count"] == 1
     assert ctx["owasp_coverage"]["API8_SECURITY_MISCONFIGURATION"]["confirmed_findings_count"] == 0
+
+
+def test_report_context_api7_includes_ssrf_probe_counters_and_samples() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_probe_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_probe_1",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "validation_mode": "ssrf_callback_probe",
+                "operation_id": "op_POST_/api/v1/hooks",
+                "method": "POST",
+                "path": "/api/v1/hooks",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "auth_mode": "unauthenticated",
+                "auth_profile_id": "",
+                "role_hint": "",
+                "correlation_id": "ssrf_1",
+                "target_status_code": 200,
+                "callback_received": True,
+                "callback_method": "GET",
+                "result": "callback_received",
+                "evidence_strength": "high",
+                "request_composer": "llm",
+                "request_draft_validated": True,
+                "payload_synthesis_result": "llm_composed",
+                "synthesized_required_fields_count": 3,
+                "rejected_fields_count": 0,
+                "reason_codes": ["callback_received"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    assert api7["ssrf_probe_result_count"] == 1
+    assert api7["ssrf_callback_received_count"] == 1
+    assert api7["ssrf_no_callback_count"] == 0
+    assert api7["ssrf_confirmable_count"] == 1
+    assert len(api7["ssrf_probe_results"]) == 1
+    sample = api7["ssrf_probe_results"][0]
+    assert sample["request_composer"] == "llm"
+    assert sample["request_draft_validated"] is True
+    assert sample["payload_synthesis_result"] == "llm_composed"
+    blob = json.dumps(api7, sort_keys=True).lower()
+    for bad in ("authorization", "cookie", "set-cookie", "password", "bearer ", "token=", "body_json", "raw_headers"):
+        assert bad not in blob
+
+
+def test_report_context_reconciles_late_ssrf_callback() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_late_1",
+        "cmp_report",
+        {
+            "correlation_id": "ssrf_late_1",
+            "campaign_id": "cmp_report",
+            "operation_id": "op_POST_/api/contact",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "received": True,
+            "callback_method": "GET",
+            "headers_count": 6,
+        },
+    )
+    memory_store.store_observation(
+        "obs_ssrf_late",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_late",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/api/contact",
+                "method": "POST",
+                "path": "/api/contact",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "correlation_id": "ssrf_late_1",
+                "target_status_code": 0,
+                "callback_received": False,
+                "payload_synthesis_result": "llm_composed",
+                "evidence_strength": "low",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    sample = api7["ssrf_probe_results"][0]
+    assert sample["callback_received"] is False
+    assert sample["callback_received_effective"] is True
+    assert sample["late_callback_reconciled"] is True
+    assert sample["callback_store_received"] is True
+    assert api7["ssrf_probe_callback_received_count"] >= 1
+    assert api7["ssrf_probe_late_callback_reconciled_count"] >= 1
+    blob = json.dumps(sample, ensure_ascii=False).lower()
+    for bad in ("authorization", "cookie", "query=", "password", "token", "raw_headers", "raw_body"):
+        assert bad not in blob
+
+
+def test_report_context_counts_api7_confirmed_after_auto_judge() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_runtime_ssrf_callback(
+        "ssrf_ctx_auto_1",
+        "cmp_report",
+        {
+            "correlation_id": "ssrf_ctx_auto_1",
+            "campaign_id": "cmp_report",
+            "operation_id": "op_POST_/api/contact",
+            "field_name": "callback_url",
+            "field_path": "$.callback_url",
+            "received": True,
+            "callback_method": "GET",
+            "headers_count": 6,
+        },
+    )
+    memory_store.store_observation(
+        "obs_ssrf_ctx_auto",
+        "cmp_report",
+        "toolrun_ssrf_ctx_auto",
+        Observation(
+            observation_id="obs_ssrf_ctx_auto",
+            campaign_id="cmp_report",
+            tool_run_id="toolrun_ssrf_ctx_auto",
+            type=ObservationType.ssrf_probe_result,
+            details={
+                "operation_id": "op_POST_/api/contact",
+                "method": "POST",
+                "path": "/api/contact",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "correlation_id": "ssrf_ctx_auto_1",
+                "target_status_code": 0,
+                "callback_received": False,
+                "evidence_strength": "low",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    assert api7["confirmed_findings_count"] >= 1
+    assert api7["status"] == "confirmed"
+    assert any(
+        row.get("owasp_category") == "API7_SERVER_SIDE_REQUEST_FORGERY"
+        and row.get("vulnerability_class") == "server_side_request_forgery"
+        for row in (ctx.get("confirmed_findings") or [])
+    )
+    assert "confirmed_ssrf_evidence" in api7
+    assert isinstance(api7["confirmed_ssrf_evidence"], list)
+
+
+def test_report_context_api7_status_stays_diagnostic_without_confirmed_findings() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_diag",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_diag",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "operation_id": "op_POST_/hooks",
+                "method": "POST",
+                "path": "/hooks",
+                "field_name": "callback_url",
+                "field_path": "$.callback_url",
+                "schema_format": "uri",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api7 = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]
+    assert api7["confirmed_findings_count"] == 0
+    assert api7["status"] == "diagnostic"
+    assert "подтверждение требует controlled callback proof" in str(api7.get("summary_text") or "")
 
 
 def test_report_context_api9_counts_include_undocumented_endpoint_signal_and_findings() -> None:
@@ -533,6 +1004,61 @@ def test_report_context_api7_coverage_includes_ssrf_candidate_counts() -> None:
     blob = json.dumps(api7, sort_keys=True).lower()
     for bad in ("authorization", "cookie", "set-cookie", "request_body", "response_body", "raw_body", "headers", "bearer ", "token="):
         assert bad not in blob
+
+
+def test_report_context_api7_candidate_samples_prioritize_contact_like_over_image_like() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_ssrf_image",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_image",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "operation_id": "op_POST_/services/product-media",
+                "method": "POST",
+                "path": "/services/product-media",
+                "field_name": "image_url",
+                "field_path": "$.image_url",
+                "schema_type": "string",
+                "schema_format": "uri",
+                "confidence": "high",
+                "validation_mode": "ssrf_candidate_detection",
+                "reason_codes": ["url_like_field_name", "schema_format_uri"],
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_ssrf_contact",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_ssrf_contact",
+            campaign_id="cmp_report",
+            type=ObservationType.ssrf_candidate_signal,
+            details={
+                "operation_id": "op_POST_/services/contact-notify",
+                "method": "POST",
+                "path": "/services/contact-notify",
+                "field_name": "callback_api",
+                "field_path": "$.callback_api",
+                "schema_type": "string",
+                "schema_format": "uri",
+                "confidence": "high",
+                "validation_mode": "ssrf_candidate_detection",
+                "reason_codes": ["url_like_field_name", "schema_format_uri"],
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None
+    assert ctx is not None
+    candidates = ctx["owasp_coverage"]["API7_SERVER_SIDE_REQUEST_FORGERY"]["ssrf_candidates"]
+    assert len(candidates) >= 2
+    assert candidates[0]["operation_id"] == "op_POST_/services/contact-notify"
 
 
 def test_confirmed_finding_contains_traceability_fields() -> None:
@@ -1360,6 +1886,240 @@ def test_report_context_owasp_coverage_includes_api1_default_diagnostic() -> Non
     assert api1["status"] == "diagnostic"
     assert api1["confirmed_findings_count"] == 0
     assert api1["bola_replay_result_count"] == 0
+
+
+def test_report_context_api1_confirmed_after_bola_finding() -> None:
+    _reset_store()
+    _create_campaign()
+    finding = ConfirmedFinding(
+        finding_id="finding_bola_1",
+        campaign_id="cmp_report",
+        evidence_id="evp_bola_1",
+        decision_id="jdec_bola_1",
+        owasp_category="API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        vulnerability_class="broken_object_level_authorization",
+        endpoint="/identity/api/v2/vehicle/{vehicleId}/location",
+        method="GET",
+        title="BOLA confirmed",
+        severity="high",
+        summary="Owner baseline and attacker replay succeeded on same object pair.",
+    )
+    memory_store.store_confirmed_finding(
+        finding.finding_id,
+        finding.campaign_id,
+        "fp_bola_1",
+        finding.model_dump(mode="json"),
+    )
+    evidence = EvidencePack(
+        evidence_id="evp_bola_1",
+        campaign_id="cmp_report",
+        owasp_category="API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION",
+        vulnerability_class="broken_object_level_authorization",
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        endpoint="/identity/api/v2/vehicle/{vehicleId}/location",
+        method="GET",
+        hypothesis="Replay indicates BOLA.",
+        status=EvidencePackStatus.ready_for_judge,
+        judge_ready=True,
+        derived_signals=[
+            "object_pair_id:objpair_1",
+            "owner_status_code:200",
+            "attacker_status_code:200",
+            "owner_baseline_valid:true",
+            "access_granted:true",
+            "replay_classification:possible_bola",
+            "evidence_strength:high",
+            "semantic_id_kind:vehicle_id",
+        ],
+    )
+    memory_store.store_evidence_pack(
+        "evp_bola_1",
+        "cmp_report",
+        "obs_bola_1",
+        "",
+        evidence.model_dump(mode="json"),
+    )
+    decision = JudgeDecisionRecord(
+        decision_id="jdec_bola_1",
+        campaign_id="cmp_report",
+        evidence_id="evp_bola_1",
+        verdict=JudgeVerdictKind.confirmed,
+        reason="confirmed",
+    )
+    memory_store.store_judge_decision(
+        decision.decision_id,
+        "cmp_report",
+        "evp_bola_1",
+        decision.model_dump(mode="json"),
+    )
+
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api1 = ctx["owasp_coverage"]["API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"]
+    assert api1["status"] == "confirmed"
+    assert api1["confirmed_findings_count"] >= 1
+    assert isinstance(api1["confirmed_bola_evidence"], list)
+    assert api1["confirmed_bola_evidence"]
+    row = api1["confirmed_bola_evidence"][0]
+    assert row["evidence_id"] == "evp_bola_1"
+    assert row["object_pair_id"] == "objpair_1"
+    assert row["attacker_access_granted"] is True
+
+
+def test_report_context_includes_bola_baseline_probability_diagnostics() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_bola_pair_diag",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_bola_pair_diag",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_object_pair_inventory,
+            details={
+                "validation_mode": "bola_object_pair_building",
+                "object_pairs_count": 1,
+                "object_pairs": [{
+                    "object_pair_id": "objpair_diag_1",
+                    "resource_type": "vehicle",
+                    "object_ref_id": "objref_1",
+                    "object_id_ref": "objidref_1",
+                    "owner_auth_profile_id": "authprof_owner_1",
+                    "attacker_auth_profile_id": "authprof_attacker_1",
+                    "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                    "target_path_template": "/api/v1/vehicles/{vehicleId}",
+                    "target_method": "GET",
+                    "path_param_name": "vehicleId",
+                    "confidence": "high",
+                    "metadata": {
+                        "baseline_probability_score": 88.0,
+                        "baseline_probability_reasons": ["consumer_method_get", "pair_confidence_high"],
+                        "dependency_edge_confidence": "high",
+                        "dependency_edge": {"param_location": "path"},
+                    },
+                }],
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_bola_replay_diag",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_bola_replay_diag",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_replay_result,
+            details={
+                "validation_mode": "bola_replay",
+                "object_pair_id": "objpair_diag_1",
+                "target_operation_id": "op_GET_/api/v1/vehicles/{vehicleId}",
+                "resource_type": "vehicle",
+                "result": "invalid_object_pair",
+                "owner_status_code": 400,
+                "attacker_status_code": 0,
+                "replay_classification": "invalid_object_pair",
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api1 = ctx["owasp_coverage"]["API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION"]
+    assert api1["top_object_pair_score"] >= 80
+    assert api1["invalid_pair_rework_count"] >= 1
+    compact = api1["api1_bola_compact_diagnostics"]
+    assert compact["best_pair_operation_id"] == "op_GET_/api/v1/vehicles/{vehicleId}"
+    assert compact["owner_baseline_status_code"] == 400
+
+
+def test_report_context_api1_typed_object_ref_and_blocked_pair_counters() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_resource_refs_typed",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_resource_refs_typed",
+            campaign_id="cmp_report",
+            type=ObservationType.resource_instance_inventory,
+            details={
+                "source": "resource_instance_extractor",
+                "validation_mode": "resource_instance_extraction",
+                "source_operation_id": "op_GET_/community/posts/recent",
+                "source_path": "/community/posts/recent",
+                "source_auth_profile_id": "authprof_owner_1",
+                "source_role_hint": "owner",
+                "resource_instances_count": 1,
+                "object_refs": [{
+                    "object_ref_id": "objref_typed_1",
+                    "resource_type": "post",
+                    "object_id_field": "id",
+                    "object_id_ref": "objidref_typed_1",
+                    "confidence": "high",
+                    "id_json_path": "$.posts[0].id",
+                    "semantic_id_kind": "post_id",
+                    "source_status_code": 200,
+                    "source_content_type": "application/json",
+                    "owner_evidence": True,
+                }],
+                "reason_codes": ["resource_ids_extracted"],
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_pair_blocked",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_pair_blocked",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_object_pair_inventory,
+            details={
+                "validation_mode": "bola_object_pair_building",
+                "object_pairs_count": 1,
+                "object_pairs": [{
+                    "object_pair_id": "objpair_blocked_1",
+                    "resource_type": "post",
+                    "target_operation_id": "op_GET_/api/posts/{postId}",
+                    "target_path_template": "/api/posts/{postId}",
+                    "target_method": "GET",
+                    "path_param_name": "postId",
+                    "confidence": "low",
+                    "metadata": {
+                        "baseline_probability_score": 10.0,
+                        "baseline_probability_reasons": ["path_param_semantic_mismatch"],
+                        "baseline_block_reasons": ["object_id_field_semantic_mismatch"],
+                    },
+                }],
+            },
+        ).model_dump(mode="json"),
+    )
+    memory_store.store_observation(
+        "obs_replay_granted_count",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_replay_granted_count",
+            campaign_id="cmp_report",
+            type=ObservationType.bola_replay_result,
+            details={
+                "validation_mode": "bola_replay",
+                "result": "attacker_access_granted",
+                "access_granted": True,
+                "owner_baseline_valid": True,
+                "owner_status_code": 200,
+                "attacker_status_code": 200,
+            },
+        ).model_dump(mode="json"),
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["api1_typed_object_ref_count"] >= 1
+    assert api3["api1_owner_evidence_object_ref_count"] >= 1
+    assert api3["api1_blocked_pair_count"] >= 1
+    assert api3["api1_attacker_access_granted_count"] >= 1
 
 
 def test_static_asset_context_and_security_header_grouping_fields() -> None:

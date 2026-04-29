@@ -89,6 +89,16 @@ class SsrfCandidateDetectorAdapter:
                         "schema_format": str(row.get("schema_format") or "").strip(),
                         "confidence": str(row.get("confidence") or "medium").strip() or "medium",
                         "reason_codes": _safe_list(row.get("reason_codes")),
+                        "required_body_fields": _safe_list(row.get("required_body_fields")),
+                        "allowed_body_fields": _safe_list(row.get("allowed_body_fields")),
+                        "body_field_summaries": [
+                            item for item in (row.get("body_field_summaries") or [])
+                            if isinstance(item, dict)
+                        ][:80],
+                        "schema_summary_source": str(row.get("schema_summary_source") or "none"),
+                        "ssrf_target_field": row.get("ssrf_target_field")
+                        if isinstance(row.get("ssrf_target_field"), dict)
+                        else {"field_name": field_name, "field_path": field_path},
                         "validation_mode": validation_mode,
                         "security_relevance": "medium",
                         "recommended_next_action": "validate_ssrf_candidate_safely",

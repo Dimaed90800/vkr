@@ -104,6 +104,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
     ],
     "input_validation": [
         "ssrf_candidate_detector",
+        "ssrf_probe",
     ],
     "auth_context": [
         "auth_flow_detector",
@@ -116,6 +117,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "custom_ssrf_checker",
         "nuclei",
         "custom_request_executor",
+        "ssrf_probe",
     ],
 }
 
