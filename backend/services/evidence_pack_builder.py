@@ -304,6 +304,8 @@ class EvidencePackBuilder:
         if existing.judge_ready:
             return False
         details = obs.details if isinstance(obs.details, dict) else {}
+        obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
+        obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
         effective = get_effective_ssrf_callback_state({"details": details})
         return bool(effective.get("callback_received_effective"))
 
@@ -345,6 +347,7 @@ class EvidencePackBuilder:
 
         if plan is not None:
             self._merge_required_evidence(pack, plan)
+            self._reconcile_strong_bola_required_evidence(pack)
 
         if pack.missing_evidence:
             pack.status = EvidencePackStatus.incomplete
@@ -519,7 +522,72 @@ class EvidencePackBuilder:
             return any(str(s).startswith("status_code:") for s in (pack.derived_signals or []))
         if code == "endpoint_context":
             return bool((pack.endpoint or "").strip())
+        if code in {"bola_replay_request", "attacker_access_result"}:
+            return EvidencePackBuilder._pack_has_strong_bola_replay_proof(pack)
         return False
+
+    @staticmethod
+    def _pack_has_strong_bola_replay_proof(pack: EvidencePack) -> bool:
+        if (pack.owasp_category or "").strip() != "API1_BROKEN_OBJECT_LEVEL_AUTHORIZATION":
+            return False
+        if (pack.vulnerability_class or "").strip() not in {
+            "bola",
+            "broken_object_level_authorization",
+        }:
+            return False
+        return "strong_bola_replay_proof:true" in (pack.derived_signals or [])
+
+    @staticmethod
+    def _reconcile_strong_bola_required_evidence(pack: EvidencePack) -> None:
+        if not EvidencePackBuilder._pack_has_strong_bola_replay_proof(pack):
+            return
+        dropped_codes = {"bola_replay_request", "attacker_access_result"}
+        pack.missing_evidence = [
+            item for item in pack.missing_evidence if item.code not in dropped_codes
+        ]
+
+    @staticmethod
+    def _is_strong_bola_replay_proof(
+        details: Mapping[str, Any], *, observation_type: str
+    ) -> bool:
+        validation_mode = str(details.get("validation_mode") or "").strip().lower()
+        result_label = str(details.get("result") or "").strip()
+        replay_classification = str(details.get("replay_classification") or "").strip()
+        evidence_strength = str(details.get("evidence_strength") or "").strip().lower()
+        owner_baseline_valid = bool(details.get("owner_baseline_valid"))
+        access_granted = bool(details.get("access_granted"))
+        object_pair_id = str(details.get("object_pair_id") or "").strip()
+        target_operation_id = str(details.get("target_operation_id") or "").strip()
+        target_path_template = str(details.get("target_path_template") or "").strip()
+        target_method = str(details.get("target_method") or "").strip()
+        owner_status_code = int(details.get("owner_status_code") or 0)
+        attacker_status_code = int(details.get("attacker_status_code") or 0)
+        owner_status_2xx = 200 <= owner_status_code <= 299
+        attacker_status_2xx = 200 <= attacker_status_code <= 299
+        is_success_result = result_label == "attacker_access_granted"
+        is_success_replay_class = replay_classification in {
+            "possible_bola",
+            "confirmed_bola",
+            "attacker_access_granted",
+        }
+        is_bola_context = (
+            observation_type == ObservationType.bola_replay_result.value
+            or validation_mode == "bola_replay"
+        )
+        return (
+            is_bola_context
+            and is_success_result
+            and is_success_replay_class
+            and access_granted
+            and owner_baseline_valid
+            and owner_status_2xx
+            and attacker_status_2xx
+            and bool(object_pair_id)
+            and bool(target_operation_id)
+            and bool(target_path_template)
+            and bool(target_method)
+            and evidence_strength in {"medium", "high"}
+        )
 
     # ------------------------------------------------------------------
     # OWASP / class derivation
@@ -683,6 +751,7 @@ class EvidencePackBuilder:
         self, pack: EvidencePack, obs: Observation, plan: VerificationPlan | None
     ) -> None:
         details = obs.details if isinstance(obs.details, dict) else {}
+        obs_type = obs.type.value if hasattr(obs.type, "value") else str(obs.type)
         op_id = str(details.get("target_operation_id") or obs.operation_id or "").strip()
         path = str(details.get("target_path_template") or "").strip()
         method = str(details.get("target_method") or "GET").strip().upper() or "GET"
@@ -731,6 +800,12 @@ class EvidencePackBuilder:
                 f"semantic_id_kind:{semantic_id_kind or 'unknown'}"
             ),
         )
+        is_success_result = result_label == "attacker_access_granted"
+        is_success_replay_class = replay_classification in {"possible_bola", "confirmed_bola", "attacker_access_granted"}
+        owner_status_2xx = 200 <= owner_status_code <= 299
+        attacker_status_2xx = 200 <= attacker_status_code <= 299
+        strong_proof = self._is_strong_bola_replay_proof(details, observation_type=obs_type)
+
         pack.replay_steps = [
             EvidenceReplayStep(
                 order=1,
@@ -744,6 +819,7 @@ class EvidencePackBuilder:
         ]
         pack.derived_signals = [
             "bola_replay_result",
+            f"strong_bola_replay_proof:{str(strong_proof).lower()}",
             f"object_pair_id:{object_pair_id}",
             f"owner_baseline_valid:{str(owner_baseline_valid).lower()}",
             f"status_code:{status_code}",
@@ -755,11 +831,6 @@ class EvidencePackBuilder:
             f"evidence_strength:{evidence_strength or 'low'}",
             f"semantic_id_kind:{semantic_id_kind or 'unknown'}",
         ]
-        is_success_result = result_label == "attacker_access_granted"
-        is_success_replay_class = replay_classification in {"possible_bola", "confirmed_bola", "attacker_access_granted"}
-        owner_status_2xx = 200 <= owner_status_code <= 299
-        attacker_status_2xx = 200 <= attacker_status_code <= 299
-
         if not owner_baseline_valid:
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="owner_baseline_invalid",
@@ -822,19 +893,7 @@ class EvidencePackBuilder:
             ))
         # attack request corpus reference is helpful but not mandatory when
         # replay observation already carries strict owner+attacker 2xx proof.
-        if attack_ref is None and not (
-            owner_baseline_valid
-            and owner_status_2xx
-            and attacker_status_2xx
-            and access_granted
-            and is_success_result
-            and is_success_replay_class
-            and evidence_strength in {"high", "medium"}
-            and object_pair_id
-            and op_id
-            and path
-            and method
-        ):
+        if attack_ref is None and not strong_proof:
             pack.missing_evidence.append(MissingEvidenceItem(
                 code="attack_request_missing",
                 description="Replay request_id is required in corpus for BOLA replay evidence.",

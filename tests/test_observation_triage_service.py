@@ -265,6 +265,42 @@ def test_normalize_tool_result_observation_lite_mapped():
     assert obs.judge_worthy is False
 
 
+def test_normalize_targeted_object_harvest_result_observation_lite_mapped() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    tr = _make_clean_result()
+    tr.tool_name = "targeted_object_harvester"
+    tr.observations = [
+        ToolResultObservationLite(
+            observation_type="targeted_object_harvest_result",
+            confidence=0.9,
+            details={
+                "source": "targeted_object_harvester",
+                "validation_mode": "targeted_object_harvest",
+                "object_refs_created_count": 1,
+                "object_refs": [{
+                    "object_ref_id": "objref_1",
+                    "object_id_ref": "objidref_1",
+                    "resource_type": "vehicle",
+                    "semantic_id_kind": "vehicle_id",
+                    "id_json_path": "$.vehicles[0].id",
+                }],
+            },
+        )
+    ]
+    _store_tool_result("toolrun_obs_test", tr)
+
+    result = ObservationNormalizer().normalize("toolrun_obs_test")
+    assert not isinstance(result, NormalizeError)
+    assert len(result) == 1
+    obs = result[0]
+    assert obs.type == "targeted_object_harvest_result"
+    assert obs.source == "targeted_object_harvester"
+    assert obs.judge_worthy is False
+    assert obs.security_relevance == SecurityRelevance.unknown
+
+
 def test_normalize_injection_signal_observation():
     _reset_store()
     _create_campaign()

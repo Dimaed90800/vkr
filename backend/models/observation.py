@@ -44,6 +44,7 @@ class ObservationType(str, Enum):
     auth_flow_signal = "auth_flow_signal"
     test_account_materialization_result = "test_account_materialization_result"
     resource_instance_inventory = "resource_instance_inventory"
+    targeted_object_harvest_result = "targeted_object_harvest_result"
     resource_seed_result = "resource_seed_result"
     bola_object_pair_inventory = "bola_object_pair_inventory"
     bola_replay_result = "bola_replay_result"

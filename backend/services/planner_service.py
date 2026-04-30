@@ -138,6 +138,11 @@ class PlannerService:
             ),
         )
         candidates.extend(
+            self._targeted_object_harvester_candidates(
+                campaign,
+            ),
+        )
+        candidates.extend(
             self._bola_object_pair_builder_candidates(
                 campaign,
             ),
@@ -2451,6 +2456,7 @@ class PlannerService:
             ),
             "auth_required": bool(summary.get("auth_required")),
             "auth_profile_id": _first_text(summary.get("auth_profile_id"), inputs.get("auth_profile_id")),
+            "owner_evidence": bool(summary.get("owner_evidence")),
             "confidence": _first_text(summary.get("confidence")),
             "previous_result": _first_text(summary.get("previous_result")),
             "utility_score": float(summary.get("utility_score") or summary.get("ssrf_score") or candidate.priority or 0.0),
@@ -2473,6 +2479,15 @@ class PlannerService:
                 if isinstance(summary.get("ssrf_target_field"), dict)
                 else (inputs.get("ssrf_target_field") if isinstance(inputs.get("ssrf_target_field"), dict) else {})
             ),
+            "baseline_probability_score": float(summary.get("baseline_probability_score") or 0.0),
+            "baseline_probability_reasons": _list_texts(summary.get("baseline_probability_reasons")),
+            "baseline_block_reasons": _list_texts(summary.get("baseline_block_reasons")),
+            "semantic_id_kind": _first_text(summary.get("semantic_id_kind")),
+            "id_field_name": _first_text(summary.get("object_id_field")),
+            "id_json_path": _first_text(summary.get("id_json_path")),
+            "source_operation_id": _first_text(summary.get("source_operation_id")),
+            "source_status_code": int(summary.get("source_status_code") or 0),
+            "source_reason_codes": _list_texts(summary.get("source_reason_codes")),
         }
 
     def _data_exposure_validator_candidates(
@@ -3153,6 +3168,99 @@ class PlannerService:
             )
         ]
 
+    def _targeted_object_harvester_candidates(
+        self,
+        campaign: Campaign,
+    ) -> list[PlannerCandidate]:
+        det = self._latest_test_account_materialization_details(campaign.campaign_id)
+        if det is None:
+            return []
+        owner_auth_profile_id = str(det.get("owner_auth_profile_id") or "").strip()
+        if not owner_auth_profile_id:
+            return []
+
+        refs = memory_store.list_runtime_resource_instances_by_campaign(campaign.campaign_id)
+        typed_owner_refs = 0
+        if isinstance(refs, list):
+            for row in refs:
+                if not isinstance(row, dict):
+                    continue
+                md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+                kind = str(md.get("semantic_id_kind") or "").strip().lower()
+                if not kind:
+                    field = str(row.get("object_id_field") or "").strip().lower()
+                    if field in {"postid", "post_id"}:
+                        kind = "post_id"
+                    elif field in {"vehicleid", "vehicle_id", "vin"}:
+                        kind = "vehicle_id"
+                    elif field in {"videoid", "video_id"}:
+                        kind = "video_id"
+                    elif field in {"orderid", "order_id"}:
+                        kind = "order_id"
+                role = str(row.get("source_role_hint") or "").strip().lower()
+                if kind in {"post_id", "vehicle_id", "video_id", "order_id"} and role == "owner":
+                    typed_owner_refs += 1
+        if typed_owner_refs > 0:
+            return []
+
+        existing = self._latest_targeted_object_harvest_result(campaign.campaign_id)
+        dedup_key = "|".join([campaign.campaign_id, "targeted_object_harvester", "safe_get_only", owner_auth_profile_id])
+        summary = {
+            "validation_mode": "targeted_object_harvest",
+            "auth_profile_id": owner_auth_profile_id,
+            "role_hint": "owner",
+            "target_url": str(campaign.target_url or ""),
+            "reason_codes": ["api1_missing_typed_owner_object_refs"],
+        }
+        if existing is not None:
+            created = self._safe_int(existing.get("object_refs_created_count"), 0)
+            if created <= 0:
+                return [self._candidate(
+                    kind=PlannerCandidateKind.targeted_object_harvester,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=24.35,
+                    reason="Typed owner object refs are still missing after targeted harvest.",
+                    dedup_key=dedup_key,
+                    missing_inputs=["api1_missing_typed_owner_object_refs"],
+                    summary={**summary, "prior_result": "no_refs"},
+                )]
+            return [self._candidate(
+                kind=PlannerCandidateKind.targeted_object_harvester,
+                status=PlannerCandidateStatus.skipped_existing,
+                priority=24.35,
+                reason="Targeted object harvest already produced typed refs.",
+                dedup_key=dedup_key,
+                summary={**summary, "prior_result": "typed_object_refs_created", "object_refs_created_count": created},
+            )]
+
+        command = WorkerCommand(
+            campaign_id=campaign.campaign_id,
+            task_id=f"task_targeted_harvest_{hashlib.sha256(dedup_key.encode()).hexdigest()[:8]}",
+            worker_class="access_control",
+            strategy="targeted_object_harvest",
+            tool_name="targeted_object_harvester",
+            operation_id="",
+            inputs={
+                "validation_mode": "targeted_object_harvest",
+                "target_url": str(campaign.target_url or ""),
+                "auth_profile_id": owner_auth_profile_id,
+                "role_hint": "owner",
+                "max_requests": 10,
+                "harvest_policy": "safe_get_only",
+                "candidate_resource_types": ["post", "vehicle", "video", "order"],
+            },
+            budget=CommandBudget(max_requests=10, timeout_sec=20),
+            success_criteria=["targeted_object_harvest_result_recorded"],
+        )
+        return [self._validated_candidate(
+            kind=PlannerCandidateKind.targeted_object_harvester,
+            priority=24.35,
+            reason="Typed owner object refs are missing; run deterministic safe GET harvesting before BOLA pair build/replay.",
+            dedup_key=dedup_key,
+            command=command,
+            summary=summary,
+        )]
+
     def _bola_object_pair_builder_candidates(
         self,
         campaign: Campaign,
@@ -3188,6 +3296,45 @@ class PlannerService:
         resource_instances = memory_store.list_runtime_resource_instances_by_campaign(campaign.campaign_id)
         if not isinstance(resource_instances, list) or not resource_instances:
             return []
+        typed_owner_refs = 0
+        for row in resource_instances:
+            if not isinstance(row, dict):
+                continue
+            md = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            kind = str(md.get("semantic_id_kind") or "").strip().lower()
+            if not kind:
+                field = str(row.get("object_id_field") or "").strip().lower()
+                if field in {"postid", "post_id"}:
+                    kind = "post_id"
+                elif field in {"vehicleid", "vehicle_id", "vin"}:
+                    kind = "vehicle_id"
+                elif field in {"videoid", "video_id"}:
+                    kind = "video_id"
+                elif field in {"orderid", "order_id"}:
+                    kind = "order_id"
+            role = str(row.get("source_role_hint") or "").strip().lower()
+            if kind in {"post_id", "vehicle_id", "video_id", "order_id"} and role == "owner":
+                typed_owner_refs += 1
+        if typed_owner_refs <= 0:
+            return [
+                self._candidate(
+                    kind=PlannerCandidateKind.bola_object_pair_builder,
+                    status=PlannerCandidateStatus.blocked,
+                    priority=24.4,
+                    reason="No typed owner object refs are available for BOLA pair building.",
+                    dedup_key=f"{campaign.campaign_id}|bola_object_pair_builder|bola_object_pair_building|missing_typed_refs",
+                    missing_inputs=["api1_missing_typed_owner_object_refs"],
+                    summary={
+                        "validation_mode": "bola_object_pair_building",
+                        "owner_auth_profile_id": owner_auth_profile_id,
+                        "attacker_auth_profile_id": attacker_auth_profile_id,
+                        "resource_instances_count": len(resource_instances),
+                        "object_refs_count": len(resource_instances),
+                        "typed_owner_object_refs_count": 0,
+                        "reason_codes": ["api1_missing_typed_owner_object_refs"],
+                    },
+                )
+            ]
         if self._existing_bola_object_pair_inventory(campaign.campaign_id):
             return [
                 self._candidate(
@@ -3574,6 +3721,17 @@ class PlannerService:
         return False
 
     @staticmethod
+    def _latest_targeted_object_harvest_result(campaign_id: str) -> dict[str, Any] | None:
+        for raw in reversed(memory_store.list_observations_by_campaign(campaign_id)):
+            if PlannerService._raw_observation_type(raw) != "targeted_object_harvest_result":
+                continue
+            det = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+            if str(det.get("validation_mode") or "").strip() != "targeted_object_harvest":
+                continue
+            return det
+        return None
+
+    @staticmethod
     def _existing_bola_object_pair_inventory(campaign_id: str) -> bool:
         for raw in memory_store.list_observations_by_campaign(campaign_id):
             if PlannerService._raw_observation_type(raw) != "bola_object_pair_inventory":
@@ -3820,6 +3978,7 @@ class PlannerService:
             PlannerCandidateKind.injection_test: 5,
             PlannerCandidateKind.data_exposure_validator: 6,
             PlannerCandidateKind.resource_instance_extractor: 7,
+            PlannerCandidateKind.targeted_object_harvester: 7.2,
             PlannerCandidateKind.resource_seed_worker: 7.5,
             PlannerCandidateKind.bola_object_pair_builder: 7.7,
             PlannerCandidateKind.auth_flow_detector: 8,

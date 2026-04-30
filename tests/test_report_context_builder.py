@@ -2122,6 +2122,46 @@ def test_report_context_api1_typed_object_ref_and_blocked_pair_counters() -> Non
     assert api3["api1_attacker_access_granted_count"] >= 1
 
 
+def test_report_context_api1_targeted_harvest_counters() -> None:
+    _reset_store()
+    _create_campaign()
+    memory_store.store_observation(
+        "obs_targeted_harvest_1",
+        "cmp_report",
+        "",
+        Observation(
+            observation_id="obs_targeted_harvest_1",
+            campaign_id="cmp_report",
+            type=ObservationType.data_exposure_signal,
+            details={
+                "source": "targeted_object_harvester",
+                "validation_mode": "targeted_object_harvest",
+                "http_calls_count": 3,
+                "object_refs_created_count": 2,
+                "targeted_post_id_count": 1,
+                "targeted_vehicle_id_count": 1,
+                "targeted_video_id_count": 0,
+                "targeted_order_id_count": 0,
+                "object_refs": [
+                    {"source_operation_id": "op_GET_/posts/recent"},
+                    {"source_operation_id": "op_GET_/vehicles"},
+                ],
+                "reason_codes": ["typed_object_refs_created"],
+            },
+        ).model_dump(mode="json") | {"type": "targeted_object_harvest_result"},
+    )
+    ctx, error = ReportContextBuilder().build("cmp_report")
+    assert error is None and ctx is not None
+    api3 = ctx["owasp_coverage"]["API3_BROKEN_OBJECT_PROPERTY_LEVEL_AUTHORIZATION"]
+    assert api3["targeted_object_harvest_result_count"] >= 1
+    assert api3["targeted_object_harvest_http_calls_count"] >= 3
+    assert api3["targeted_object_refs_created_count"] >= 2
+    assert api3["targeted_post_id_count"] >= 1
+    assert api3["targeted_vehicle_id_count"] >= 1
+    diag = api3["api1_targeted_harvest_diagnostics"]
+    assert diag["status"] in {"success", "partial", "no_refs", "not_run"}
+
+
 def test_static_asset_context_and_security_header_grouping_fields() -> None:
     _reset_store()
     _create_campaign()

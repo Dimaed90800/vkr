@@ -39,6 +39,7 @@ class PlannerCandidateKind(str, Enum):
     property_mutation_test = "property_mutation_test"
     data_exposure_validator = "data_exposure_validator"
     resource_instance_extractor = "resource_instance_extractor"
+    targeted_object_harvester = "targeted_object_harvester"
     auth_flow_detector = "auth_flow_detector"
     test_account_materializer = "test_account_materializer"
     resource_seed_worker = "resource_seed_worker"

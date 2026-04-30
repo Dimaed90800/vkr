@@ -35,6 +35,7 @@ PHASE5_SUPPORTED_ADAPTERS: dict[str, str] = {
     "auth_flow_detector": "auth_flow_detector",
     "test_account_materializer": "test_account_materializer",
     "resource_instance_extractor": "resource_instance_extractor",
+    "targeted_object_harvester": "targeted_object_harvester",
     "resource_seed_worker": "resource_seed_worker",
     "bola_object_pair_builder": "bola_object_pair_builder",
 }
@@ -59,6 +60,7 @@ SYNC_ONLY_TOOLS: set[str] = {
     "auth_flow_detector",
     "test_account_materializer",
     "resource_instance_extractor",
+    "targeted_object_harvester",
     "resource_seed_worker",
     "bola_object_pair_builder",
     "schemathesis_negative_test",

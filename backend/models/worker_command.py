@@ -39,6 +39,7 @@ ALLOWED_TOOLS_BY_WORKER_CLASS: dict[str, list[str]] = {
         "property_mutation_test",
         "data_exposure_validator",
         "bola_object_pair_builder",
+        "targeted_object_harvester",
         "akto_inventory_discovery",
         "akto_authz_scan",
         "astf_top10_suite",

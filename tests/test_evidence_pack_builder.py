@@ -664,6 +664,93 @@ def test_build_bola_replay_does_not_require_bola_replay_request_when_result_is_s
     assert "attack_request_missing" not in missing_codes
 
 
+def test_build_bola_replay_strong_proof_clears_plan_required_codes() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        observation_id="obs_bola_plan_strong",
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        request_id="",
+        auth_profile="authprof_attacker_1",
+        status_code=200,
+        confidence=0.95,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_vehicle_plan_strong",
+            "target_operation_id": "op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_path_template": "/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_method": "GET",
+            "result": "attacker_access_granted",
+            "replay_classification": "possible_bola",
+            "access_granted": True,
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "attacker_status_code": 200,
+            "evidence_strength": "high",
+            "semantic_id_kind": "vehicle_id",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="bola_replay",
+        required_evidence=["bola_replay_request", "attacker_access_result"],
+        plan_id="vplan_bola_strong_required",
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_bola_strong_required")
+    assert error is None and existing is False and pack is not None
+    assert pack.status == "ready_for_judge"
+    assert pack.judge_ready is True
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "bola_replay_request" not in missing_codes
+    assert "attacker_access_result" not in missing_codes
+
+
+def test_build_bola_replay_non_2xx_attacker_keeps_plan_required_missing() -> None:
+    _reset_store()
+    _create_campaign()
+    _store_finished_run()
+    obs = _make_obs(
+        ObservationType.bola_replay_result.value,
+        observation_id="obs_bola_plan_weak",
+        operation_id="op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+        request_id="",
+        auth_profile="authprof_attacker_1",
+        status_code=403,
+        confidence=0.4,
+        details={
+            "validation_mode": "bola_replay",
+            "object_pair_id": "objpair_vehicle_plan_weak",
+            "target_operation_id": "op_GET_/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_path_template": "/identity/api/v2/vehicle/{vehicleId}/location",
+            "target_method": "GET",
+            "result": "attacker_access_denied",
+            "replay_classification": "access_denied",
+            "access_granted": False,
+            "owner_baseline_valid": True,
+            "owner_status_code": 200,
+            "attacker_status_code": 403,
+            "evidence_strength": "high",
+            "semantic_id_kind": "vehicle_id",
+        },
+    )
+    _make_plan(
+        obs,
+        goal="bola_replay",
+        required_evidence=["bola_replay_request", "attacker_access_result"],
+        plan_id="vplan_bola_weak_required",
+    )
+
+    pack, error, existing = EvidencePackBuilder().build_from_verification_plan("vplan_bola_weak_required")
+    assert error is None and existing is False and pack is not None
+    assert pack.status == "incomplete"
+    assert pack.judge_ready is False
+    missing_codes = {m.code for m in pack.missing_evidence}
+    assert "attacker_access_result" in missing_codes
+
+
 def test_build_bola_replay_result_evidence_not_ready_when_denied() -> None:
     _reset_store()
     _create_campaign()

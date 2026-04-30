@@ -138,6 +138,7 @@ _STORE_ONLY_TYPES = {
     "auth_flow_signal",
     "test_account_materialization_result",
     "resource_instance_inventory",
+    "targeted_object_harvest_result",
     "resource_seed_result",
     "bola_object_pair_inventory",
 }

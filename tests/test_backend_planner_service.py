@@ -5375,6 +5375,119 @@ def test_planner_selects_semantic_match_pair_before_weak_pair() -> None:
     assert ready[0].command.inputs.get("object_pair_id") == "objpair_vehicle_ready"
 
 
+def test_planner_schedules_targeted_object_harvester_before_bola_replay_when_no_typed_refs() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_mat_targeted_1",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    targeted = [c for c in resp.candidates if c.kind.value == "targeted_object_harvester"]
+    assert targeted
+    assert targeted[0].status.value == "ready"
+    assert targeted[0].command is not None
+    assert targeted[0].command.tool_name == "targeted_object_harvester"
+
+
+def test_planner_does_not_schedule_replay_when_only_author_id_exists() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_mat_targeted_2",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+        },
+    )
+    memory_store.store_runtime_resource_instance(
+        "objref_author_only",
+        "cmp_plan",
+        {
+            "object_ref_id": "objref_author_only",
+            "campaign_id": "cmp_plan",
+            "resource_type": "post",
+            "object_id_field": "authorid",
+            "object_id_ref": "objidref_author_only",
+            "source_operation_id": "op_GET_/community/posts/recent",
+            "source_path": "/community/posts/recent",
+            "source_auth_profile_id": "authprof_owner_1",
+            "source_role_hint": "owner",
+            "confidence": "medium",
+            "metadata": {"semantic_id_kind": "author_id"},
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    replay_ready = [c for c in resp.candidates if c.kind.value == "bola_replay_probe" and c.status.value == "ready"]
+    assert not replay_ready
+    targeted = [c for c in resp.candidates if c.kind.value == "targeted_object_harvester"]
+    assert targeted and targeted[0].status.value == "ready"
+
+
+def test_planner_schedules_pair_builder_when_typed_refs_exist() -> None:
+    _reset_store()
+    _campaign()
+    _store_raw_observation(
+        observation_id="obs_mat_targeted_3",
+        campaign_id="cmp_plan",
+        observation_type=ObservationType.test_account_materialization_result.value,
+        details={
+            "source": "test_account_materializer",
+            "validation_mode": "test_account_materialization",
+            "owner_auth_profile_id": "authprof_owner_1",
+            "attacker_auth_profile_id": "authprof_attacker_1",
+            "test_account_materialization_status": "materialized",
+            "auth_profiles_created_count": 2,
+        },
+    )
+    memory_store.store_runtime_resource_instance(
+        "objref_vehicle_typed",
+        "cmp_plan",
+        {
+            "object_ref_id": "objref_vehicle_typed",
+            "campaign_id": "cmp_plan",
+            "resource_type": "vehicle",
+            "object_id_field": "vehicleId",
+            "object_id_ref": "objidref_vehicle_typed",
+            "source_operation_id": "op_GET_/vehicles",
+            "source_path": "/vehicles",
+            "source_auth_profile_id": "authprof_owner_1",
+            "source_role_hint": "owner",
+            "confidence": "high",
+            "metadata": {"semantic_id_kind": "vehicle_id"},
+        },
+    )
+    resp = PlannerService().plan(
+        "cmp_plan",
+        PlannerRequest.model_validate({"zap": {"enabled": False}, "bola": {"enabled": True}, "max_candidates": 50}),
+    )
+    targeted = [c for c in resp.candidates if c.kind.value == "targeted_object_harvester" and c.status.value == "ready"]
+    assert not targeted
+    pair_builder = [c for c in resp.candidates if c.kind.value == "bola_object_pair_builder"]
+    assert pair_builder
+
+
 def test_planner_resource_instance_inventory_dedups_existing_source_observation() -> None:
     _reset_store()
     _campaign()

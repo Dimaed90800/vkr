@@ -1308,6 +1308,15 @@ class ReportContextBuilder:
         corpus_seed_2xx_json_count = 0
         corpus_seed_auth_owner_count = 0
         corpus_seed_auth_attacker_count = 0
+        targeted_object_harvest_result_count = 0
+        targeted_object_harvest_http_calls_count = 0
+        targeted_object_refs_created_count = 0
+        targeted_post_id_count = 0
+        targeted_vehicle_id_count = 0
+        targeted_video_id_count = 0
+        targeted_order_id_count = 0
+        api1_missing_typed_owner_object_refs_count = 0
+        top_source_operations: list[str] = []
         bola_replay_samples: list[dict[str, Any]] = []
         probe_samples: list[dict[str, Any]] = []
         auth_probe_samples: list[dict[str, Any]] = []
@@ -1607,6 +1616,27 @@ class ReportContextBuilder:
                         "evidence_strength": str(det.get("evidence_strength") or ""),
                         "reason_codes": list(rc) if isinstance(rc, list) else [],
                     })
+            elif otype == "targeted_object_harvest_result":
+                det = o.get("details") if isinstance(o.get("details"), dict) else {}
+                if str(det.get("validation_mode") or "").strip() != "targeted_object_harvest":
+                    continue
+                targeted_object_harvest_result_count += 1
+                targeted_object_harvest_http_calls_count += ReportContextBuilder._safe_int(det.get("http_calls_count"), 0)
+                created = ReportContextBuilder._safe_int(det.get("object_refs_created_count"), 0)
+                targeted_object_refs_created_count += created
+                targeted_post_id_count += ReportContextBuilder._safe_int(det.get("targeted_post_id_count"), 0)
+                targeted_vehicle_id_count += ReportContextBuilder._safe_int(det.get("targeted_vehicle_id_count"), 0)
+                targeted_video_id_count += ReportContextBuilder._safe_int(det.get("targeted_video_id_count"), 0)
+                targeted_order_id_count += ReportContextBuilder._safe_int(det.get("targeted_order_id_count"), 0)
+                if created <= 0:
+                    api1_missing_typed_owner_object_refs_count += 1
+                refs = det.get("object_refs") if isinstance(det.get("object_refs"), list) else []
+                for row in refs:
+                    if not isinstance(row, dict):
+                        continue
+                    op = str(row.get("source_operation_id") or "").strip()
+                    if op and op not in top_source_operations:
+                        top_source_operations.append(op)
         sens_findings = sum(
             1 for f in findings
             if str(f.get("vulnerability_class") or "") == "sensitive_property_exposure"
@@ -1706,6 +1736,14 @@ class ReportContextBuilder:
             "corpus_seed_2xx_json_count": corpus_seed_2xx_json_count,
             "corpus_seed_auth_owner_count": corpus_seed_auth_owner_count,
             "corpus_seed_auth_attacker_count": corpus_seed_auth_attacker_count,
+            "targeted_object_harvest_result_count": targeted_object_harvest_result_count,
+            "targeted_object_harvest_http_calls_count": targeted_object_harvest_http_calls_count,
+            "targeted_object_refs_created_count": targeted_object_refs_created_count,
+            "targeted_post_id_count": targeted_post_id_count,
+            "targeted_vehicle_id_count": targeted_vehicle_id_count,
+            "targeted_video_id_count": targeted_video_id_count,
+            "targeted_order_id_count": targeted_order_id_count,
+            "api1_missing_typed_owner_object_refs_count": api1_missing_typed_owner_object_refs_count,
             "bola_object_pair_inventory_count": bola_pair_inventory_count,
             "bola_object_pairs_count": bola_pairs_count,
             "dependency_edges_count": dependency_edges_count,
@@ -1749,6 +1787,20 @@ class ReportContextBuilder:
                 "rework_reason": rework_reason,
             },
             "best_bola_replay_result": last_replay_result,
+            "api1_targeted_harvest_diagnostics": {
+                "status": (
+                    "success" if targeted_object_refs_created_count > 0 else
+                    ("no_refs" if targeted_object_harvest_result_count > 0 else "not_run")
+                ),
+                "object_refs_created_count": targeted_object_refs_created_count,
+                "typed_object_ref_count": targeted_object_refs_created_count,
+                "resource_types": sorted(resource_types)[:20],
+                "top_source_operations": top_source_operations[:10],
+                "reason_codes": (
+                    ["typed_object_refs_created"] if targeted_object_refs_created_count > 0 else
+                    (["api1_missing_typed_owner_object_refs"] if targeted_object_harvest_result_count > 0 else [])
+                ),
+            },
             "bola_replay_results": bola_replay_samples,
             "data_exposure_probe_results": probe_samples,
             "authenticated_data_exposure_results": auth_probe_samples,

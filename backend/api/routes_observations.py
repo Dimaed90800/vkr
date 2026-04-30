@@ -33,7 +33,16 @@ _triage = ObservationTriage()
 @observations_router.post("/normalize/{tool_run_id}")
 async def normalize_tool_run(tool_run_id: str) -> JSONResponse:
     existing_before = memory_store.list_observations_by_tool_run(tool_run_id)
-    result = _normalizer.normalize(tool_run_id)
+    try:
+        result = _normalizer.normalize(tool_run_id)
+    except Exception as exc:  # pragma: no cover
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "observation_normalization_failed",
+                "message": str(exc),
+            },
+        )
     if isinstance(result, NormalizeError):
         if result.code == "tool_run_not_found":
             return JSONResponse(status_code=404, content={"error": result.code, "message": result.message})

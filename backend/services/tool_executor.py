@@ -55,6 +55,9 @@ try:
     from backend.services.adapters.resource_instance_extractor_adapter import (
         ResourceInstanceExtractorAdapter,
     )
+    from backend.services.adapters.targeted_object_harvester_adapter import (
+        TargetedObjectHarvesterAdapter,
+    )
     from backend.services.adapters.resource_seed_worker_adapter import (
         ResourceSeedWorkerAdapter,
     )
@@ -107,6 +110,9 @@ except ModuleNotFoundError:  # pragma: no cover
     )
     from services.adapters.resource_instance_extractor_adapter import (
         ResourceInstanceExtractorAdapter,
+    )
+    from services.adapters.targeted_object_harvester_adapter import (
+        TargetedObjectHarvesterAdapter,
     )
     from services.adapters.resource_seed_worker_adapter import (
         ResourceSeedWorkerAdapter,
@@ -176,6 +182,7 @@ class ToolExecutor:
         self._auth_flow_detector = AuthFlowDetectorAdapter()
         self._test_account_materializer = TestAccountMaterializerAdapter(http_client=http_client)
         self._resource_instance_extractor = ResourceInstanceExtractorAdapter()
+        self._targeted_object_harvester = TargetedObjectHarvesterAdapter(http_client=http_client)
         self._resource_seed_worker = ResourceSeedWorkerAdapter(http_client=http_client)
         self._bola_object_pair_builder = BolaObjectPairBuilderAdapter()
 
@@ -257,6 +264,8 @@ class ToolExecutor:
             return self._test_account_materializer.execute(command, campaign, tool_run_id)
         if command.tool_name == "resource_instance_extractor":
             return self._resource_instance_extractor.execute(command, campaign, tool_run_id)
+        if command.tool_name == "targeted_object_harvester":
+            return self._targeted_object_harvester.execute(command, campaign, tool_run_id)
         if command.tool_name == "resource_seed_worker":
             return self._resource_seed_worker.execute(command, campaign, tool_run_id)
         if command.tool_name == "bola_object_pair_builder":

@@ -168,6 +168,8 @@ class CommandValidator:
             self._validate_test_account_materializer(command, campaign, errors)
         if (command.tool_name or "").strip() == "resource_instance_extractor":
             self._validate_resource_instance_extractor(command, campaign, errors)
+        if (command.tool_name or "").strip() == "targeted_object_harvester":
+            self._validate_targeted_object_harvester(command, campaign, errors)
         if (command.tool_name or "").strip() == "resource_seed_worker":
             self._validate_resource_seed_worker(command, campaign, errors)
         if (command.tool_name or "").strip() == "bola_object_pair_builder":
@@ -1558,6 +1560,83 @@ class CommandValidator:
                 details={"timeout_sec": command.budget.timeout_sec},
             ))
         _ = campaign
+
+    def _validate_targeted_object_harvester(
+        self,
+        command: WorkerCommand,
+        campaign: Campaign,
+        errors: list[ValidationError],
+    ) -> None:
+        nclass = normalize_worker_class(command.worker_class)
+        if nclass != "access_control":
+            errors.append(ValidationError(
+                code="targeted_harvester_worker_class_invalid",
+                message="targeted_object_harvester requires worker_class access_control.",
+                details={"worker_class": command.worker_class},
+            ))
+        if (command.strategy or "").strip() != "targeted_object_harvest":
+            errors.append(ValidationError(
+                code="targeted_harvester_strategy_invalid",
+                message="targeted_object_harvester requires strategy targeted_object_harvest.",
+            ))
+        inputs = command.inputs if isinstance(command.inputs, dict) else {}
+        allowed_keys = {
+            "target_url",
+            "auth_profile_id",
+            "role_hint",
+            "max_requests",
+            "harvest_policy",
+            "candidate_resource_types",
+            "candidate_operations",
+            "validation_mode",
+        }
+        for key in inputs:
+            if key not in allowed_keys:
+                errors.append(ValidationError(
+                    code="targeted_harvester_inputs_unknown_key",
+                    message=f"inputs.{key} is not allowed for targeted_object_harvester.",
+                    details={"key": key, "allowed": sorted(allowed_keys)},
+                ))
+            lowered = str(key).strip().lower()
+            if lowered in {"authorization", "cookie", "token", "bearer", "password", "raw_secret", "raw_body"}:
+                errors.append(ValidationError(
+                    code="targeted_harvester_forbidden_secret_input",
+                    message=f"inputs.{key} is not allowed for targeted_object_harvester.",
+                    details={"key": key},
+                ))
+        target_url = str(inputs.get("target_url") or "").strip()
+        if target_url and target_url.rstrip("/") != str(campaign.target_url or "").rstrip("/"):
+            errors.append(ValidationError(
+                code="targeted_harvester_target_url_mismatch",
+                message="target_url must match campaign.target_url.",
+                details={"target_url": target_url, "campaign_target_url": str(campaign.target_url or "")},
+            ))
+        harvest_policy = str(inputs.get("harvest_policy") or "safe_get_only").strip()
+        if harvest_policy != "safe_get_only":
+            errors.append(ValidationError(
+                code="targeted_harvester_harvest_policy_invalid",
+                message="harvest_policy must be safe_get_only.",
+                details={"harvest_policy": harvest_policy},
+            ))
+        max_requests = int(inputs.get("max_requests") or 10)
+        if max_requests < 1 or max_requests > 10:
+            errors.append(ValidationError(
+                code="targeted_harvester_max_requests_invalid",
+                message="max_requests must be between 1 and 10.",
+                details={"max_requests": max_requests},
+            ))
+        if command.budget.max_requests < 1 or command.budget.max_requests > 10:
+            errors.append(ValidationError(
+                code="targeted_harvester_budget_max_requests",
+                message="targeted_object_harvester max_requests budget must be between 1 and 10.",
+                details={"max_requests": command.budget.max_requests},
+            ))
+        if command.budget.timeout_sec > 20:
+            errors.append(ValidationError(
+                code="targeted_harvester_budget_timeout",
+                message="targeted_object_harvester timeout_sec must be <= 20.",
+                details={"timeout_sec": command.budget.timeout_sec},
+            ))
 
     def _validate_js_endpoint_extractor(
         self,
